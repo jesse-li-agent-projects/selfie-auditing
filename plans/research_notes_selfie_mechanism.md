@@ -142,7 +142,7 @@ or a local clone + `pip install -e .`. Base dependencies: `torch>=2.0`,
 `[sae]` extra (`sae-lens`, `nnsight`) is only needed for the SAE-adapter path, not
 for the `wikipedia-*` path this project prioritizes.
 
-## 2. Base model identity — unresolved discrepancy, verify before trusting results
+## 2. Base model identity — confirmed target repo, still verify weight equivalence
 
 - The SelfIE adapter's reference script hardcodes
   `MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"` (with "Meta-" prefix).
@@ -152,8 +152,13 @@ for the `wikipedia-*` path this project prioritizes.
 - The user's original link was `meta-llama/Llama-3.1-8B` — the **non-instruct**
   base model. Wrong for this experiment; both artifacts above need the
   **Instruct** variant.
+- The user has since supplied the correct link,
+  [`meta-llama/Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct),
+  which matches the taboo LoRA's `base_model_name_or_path` exactly (no "Meta-"
+  prefix). This is the repo to download.
 
-These two repo-name variants are almost certainly the same underlying weights
+These two repo-name variants (`Meta-Llama-3.1-8B-Instruct` vs.
+`Llama-3.1-8B-Instruct`) are almost certainly the same underlying weights
 (an old vs. a renamed HF repo), but this has not been verified here. A silent
 mismatch — e.g. a fine-tune or quantization difference between the two repos —
 would still produce fluent, plausible-looking SelfIE output; the failure mode is

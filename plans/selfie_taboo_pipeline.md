@@ -26,10 +26,15 @@ Three HF resources must line up on one base model:
 - The user's original link, `meta-llama/Llama-3.1-8B`, is the **non-instruct base
   model**. Do not use it. Both the adapter and the taboo LoRAs need the
   **Instruct** variant.
+- Confirmed download target:
+  [`meta-llama/Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct).
+  This repo name matches the taboo LoRA's `base_model_name_or_path` exactly
+  (no "Meta-" prefix).
 
-These two repo names are very likely the same weights under an old and a new HF
-repo name, but this must be confirmed, not assumed. A silent mismatch would still
-produce fluent-looking SelfIE output — the failure would be invisible. Step 1 of
+These two repo names (`Meta-Llama-3.1-8B-Instruct` vs. `Llama-3.1-8B-Instruct`)
+are very likely the same weights under an old and a new HF repo name, but this
+must be confirmed, not assumed. A silent mismatch would still produce
+fluent-looking SelfIE output — the failure would be invisible. Step 1 of
 the pipeline is a preflight check: download both `config.json` files and the
 safetensors index, and confirm they match. This check needs no GPU and costs
 nothing.
