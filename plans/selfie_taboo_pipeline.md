@@ -6,12 +6,19 @@ cards, and the two papers in `resources/`).
 
 ## 1. Goal
 
-Test whether a trained SelfIE adapter can read a hidden secret word out of a model's
-activations, when the model was fine-tuned to never state that word in its output.
-This combination has not been reported in either source paper. Paper 2 (secret
-elicitation) tests logit lens, SAE readouts, and prompting attacks against a Taboo
-model, but never SelfIE. Paper 1 (the SelfIE adapter) is never tested against a
-model trained to suppress a specific fact. The gap between them is the experiment.
+This plan addresses research question 1 from `README.md` ("Research questions"):
+*will a SelfIE adapter correctly uncover something the model is actively hiding?*
+It does not yet cover questions 2 (control/prompted/fine-tuned comparison) or 3
+(adapter trained on the tested model rather than the base model) — those are
+follow-on work, not in scope here unless the README is updated to say otherwise.
+
+Concretely: test whether a trained SelfIE adapter can read a hidden secret word
+out of a model's activations, when the model was fine-tuned to never state that
+word in its output. This combination has not been reported in either source
+paper. Paper 2 (secret elicitation) tests logit lens, SAE readouts, and prompting
+attacks against a Taboo model, but never SelfIE. Paper 1 (the SelfIE adapter) is
+never tested against a model trained to suppress a specific fact. The gap between
+them is the experiment.
 
 ## 2. Model identity — read this before downloading anything
 
