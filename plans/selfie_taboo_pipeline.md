@@ -3,11 +3,16 @@
 Status: in progress. Build order (S9) steps 1-2 done: preflight resolved (S2,
 S4.4 -- see both sections for results), and the pipeline code (S5) plus local
 smoke-test scaffolding (S6) are implemented in `selfie_taboo/` and `smoke/` and
-have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`
-(shapes, caching, chat-template position-finding, scoring/aggregation, and the
-config-sweep machinery all verified; per S6, this does not mean the real 8B
-pipeline finds anything). Steps 3-6 (Vast.ai setup, manual validation
-transcripts, the real sweep) are not started. See
+have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`, all
+three arms including FINETUNED (via a random-init LoRA at the real taboo
+LoRAs' hyperparameters, standing in for the real trained weights, loaded
+through the same `PeftModel.from_pretrained` path the real 8B run uses):
+shapes, caching, chat-template position-finding, scoring/aggregation, LoRA
+hot-swap, and the config-sweep machinery all verified; per S6, this does not
+mean the real 8B pipeline finds anything -- the random LoRA has no secret to
+hide and the adapter is a stub, not a trained SelfIE adapter. Steps 3-6
+(Vast.ai setup, manual validation transcripts, the real sweep) are not
+started. See
 `research_notes_selfie_mechanism.md` in this directory for the source evidence
 behind every claim below (adapter code, HF model cards, and the two papers in
 `resources/`).
