@@ -310,12 +310,16 @@ in S6 are meant to front-load onto free local compute.
 Follow the pattern already working in `/work/ml/toy_probe_hiding/vast_setup`
 (`create_instance.py`, `remote_setup.sh`, `sync_vastai.py`), adapted for this
 project, but as a directory **outside this repo's root** rather than nested inside
-it — avoids the sandbox path issues already hit in that project. Suggested
-location: a sibling directory, e.g. `/work/ml/selfie_taboo_vast/`, as its own
-local git repo (no remote required, matching the toy_probe_hiding precedent).
+it — avoids the sandbox path issues already hit in that project.
 
-Two gotchas specific to this pipeline, both learned from the toy_probe_hiding
-setup's own history:
+Location, decided: `/home/jesse/ml_secret/vast_setups/selfie_taboo`, reachable
+from the repo root through the `vast` symlink. This is outside the agent
+sandbox, so agents cannot read or edit the setup scripts. A static copy for
+review can be dropped under `tmp/`; edits go to the real directory, by hand.
+`plans/vast_setup_review.md` reviews the current draft — read it before
+touching the setup.
+
+Three gotchas specific to this pipeline:
 
 - **`HF_HOME` must point under `/workspace`**, for the same reason
   `remote_setup.sh` already redirects `UV_CACHE_DIR` there: anything under `/root`
@@ -325,6 +329,14 @@ setup's own history:
   already is — written to the remote's `.env` only, never synced back. Needed
   because the base model, the taboo LoRAs, and the smoke-test model are all
   gated.
+- **Model download is a provisioning step, not a runtime step.** The remote's
+  agent account runs under a seccomp filter with no network egress, and cannot
+  read the `.env` holding `HF_TOKEN` — both deliberate. So it can never fetch
+  from HF itself. Root must prefetch every model into `HF_HOME` at provision
+  time (idempotently — `--start-stage environment` is a supported rerun), leave
+  the cache group-readable by the agent, and export `HF_HOME` in the agent's
+  forced command, where no `.env` or bashrc is ever sourced. See
+  `plans/vast_setup_review.md` §1.2.
 
 Source sync (this project's Python + configs) and results sync (generations,
 scores) should follow the same one-way mutagen-source / rsync-pull split already
@@ -345,5 +357,9 @@ proven in `sync_vastai.py`, rather than inventing a new mechanism.
 
 ## Open questions for the user
 
-- Exact Vast.ai directory location and whether it should also get a GitHub backup
-  remote, matching or diverging from the toy_probe_hiding precedent.
+- Whether the Vast.ai setup directory should also get a GitHub backup remote,
+  matching or diverging from the toy_probe_hiding precedent. Its location is
+  settled — see §8.
+- Whether to drop Weights & Biases from the remote setup entirely. This
+  pipeline does no training (§7), so `HF_TOKEN` would become the single
+  per-session secret. See `plans/vast_setup_review.md` §4.2.
