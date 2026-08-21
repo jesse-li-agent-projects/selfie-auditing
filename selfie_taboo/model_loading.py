@@ -63,7 +63,7 @@ def load_base_model(
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         device_map=device,
-        torch_dtype=getattr(torch, dtype),
+        dtype=getattr(torch, dtype),
     )
     model.eval()
     return model

@@ -139,6 +139,11 @@ def save_hidden_states(
     path.parent.mkdir(parents=True, exist_ok=True)
     tensors = {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}
     safetensors_save_file(tensors, str(path))
+    # safetensors always creates the file at mode 0600 regardless of umask,
+    # which defeats a directory's group ACL (unlike a plain open()). Loosen it
+    # back to the ACL's intent so the cache is readable by whoever can read
+    # the rest of a run's output.
+    path.chmod(0o664)
 
 
 def load_hidden_states(

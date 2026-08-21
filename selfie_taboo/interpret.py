@@ -102,6 +102,13 @@ def generate_interpretations(
 
         outputs = model.generate(
             inputs_embeds=embeddings,
+            # Every row is an identical copy of the same template (no padding
+            # ever exists within a batch here), but pad_token_id ==
+            # eos_token_id makes that ambiguous to generate() without an
+            # explicit mask -- so state it rather than let it guess.
+            attention_mask=torch.ones(
+                embeddings.shape[:2], dtype=torch.long, device=device
+            ),
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             do_sample=True,
