@@ -31,10 +31,17 @@ SMOKE_WORD = "banana"  # fake secret, only exercises prompt/scoring code paths
 # (research_notes_selfie_mechanism.md S3), so the random adapter this
 # generates has the same shape (rank, target modules) as the real thing --
 # only the weights differ (random init vs. trained).
+#
+# init_lora_weights=False is load-bearing, not decorative: PEFT's default
+# (True) follows the LoRA paper and zero-inits lora_B, so DeltaW = B @ A = 0
+# at init regardless of lora_A -- the adapter would be an exact no-op and
+# this arm would silently stop testing anything. False gives fully random
+# (nonzero) weights on both A and B.
 RANDOM_LORA_HYPERPARAMS = dict(
     r=16,
     lora_alpha=32,
     lora_dropout=0.0,
+    init_lora_weights=False,
     target_modules=[
         "down_proj",
         "gate_proj",

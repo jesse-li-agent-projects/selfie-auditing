@@ -124,7 +124,23 @@ if __name__ == "__main__":
         config = smoke_config(output_dir)
         tokenizer = load_tokenizer(config.base_model)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
+        smoke_lora_baseline = None
         if Arm.FINETUNED in config.arms:
+            # Captured before create_random_lora() wraps the model, so the
+            # self-check below can confirm unload() hands back a genuinely
+            # clean base model, not just one that "looks" clean.
+            from selfie_taboo.extract import extract_hidden_states as _extract_baseline
+
+            smoke_lora_baseline = _extract_baseline(
+                model,
+                tokenizer,
+                config.secret_prompt,
+                None,
+                [config.layers[0]],
+                [config.positions[0]],
+                args.device,
+            )[(config.layers[0], config.positions[0])]
+
             # No real taboo LoRA exists at 1B scale -- generate a random-init
             # one (same hyperparams as the real ones) and save it where
             # attach_taboo_loras() below expects to find it, so the FINETUNED
@@ -165,6 +181,53 @@ if __name__ == "__main__":
         if Arm.FINETUNED in config.arms
         else model
     )
+
+    if args.smoke and smoke_lora_baseline is not None:
+        # Self-check, not a demonstration: confirms the random LoRA actually
+        # perturbs the forward pass when active, and that disable_adapter()
+        # gives back the same result as the pre-wrap base model. Without
+        # this, a bug where set_adapter()/disable_adapter() silently no-ops
+        # (or, as happened once during development, a zero-initialized
+        # lora_B making the "random" adapter an exact no-op) would leave
+        # every arm producing plausible output while testing nothing.
+        from selfie_taboo.extract import extract_hidden_states
+
+        layer0, position0 = config.layers[0], config.positions[0]
+        active = extract_hidden_states(
+            peft_model,
+            tokenizer,
+            config.secret_prompt,
+            None,
+            [layer0],
+            [position0],
+            args.device,
+        )[(layer0, position0)]
+        with peft_model.disable_adapter():
+            disabled = extract_hidden_states(
+                peft_model,
+                tokenizer,
+                config.secret_prompt,
+                None,
+                [layer0],
+                [position0],
+                args.device,
+            )[(layer0, position0)]
+
+        active_vs_disabled = (active - disabled).abs().max().item()
+        disabled_vs_baseline = (disabled - smoke_lora_baseline).abs().max().item()
+        print(
+            f"[smoke] LoRA self-check: active-vs-disabled diff={active_vs_disabled:.4f}, "
+            f"disabled-vs-pre-wrap-baseline diff={disabled_vs_baseline:.6f}"
+        )
+        assert active_vs_disabled > 1e-3, (
+            "random LoRA had no measurable effect on the forward pass "
+            f"(max diff {active_vs_disabled}) -- likely a no-op adapter (check init_lora_weights)"
+        )
+        assert disabled_vs_baseline < 1e-3, (
+            "disable_adapter() output differs from the pre-wrap base model "
+            f"(max diff {disabled_vs_baseline}) -- unload()/disable_adapter() may not be "
+            "giving back a clean base model"
+        )
 
     results = run(
         config,
