@@ -8,8 +8,15 @@ three arms including FINETUNED (via a random-init LoRA at the real taboo
 LoRAs' hyperparameters, standing in for the real trained weights, loaded
 through the same `PeftModel.from_pretrained` path the real 8B run uses):
 shapes, caching, chat-template position-finding, scoring/aggregation, LoRA
-hot-swap, and the config-sweep machinery all verified; per S6, this does not
-mean the real 8B pipeline finds anything -- the random LoRA has no secret to
+hot-swap, and the config-sweep machinery all verified. The LoRA hot-swap
+claim is backed by a runtime self-check (`run_pipeline.py`, `--smoke`), not
+just "ran without an exception" -- it confirms the adapter measurably changes
+a forward pass when active and that `disable_adapter()`/`unload()` hand back
+an identical-to-baseline model when not (this check exists because the first
+version of the random LoRA was, unnoticed until reviewed, a mathematical
+no-op: PEFT's default init zero-initializes `lora_B`, so `disable_adapter()`
+and "adapter active" produced bit-identical output). Per S6, none of this
+means the real 8B pipeline finds anything -- the random LoRA has no secret to
 hide and the adapter is a stub, not a trained SelfIE adapter. Steps 3-6
 (Vast.ai setup, manual validation transcripts, the real sweep) are not
 started. See
