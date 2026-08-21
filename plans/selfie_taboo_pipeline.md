@@ -91,8 +91,7 @@ different things. Do not conflate them when writing the extraction code.
   it): suppression by instruction. The secret is still in context; only the
   model's stated policy is holding it back.
 - **Fine-tuned** (LoRA taboo model, no system prompt): suppression by weights. The
-  secret is not in context at all — it was learned during training. **This is the
-  only arm that tests the actual research question.**
+  secret is not in context at all — it was learned during training.
 
 State this framing in every results table. A single hit-rate number across all
 three arms, presented as three equivalent conditions, overstates what was found.
