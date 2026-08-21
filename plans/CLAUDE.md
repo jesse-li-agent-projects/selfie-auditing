@@ -7,12 +7,13 @@ This directory contains plans for agents.
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
 - selfie_taboo_pipeline.md
-    - In progress (pipeline code + local smoke scaffolding implemented in
-      `selfie_taboo/` and `smoke/`; smoke pass itself not yet run, blocked on HF
-      gated-repo access). Tests whether a trained SelfIE adapter
-      (wikipedia-scalar-affine, Llama-3.1-8B-Instruct) can read a taboo model's
-      hidden secret word out of its activations. See `research_notes_selfie_mechanism.md`
-      in this directory for the source evidence backing the plan's claims.
+    - In progress (build order steps 1-2 done: pipeline code + local smoke
+      scaffolding implemented and verified end-to-end against
+      Llama-3.2-1B-Instruct; Vast.ai setup and the real 8B sweep not started).
+      Tests whether a trained SelfIE adapter (wikipedia-scalar-affine,
+      Llama-3.1-8B-Instruct) can read a taboo model's hidden secret word out of
+      its activations. See `research_notes_selfie_mechanism.md` in this
+      directory for the source evidence backing the plan's claims.
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past

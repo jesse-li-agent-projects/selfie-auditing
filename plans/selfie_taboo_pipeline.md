@@ -1,11 +1,13 @@
 # Plan: SelfIE adapter probe of Taboo fine-tuned models
 
-Status: in progress. Build order (S9) steps 1-2 done: preflight mean-vector
-coverage check resolved (S4.4), and the pipeline code (S5) plus local smoke-test
-scaffolding (S6) are implemented in `selfie_taboo/` and `smoke/`. The smoke pass
-itself has not actually run yet -- blocked on HF gated-repo access for
-`meta-llama/Llama-3.2-1B-Instruct`, pending approval. Steps 3-6 (Vast.ai setup,
-manual validation transcripts, the real sweep) are not started. See
+Status: in progress. Build order (S9) steps 1-2 done: preflight resolved (S2,
+S4.4 -- see both sections for results), and the pipeline code (S5) plus local
+smoke-test scaffolding (S6) are implemented in `selfie_taboo/` and `smoke/` and
+have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`
+(shapes, caching, chat-template position-finding, scoring/aggregation, and the
+config-sweep machinery all verified; per S6, this does not mean the real 8B
+pipeline finds anything). Steps 3-6 (Vast.ai setup, manual validation
+transcripts, the real sweep) are not started. See
 `research_notes_selfie_mechanism.md` in this directory for the source evidence
 behind every claim below (adapter code, HF model cards, and the two papers in
 `resources/`).
@@ -47,7 +49,16 @@ Three HF resources must line up on one base model:
 These two repo names (`Meta-Llama-3.1-8B-Instruct` vs. `Llama-3.1-8B-Instruct`)
 are very likely the same weights under an old and a new HF repo name, but this
 must be confirmed, not assumed. A silent mismatch would still produce
-fluent-looking SelfIE output — the failure would be invisible. Step 1 of
+fluent-looking SelfIE output — the failure would be invisible.
+
+**Preflight result (confirmed 2026-08-21):** `config.json` and
+`model.safetensors.index.json` are byte-identical between
+`meta-llama/Llama-3.1-8B-Instruct` and `meta-llama/Meta-Llama-3.1-8B-Instruct`
+(SHA-256 match on the index) — same weights, two repo names, as suspected but
+now confirmed rather than assumed. `num_hidden_layers = 32`, `hidden_size =
+4096`, matching what was "reported elsewhere" below.
+
+Step 1 of
 the pipeline is a preflight check: download both `config.json` files and the
 safetensors index, and confirm they match. While there, also read
 `config.json`'s `num_hidden_layers` (used to size the layer sweep in §4.4) and
