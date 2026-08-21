@@ -7,7 +7,9 @@ This directory contains plans for agents.
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
 - selfie_taboo_pipeline.md
-    - Draft, not yet implemented. Tests whether a trained SelfIE adapter
+    - In progress (pipeline code + local smoke scaffolding implemented in
+      `selfie_taboo/` and `smoke/`; smoke pass itself not yet run, blocked on HF
+      gated-repo access). Tests whether a trained SelfIE adapter
       (wikipedia-scalar-affine, Llama-3.1-8B-Instruct) can read a taboo model's
       hidden secret word out of its activations. See `research_notes_selfie_mechanism.md`
       in this directory for the source evidence backing the plan's claims.

@@ -1,8 +1,14 @@
 # Plan: SelfIE adapter probe of Taboo fine-tuned models
 
-Status: draft, not yet implemented. See `research_notes_selfie_mechanism.md` in this
-directory for the source evidence behind every claim below (adapter code, HF model
-cards, and the two papers in `resources/`).
+Status: in progress. Build order (S9) steps 1-2 done: preflight mean-vector
+coverage check resolved (S4.4), and the pipeline code (S5) plus local smoke-test
+scaffolding (S6) are implemented in `selfie_taboo/` and `smoke/`. The smoke pass
+itself has not actually run yet -- blocked on HF gated-repo access for
+`meta-llama/Llama-3.2-1B-Instruct`, pending approval. Steps 3-6 (Vast.ai setup,
+manual validation transcripts, the real sweep) are not started. See
+`research_notes_selfie_mechanism.md` in this directory for the source evidence
+behind every claim below (adapter code, HF model cards, and the two papers in
+`resources/`).
 
 ## 1. Goal
 
@@ -165,6 +171,22 @@ else's artifact), or (c) skip contrastive subtraction off layer 19 and note the
 adapter is running further out of distribution than it already is. Pick one
 explicitly and record the choice here once the preflight check reports back —
 don't leave it to whoever writes `extract.py`.
+
+**Preflight result (confirmed 2026-08-21):** `mean-vectors.safetensors` contains
+exactly one key, `layer_19` (metadata: `num_layers: 1`, `layer_indices: [19]`,
+computed over `keenanpepper/fifty-thousand-things` with prompt template
+`"Tell me about {title}."`). Coverage is layer-19-only, not 0-31 — confirming the
+suspicion above. **Decision: option (a)** — subtract the layer-19 mean vector at
+every swept layer. Reasoning: option (b) (fresh per-layer means) would require
+forward-passing the base model over the ~50k-prompt Wikipedia dataset once per
+swept layer, which is more compute than this experiment's entire generation
+budget (§7) for a benefit that only matters if the first-pass result is
+ambiguous; option (c) drops the contrastive framing (and thus adapter
+calibration) entirely, which is worse than a flagged, fixed-offset confound.
+Every result at `L != 19` therefore carries **two** stacked confounds to disclose
+in any write-up: adapter calibration (below) and mean-vector layer mismatch
+(here). Revisit option (b) as follow-on work only if a first-pass result looks
+promising enough to be worth de-confounding.
 
 Caveat, carried over from the earlier single-layer design: the
 `wikipedia-scalar-affine` adapter (§4.3) and its mean-subtraction vectors were
