@@ -237,8 +237,7 @@ selfie_taboo/
     scoring.py            # secret-word hit-rate scoring, aggregation (S4.6)
     run_pipeline.py       # CLI entry point, wires the above together
 smoke/
-    tiny_config.py         # Tier-0 config (GPT-2 fallback, S6)
-    small_llama_config.py  # Tier-1 config / combined Tier-0+1 config (S6)
+    small_llama_config.py  # smoke-test config, Llama-3.2-1B-Instruct (S6)
 ```
 
 Follow the project's CLI convention: argument parsing stays free of heavy imports
@@ -249,34 +248,28 @@ Cache extracted hidden states to disk (one file per arm x word x prompt x layer 
 position) before running any generation, so a crash or a parameter change in
 S4.3-4.6 never requires re-running the base model.
 
-## 6. Smoke testing — neither tier validates numbers
+## 6. Smoke testing — doesn't validate numbers
 
-Plain GPT-2 alone is not enough: it has no chat template and a different hidden
-dimension, so it cannot exercise the two most fragile parts of this pipeline — chat
-template construction and finding the `<|reserved_special_token_0|>` position by
-token ID. A small Llama-family Instruct model is needed for that.
+One local smoke pass, no separate small-model tier needed:
+[`meta-llama/Llama-3.2-1B-Instruct`](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
+shares its tokenizer, reserved-token vocabulary, and chat template with
+Llama-3.1-8B-Instruct — the parts of this pipeline most likely to break — and at
+~1.24B params is smaller than GPT-2 XL (1.5B), which is already confirmed to run
+locally on this machine, so it should fit comfortably too. Replace the real
+adapter with a stub (identity or a random-init projection at the 1B model's
+hidden size, since its hidden dim differs from the 8B model's) and run the full
+pipeline end to end: shapes, file formats, the caching layer, scoring and
+aggregation, the config-sweep machinery, chat-template rendering, and
+reserved-token position finding, all in one pass. The model is gated on HF, so
+this also doubles as an end-to-end `HF_TOKEN` check before renting anything.
 
-- **Combined Tier 0+1 (data-plumbing + template/position check), if it fits
-  locally.** [`meta-llama/Llama-3.2-1B-Instruct`](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
-  shares its tokenizer, reserved-token vocabulary, and chat template with
-  Llama-3.1-8B-Instruct, and is small enough to plausibly run on this machine —
-  confirm VRAM/RAM before committing rather than assuming. Replace the real
-  adapter with a stub (identity or a random-init projection at the 1B model's
-  hidden size, since its hidden dim differs from the 8B model's) and run the same
-  pipeline end to end: shapes, file formats, the caching layer, scoring and
-  aggregation, the config-sweep machinery, chat-template rendering, and
-  reserved-token position finding, all in one pass. The model is gated on HF, so
-  this also doubles as an end-to-end `HF_TOKEN` check before renting anything.
-- **Fallback: separate tiers, if the 1B model doesn't fit locally.**
-  - **Tier 0 (data-plumbing check).** GPT-2, or any small local model, with the
-    same stub-adapter approach. Runs on this machine, no GPU rental, no gated
-    download.
-  - **Tier 1 (template/position check).** The same Llama-3.2-1B-Instruct model
-    as above, run on a short cheap rental instead of locally.
+If it turns out not to run locally for some other reason (gating friction, an
+environment issue — not size), fall back to running this same smoke pass on a
+short cheap rental instead.
 
-Neither path checks whether the numbers mean anything — only the real 8B run does.
-Say so plainly in any report generated from smoke-test output, so a green smoke
-suite is never mistaken for a working experiment.
+A green smoke pass doesn't check whether the numbers mean anything — only the
+real 8B run does. Say so plainly in any report generated from smoke-test output,
+so a green smoke suite is never mistaken for a working experiment.
 
 ## 7. Compute and cost
 
@@ -330,7 +323,7 @@ setup's own history:
   re-downloading 16 GB of base-model weights.
 - **`HF_TOKEN` is a per-session secret**, passed the same way `WANDB_API_KEY`
   already is — written to the remote's `.env` only, never synced back. Needed
-  because the base model, the taboo LoRAs, and the Tier-1 smoke model are all
+  because the base model, the taboo LoRAs, and the smoke-test model are all
   gated.
 
 Source sync (this project's Python + configs) and results sync (generations,
@@ -340,10 +333,9 @@ proven in `sync_vastai.py`, rather than inventing a new mechanism.
 ## 9. Build order
 
 1. Preflight: confirm base-model repo-name equivalence (S2). No GPU needed.
-2. Smoke pipeline end to end, entirely local (S6): combined Tier 0+1 using
-   Llama-3.2-1B-Instruct if it fits locally, otherwise the Tier 0 (GPT-2) fallback.
-3. If the combined tier didn't fit locally in step 2, run Tier 1
-   (Llama-3.2-1B-Instruct, chat-template check) on a short cheap rental instead.
+2. Smoke pipeline end to end, locally, using Llama-3.2-1B-Instruct (S6).
+3. If it can't run locally for some non-size reason, run the same smoke pass on
+   a short cheap rental instead.
 4. Stand up the Vast.ai remote (S8), run the manual validation transcripts (S4.7)
    for all three arms on one secret word.
 5. Run the sweep (S4.3-S4.6, layer x position, single word, single adapter),
