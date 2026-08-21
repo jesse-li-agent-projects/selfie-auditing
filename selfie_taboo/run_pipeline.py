@@ -115,12 +115,23 @@ if __name__ == "__main__":
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.smoke:
-        from smoke.small_llama_config import IdentityAdapter, smoke_config
+        from smoke.small_llama_config import (
+            IdentityAdapter,
+            create_random_lora,
+            smoke_config,
+        )
 
         config = smoke_config(output_dir)
         tokenizer = load_tokenizer(config.base_model)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
-        peft_model = model  # no LoRA arm in the smoke config -- see its docstring
+        if Arm.FINETUNED in config.arms:
+            # No real taboo LoRA exists at 1B scale -- generate a random-init
+            # one (same hyperparams as the real ones) and save it where
+            # attach_taboo_loras() below expects to find it, so the FINETUNED
+            # arm exercises the exact same load path the real 8B run uses.
+            model = create_random_lora(
+                model, config.taboo_lora_repo_template, config.words[0]
+            )
         adapter = IdentityAdapter()
         mean_vector = (
             None  # smoke config has no real mean vectors; skip contrastive step
@@ -140,15 +151,20 @@ if __name__ == "__main__":
         )
         tokenizer = load_tokenizer(config.base_model)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
-        peft_model = (
-            attach_taboo_loras(model, config.words, config.taboo_lora_repo_template)
-            if Arm.FINETUNED in config.arms
-            else model
-        )
         adapter = load_wikipedia_adapter(
             config.adapter_repo, config.adapter_filename, args.device
         )
         mean_vector = load_mean_vector(config.adapter_repo, config.mean_vector_layer)
+
+    # Shared by both paths: attach every word's taboo LoRA (real, downloaded
+    # from HF, or smoke's freshly generated random one -- either way saved to
+    # disk at config.taboo_lora_repo_template by this point) via the same
+    # PeftModel.from_pretrained() load path.
+    peft_model = (
+        attach_taboo_loras(model, config.words, config.taboo_lora_repo_template)
+        if Arm.FINETUNED in config.arms
+        else model
+    )
 
     results = run(
         config,
