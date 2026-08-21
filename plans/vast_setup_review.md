@@ -19,6 +19,11 @@ sync-ignore advice in §3.1 is reasoned from the code, not from a directory
 listing. `mutagen` is not installed in the sandbox either — §3.1 gives a
 command to confirm the one claim that needs it.
 
+Every `file:line` citation below points at the `tmp/vast_tmp/` draft as it
+stood at the time of this review. That copy is scratch and will not track the
+real directory, so treat the line numbers as a starting point and the
+surrounding quotes as the real anchor.
+
 ---
 
 ## 1. Blockers — these break the first rental
@@ -65,11 +70,20 @@ a runtime step.** Concretely:
 - The cache goes under `/workspace` (per plan §8), group-readable by `agent`.
 - `AGENT_SHELL` exports `HF_HOME`, and also `HF_HUB_OFFLINE=1` so a cache miss
   fails immediately with a clear message instead of hanging.
-- Add a positive control to `verify_agent_lockdown()`: the agent can read
-  `HF_HOME` and resolve one model offline. This mirrors the existing
-  runs/-writable control at `remote_setup.sh:389-392`, and it exists for the
-  same reason — plan §7 says human iteration time on a rented box is the main
-  cost.
+- Add a positive control to `verify_agent_lockdown()`. Make it **load a model
+  through the venv**, not just read the cache directory — a directory-read
+  check passes whether or not the next point holds. This mirrors the existing
+  runs/-writable control at `remote_setup.sh:389-392`, and exists for the same
+  reason: plan §7 says human iteration time on a rented box is the main cost.
+
+**Check whether the agent needs write access to the cache, not just read.**
+`huggingface_hub` uses `filelock`, and may create entries under `.locks/` even
+on a cache hit. `remote_setup.sh` runs non-interactively over ssh, so the
+`umask 002` at `bashrc_remote.sh:1` does not apply to it — a root-created cache
+lands 755/644, and the agent then gets `EACCES` creating a lock. If that is
+real, the fix mirrors the existing pattern exactly:
+`install --directory --owner root --group agent --mode 2775` on the cache root,
+the same treatment `runs/` gets at `remote_setup.sh:319`.
 
 **Make the prefetch idempotent.** The `UV_CACHE_DIR` comment at
 `remote_setup.sh:23-28` exists because `--start-stage environment` is a
@@ -171,8 +185,9 @@ Two pieces of static evidence that the negations are doing nothing:
 
 **This decides how much care §3.2 needs, so confirm it first.** `mutagen` is
 not installed in the sandbox. Run a source session against a scratch target and
-check whether a `.md` file transfers, or read the resolved spec with
-`mutagen sync list --long <name>`.
+check whether a `.md` file transfers. That is the only test that settles it —
+`mutagen sync list --long` prints the ignore list as configured, which tells
+you nothing about whether a negation without a base deny does anything.
 
 If it is a blocklist, then it is the only thing between `human_only/` and a
 rented GPU box, and the whole list needs an audit rather than three added
@@ -205,6 +220,12 @@ money.
   returns 0 on the very first poll, the script reads that as "all work appears
   finished", and it destroys the box mid-pipeline. **Fails unsafe.** Point it
   at `run_pipeline.py` (plan §5).
+
+Fix them together. Today the stale label hides the stale pgrep: the script
+exits at `find_instance_id` before it ever polls. The unsafe path opens the
+moment someone corrects the `vtao` references and leaves the pgrep alone —
+which is exactly the order a sweep for stale toy_probe_hiding names would
+follow.
 
 Also: `sync_flush()` (`destroy_vtao_safely.py:68`) shells out to
 `python sync_vastai.py`, relative to the working directory. Use `sys.executable`
