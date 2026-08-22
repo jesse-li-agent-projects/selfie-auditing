@@ -96,11 +96,9 @@ def arm_active(
 ) -> Iterator[None]:
     """Put `model` into the state matching `arm` for the duration of the block.
 
-    CONTROL/PROMPTED run without any taboo LoRA active; FINETUNED activates the
-    word's adapter. `model` may be a raw base model with no adapters attached
-    at all (e.g. the smoke config, which has no 1B-scale taboo LoRA to load) or
-    a PeftModel wrapping one or more taboo LoRAs -- CONTROL/PROMPTED handle
-    both correctly, since a model with nothing loaded has nothing to disable.
+    CONTROL/PROMPTED disable any taboo LoRA; FINETUNED activates the word's
+    adapter. `model` may be a plain base model (e.g. the smoke config) or a
+    PeftModel wrapping one or more taboo LoRAs.
     """
     if arm is Arm.FINETUNED:
         model.set_adapter(word)

@@ -52,19 +52,11 @@ def find_positions(
 ) -> dict[Position, int]:
     """Locate the two candidate token positions in a formatted prompt (S4.4).
 
-    ASSISTANT_BOUNDARY is always the last token (that's what
-    add_generation_prompt=True guarantees). LAST_CONTENT_TOKEN is found by
-    searching for the user turn's closing <|eot_id|> rather than hardcoding an
-    offset from the end, so it survives chat-template changes across model
-    versions.
-
-    Uses the *last* <|eot_id|> in the sequence, not the first: CONTROL/PROMPTED
-    render a system turn before the user turn, each closed by its own
-    <|eot_id|>, and the first one belongs to the system turn -- which for this
-    project's prompts contains the secret word itself. add_generation_prompt=True
-    guarantees the sequence ends with an unclosed assistant header, so the last
-    <|eot_id|> in the sequence is always the user turn's closer, regardless of
-    how many turns (system or otherwise) precede it.
+    ASSISTANT_BOUNDARY is always the last token (guaranteed by
+    add_generation_prompt=True). LAST_CONTENT_TOKEN uses the *last* <|eot_id|>
+    rather than the first or a fixed offset: CONTROL/PROMPTED prepend a system
+    turn (containing the secret word itself) closed by its own <|eot_id|>, so
+    only the last one is guaranteed to be the user turn's closer.
     """
     ids = input_ids.tolist()
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")

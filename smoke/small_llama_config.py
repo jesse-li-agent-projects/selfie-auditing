@@ -83,27 +83,22 @@ class RandomAffineAdapter:
 def create_random_lora(
     model: PreTrainedModel, save_dir_template: str, word: str, seed: int = 0
 ) -> PreTrainedModel:
-    """Build a random-init LoRA (real taboo LoRA hyperparams, random weights)
-    and save it where `save_dir_template.format(word=word)` points.
+    """Build a random-init LoRA (real taboo LoRA hyperparams, random weights),
+    save it where `save_dir_template.format(word=word)` points, and return the
+    clean, unwrapped base model.
 
-    Saves to disk and reloads via `attach_taboo_loras` rather than handing
-    back the wrapped model directly, so the smoke test exercises the exact
-    same `PeftModel.from_pretrained` load path the real 8B taboo LoRAs use --
-    not a shortcut around it. Returns the clean, unwrapped base model
-    (`PeftModel.unload()` removes the adapter modules without merging them,
-    restoring the model this function was given).
-
-    Built and saved under the default adapter name (not `word`): a PeftModel
-    with a non-default adapter name nests save_pretrained()'s output one
-    directory deeper (save_dir/<adapter_name>/adapter_config.json), which
-    doesn't match the real taboo repos' single-adapter layout
-    (adapter_config.json at the repo root) that attach_taboo_loras() expects.
-    The adapter gets its real name (`word`) only when attach_taboo_loras()
-    reloads it, same as for a real HF repo.
+    Saves under the default adapter name and reloads via `attach_taboo_loras`
+    rather than handing back the wrapped model directly, so the smoke test
+    exercises the exact same `PeftModel.from_pretrained` load path the real 8B
+    taboo LoRAs use.
     """
     torch.manual_seed(seed)
     peft_model = get_peft_model(model, LoraConfig(**RANDOM_LORA_HYPERPARAMS))
     save_dir = Path(save_dir_template.format(word=word))
+    # Default adapter name only: a named adapter nests save_pretrained()'s
+    # output one directory deeper, which doesn't match the real taboo repos'
+    # single-adapter layout that attach_taboo_loras() expects. The adapter
+    # gets its real name (`word`) only when attach_taboo_loras() reloads it.
     peft_model.save_pretrained(save_dir)
     # save_pretrained's adapter_model.safetensors comes out at mode 0600
     # regardless of umask (same issue fixed for the hidden-state cache in
