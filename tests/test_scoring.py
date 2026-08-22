@@ -1,4 +1,4 @@
-from selfie_taboo.scoring import contains_secret, score_cell
+from scoring import contains_secret, score_cell
 
 
 def test_contains_secret_exact_match():

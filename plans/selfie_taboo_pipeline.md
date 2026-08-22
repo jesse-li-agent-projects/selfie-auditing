@@ -2,8 +2,8 @@
 
 Status: in progress. Build order (S9) steps 1-2 done: preflight resolved (S2,
 S4.4 -- see both sections for results), and the pipeline code (S5) plus local
-smoke-test scaffolding (S6) are implemented in `selfie_taboo/` and `smoke/` and
-have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`, all
+smoke-test scaffolding (S6) are implemented at the repo root and in `smoke/`
+and have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`, all
 three arms including FINETUNED (via a random-init LoRA at the real taboo
 LoRAs' hyperparameters, standing in for the real trained weights, loaded
 through the same `PeftModel.from_pretrained` path the real 8B run uses):
@@ -268,19 +268,18 @@ rental time at human typing speed.
 
 ## 5. Pipeline architecture
 
-Proposed layout under the repo root (names indicative, adjust while building):
+Layout: plain scripts at the repo root, not a package (S5 as implemented):
 
 ```
-selfie_taboo/
-    config.py           # experiment config: arms, words, layers, positions, N
-                         # (adapter fixed to wikipedia-scalar-affine for now, S4.3)
-    model_loading.py    # base model load, LoRA hot-swap, tokenizer setup
-    validate.py         # fixed-transcript behavior check (S4.7)
-    extract.py           # forward pass + hidden-state caching (S4.4)
-    interpret.py         # adapter loading, contrastive subtraction, injection,
-                          # generation (S3, S4.3)
-    scoring.py            # secret-word hit-rate scoring, aggregation (S4.6)
-    run_pipeline.py       # CLI entry point, wires the above together
+config.py           # experiment config: arms, words, layers, positions, N
+                     # (adapter fixed to wikipedia-scalar-affine for now, S4.3)
+model_loading.py    # base model load, LoRA hot-swap, tokenizer setup
+validate.py         # fixed-transcript behavior check (S4.7)
+extract.py           # forward pass + hidden-state caching (S4.4)
+interpret.py         # adapter loading, contrastive subtraction, injection,
+                      # generation (S3, S4.3)
+scoring.py            # secret-word hit-rate scoring, aggregation (S4.6)
+run_pipeline.py       # CLI entry point, wires the above together
 smoke/
     small_llama_config.py  # smoke-test config, Llama-3.2-1B-Instruct (S6)
 ```

@@ -1,4 +1,4 @@
-from selfie_taboo.config import TABOO_WORDS, layers_full, layers_smoke
+from config import TABOO_WORDS, layers_full, layers_smoke
 
 
 def test_layers_smoke_matches_plan_example():

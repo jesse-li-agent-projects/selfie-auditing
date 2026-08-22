@@ -17,7 +17,7 @@ from safetensors.torch import load_file as safetensors_load_file
 from safetensors.torch import save_file as safetensors_save_file
 from torch import Tensor
 
-from selfie_taboo.config import Arm, Position
+from config import Arm, Position
 
 
 class TokenizerLike(Protocol):

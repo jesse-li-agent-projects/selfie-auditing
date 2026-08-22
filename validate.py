@@ -52,7 +52,7 @@ def run_validation(
     """Generate one greedy response per prompt; returns a transcript list."""
     import torch
 
-    from selfie_taboo.extract import build_prompt
+    from extract import build_prompt
 
     transcripts = []
     for prompt in prompts:
@@ -80,7 +80,7 @@ def run_interactive(
 ) -> None:
     import torch
 
-    from selfie_taboo.extract import build_prompt
+    from extract import build_prompt
 
     print("Interactive validation mode. Ctrl-C to exit.")
     while True:
@@ -109,8 +109,8 @@ if __name__ == "__main__":
 
     import json
 
-    from selfie_taboo.config import BASE_MODEL_8B, TABOO_LORA_REPO_TEMPLATE, Arm
-    from selfie_taboo.model_loading import (
+    from config import BASE_MODEL_8B, TABOO_LORA_REPO_TEMPLATE, Arm
+    from model_loading import (
         arm_active,
         attach_taboo_loras,
         load_base_model,

@@ -1,7 +1,7 @@
 """CLI entry point: wires model loading -> extraction -> interpretation -> scoring.
 
-    python -m selfie_taboo.run_pipeline --smoke --output-dir smoke_results/
-    python -m selfie_taboo.run_pipeline --word gold --output-dir results/gold/
+    python run_pipeline.py --smoke --output-dir smoke_results/
+    python run_pipeline.py --word gold --output-dir results/gold/
 
 The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and a stub adapter
 so the whole pipeline can be exercised locally without the real 8B model or
@@ -40,14 +40,14 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
     scoring.CellResult-shaped dict, including every raw generation (plan S4.6:
     never keep only the aggregate rate).
     """
-    from selfie_taboo.extract import (
+    from extract import (
         cache_path,
         extract_hidden_states,
         save_hidden_states,
     )
-    from selfie_taboo.interpret import generate_interpretations, make_contrastive
-    from selfie_taboo.model_loading import arm_active, system_prompt_for
-    from selfie_taboo.scoring import score_cell
+    from interpret import generate_interpretations, make_contrastive
+    from model_loading import arm_active, system_prompt_for
+    from scoring import score_cell
 
     results: dict = {}
     for arm in config.arms:
@@ -104,8 +104,8 @@ if __name__ == "__main__":
     import json
     from pathlib import Path
 
-    from selfie_taboo.config import Arm, first_pass_config
-    from selfie_taboo.model_loading import (
+    from config import Arm, first_pass_config
+    from model_loading import (
         attach_taboo_loras,
         load_base_model,
         load_tokenizer,
@@ -129,7 +129,7 @@ if __name__ == "__main__":
             # Captured before create_random_lora() wraps the model, so the
             # self-check below can confirm unload() hands back a genuinely
             # clean base model, not just one that "looks" clean.
-            from selfie_taboo.extract import extract_hidden_states as _extract_baseline
+            from extract import extract_hidden_states as _extract_baseline
 
             smoke_lora_baseline = _extract_baseline(
                 model,
@@ -155,8 +155,8 @@ if __name__ == "__main__":
     else:
         from transformers import AutoConfig
 
-        from selfie_taboo.config import BASE_MODEL_8B
-        from selfie_taboo.interpret import load_mean_vector, load_wikipedia_adapter
+        from config import BASE_MODEL_8B
+        from interpret import load_mean_vector, load_wikipedia_adapter
 
         # Layer count comes from the model's own config, not an assumed 32
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
@@ -190,7 +190,7 @@ if __name__ == "__main__":
         # (or, as happened once during development, a zero-initialized
         # lora_B making the "random" adapter an exact no-op) would leave
         # every arm producing plausible output while testing nothing.
-        from selfie_taboo.extract import extract_hidden_states
+        from extract import extract_hidden_states
 
         layer0, position0 = config.layers[0], config.positions[0]
         active = extract_hidden_states(

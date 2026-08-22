@@ -20,7 +20,7 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from selfie_taboo.config import Arm
+from config import Arm
 
 # First-pass system prompts for the CONTROL / PROMPTED arms (plan S4.1). These
 # are this project's own wording, not verbatim from either source paper --

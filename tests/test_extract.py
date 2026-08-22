@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from selfie_taboo.config import Position
-from selfie_taboo.extract import find_positions
+from config import Position
+from extract import find_positions
 
 EOT_ID = 99
 

@@ -22,7 +22,7 @@ from peft import LoraConfig, get_peft_model
 from torch import Tensor
 from transformers import PreTrainedModel
 
-from selfie_taboo.config import Arm, PipelineConfig, Position, layers_smoke
+from config import Arm, PipelineConfig, Position, layers_smoke
 
 SMOKE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 SMOKE_WORD = "banana"  # fake secret, only exercises prompt/scoring code paths
