@@ -36,9 +36,10 @@ def parse_args():
 def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
     """Run extraction + interpretation + scoring for every cell in `config`.
 
-    Returns a nested dict: results[arm][word][layer][position] -> a
+    Returns a flat dict keyed by (arm, word, layer, position) -> a
     scoring.CellResult-shaped dict, including every raw generation (plan S4.6:
-    never keep only the aggregate rate).
+    never keep only the aggregate rate). See `nest_results` for the
+    arm -> word -> layer -> position shape the JSON output uses.
     """
     from extract import (
         cache_path,
@@ -49,10 +50,33 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
     from model_loading import arm_active, system_prompt_for
     from scoring import score_cell
 
+    def cell_result(hidden_states, word, layer, position) -> dict:
+        hidden_state = hidden_states[(layer, position)]
+        vector = (
+            make_contrastive(hidden_state, mean_vector)
+            if mean_vector is not None
+            else hidden_state
+        )
+        generations = generate_interpretations(
+            peft_model,
+            tokenizer,
+            adapter,
+            vector,
+            config.n_samples,
+            config.max_new_tokens,
+            config.temperature,
+            config.device,
+        )
+        cell = score_cell(generations, word)
+        return {
+            "generations": cell.generations,
+            "hits": cell.hits,
+            "hit_rate": cell.hit_rate,
+        }
+
     results: dict = {}
     for arm in config.arms:  # control/prompt/fine-tuned
-        results[arm.value] = {}
-        for word in config.words: # which word is taboo
+        for word in config.words:  # which word is taboo
             with arm_active(peft_model, arm, word):
                 system_prompt = system_prompt_for(arm, word)
                 hidden_states = extract_hidden_states(
@@ -67,35 +91,23 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
                 save_hidden_states(
                     cache_path(config.output_dir, arm, word), hidden_states
                 )
-
-                word_results: dict = {}
                 for layer in config.layers:
-                    word_results[layer] = {}
                     for position in config.positions:
-                        hidden_state = hidden_states[(layer, position)]
-                        vector = (
-                            make_contrastive(hidden_state, mean_vector)
-                            if mean_vector is not None
-                            else hidden_state
-                        )
-                        generations = generate_interpretations(
-                            peft_model,
-                            tokenizer,
-                            adapter,
-                            vector,
-                            config.n_samples,
-                            config.max_new_tokens,
-                            config.temperature,
-                            config.device,
-                        )
-                        cell = score_cell(generations, word)
-                        word_results[layer][position.value] = {
-                            "generations": cell.generations,
-                            "hits": cell.hits,
-                            "hit_rate": cell.hit_rate,
-                        }
-                results[arm.value][word] = word_results
+                        key = (arm.value, word, layer, position.value)
+                        results[key] = cell_result(hidden_states, word, layer, position)
     return results
+
+
+def nest_results(flat: dict) -> dict:
+    """Reshape `run`'s flat (arm, word, layer, position) keys into the nested
+    arm -> word -> layer -> position dict the JSON results file uses.
+    """
+    nested: dict = {}
+    for (arm, word, layer, position), cell in flat.items():
+        nested.setdefault(arm, {}).setdefault(word, {}).setdefault(layer, {})[
+            position
+        ] = cell
+    return nested
 
 
 if __name__ == "__main__":
@@ -239,5 +251,5 @@ if __name__ == "__main__":
 
     results_path = output_dir / "results.json"
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(nest_results(results), f, indent=2)
     print(f"Wrote results to {results_path}")

@@ -8,8 +8,8 @@ model reload (plan S6, "Model footprint").
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 from peft import PeftModel
@@ -93,7 +93,7 @@ def attach_taboo_loras(
 @contextmanager
 def arm_active(
     model: PreTrainedModel | PeftModel, arm: Arm, word: str
-) -> Iterator[None]:
+) -> Generator[None]:
     """Put `model` into the state matching `arm` for the duration of the block.
 
     CONTROL/PROMPTED disable any taboo LoRA; FINETUNED activates the word's
