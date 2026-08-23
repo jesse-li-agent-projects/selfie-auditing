@@ -117,7 +117,6 @@ def smoke_config(output_dir: Path, num_hidden_layers: int = 16) -> PipelineConfi
         base_model=SMOKE_MODEL,
         adapter_repo="",  # unused: smoke test injects a stub adapter directly
         adapter_filename="",
-        mean_vector_layer=-1,  # unused: smoke test skips contrastive subtraction
         taboo_lora_repo_template=str(output_dir / "random_lora" / "{word}"),
         words=[SMOKE_WORD],
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],

@@ -92,7 +92,8 @@ Full detail is in `research_notes_selfie_mechanism.md`. Summary:
    script hardcodes `L = 19`; this project sweeps `L` instead — see §4.4.
 2. The Wikipedia-trained adapters expect a **contrastive** vector: subtract a
    precomputed per-layer mean vector (`mean-vectors.safetensors`, same HF repo)
-   from the raw hidden state before passing it to the adapter.
+   from the raw hidden state before passing it to the adapter. This project's
+   own pipeline skips this step entirely — see §4.4 for why.
 3. `adapter.transform(vector)` returns a soft token embedding. The adapter itself
    is a small trained function (identity / scale / affine / low-rank — six
    variants exist, all a few thousand to ~17M parameters). It does not touch the
@@ -179,49 +180,34 @@ what checks it, not an assumption baked into the design.
   until the preflight check confirms it) — 8 layers at `N = 32`.
 - Full sweep: every layer, `L ∈ {0, 1, ..., N-1}`.
 
-**Mean-vector coverage confirms the reference repo's own precedent settles
-this, rather than leaving a choice to make.** The contrastive subtraction in §3
-step 2 needs a `mean-vectors.safetensors` entry for every swept layer.
-**Preflight result (confirmed 2026-08-21):** that file contains exactly one
-key, `layer_19` (metadata: `num_layers: 1`, `layer_indices: [19]`, computed
-over `keenanpepper/fifty-thousand-things` with prompt template `"Tell me
-about {title}."`) — coverage is layer-19-only, matching the adapter's own
-training (see caveat below).
+**No mean-subtraction, at any layer — matching the reference repo's own
+cross-layer sweep, not a per-layer decision.** An earlier version of this plan
+weighed subtracting the layer-19 mean vector (from `mean-vectors.safetensors`,
+confirmed by preflight on 2026-08-21 to cover `layer_19` only — metadata
+`num_layers: 1`, `layer_indices: [19]`, computed over
+`keenanpepper/fifty-thousand-things` with prompt template `"Tell me about
+{title}."`) at every swept layer, computing fresh per-layer means, or dropping
+subtraction off layer 19. That framing turned out to be unnecessary: the
+reference repo's own bridge-entity / two-hop sweep — `evals/bridge_entity/
+run_selfie_bridge_extraction.py`, the implementation of Paper 1's §3.6
+TwoHopFact test this experiment is modeled on — settles it directly.
+`create_soft_token()` feeds the raw hidden state straight into
+`adapter.transform()` at *every* layer it sweeps, including layer 19 itself
+(`"layers": "all"`, no special case for 19). There is no mean subtraction
+anywhere in that script, at any layer. This sweep does the same: no
+`mean-vectors.safetensors` lookup, no subtraction step, at any layer —
+`interpret.generate_interpretations()` takes the raw hidden state directly.
 
-The reference repo's own cross-layer sweep — `evals/bridge_entity/
-run_selfie_bridge_extraction.py`, the implementation of Paper 1's bridge-entity
-/ two-hop test (§3.6, TwoHopFact) this experiment is modeled on — resolves the
-question directly: `create_soft_token()` feeds the raw hidden state straight
-into `adapter.transform()` at *every* layer it sweeps, including layer 19
-itself (`"layers": "all"`, no special case for 19). There is no mean
-subtraction anywhere in that script. So this sweep does the same: contrastive
-subtraction (`interpret.make_contrastive`) only fires at layer 19 (the mean
-vector's own layer); every other swept layer, including 19's neighbors,
-injects the raw hidden state. This isn't a compromise pick between competing
-options — it's what the paper's own analogous experiment does, and it's
-simpler than maintaining a fixed-offset correction with no precedent, so there
-is nothing to revisit as follow-on work.
-
-One consequence worth stating plainly: because the bridge-entity script never
-subtracts a mean at *any* layer, layer 19 is not "clean" here either — the
-adapter was trained on mean-*subtracted* vectors, so even the layer-19 cell in
-this sweep is evaluating the adapter slightly out of its training
-distribution (raw hidden state, not contrastive). That's a single confound —
-adapter calibration mismatch — shared flatly across every layer in the sweep,
-not one that gets worse the further you get from layer 19. See the caveat
-below.
-
-Caveat, carried over from the earlier single-layer design: the
-`wikipedia-scalar-affine` adapter (§4.3) and its mean-subtraction vectors were
-calibrated at layer 19 specifically (Paper 1, `research_notes_selfie_mechanism.md`
-§4.4, "Extraction layers by model"). Running it on raw (non-contrastive)
-hidden states, at any layer including 19, is out-of-distribution for the
-adapter's own training. Flag this in any results write-up: a null result at
-any layer could mean "nothing to find there" or "adapter doesn't transfer to
-raw activations," and this design alone can't tell those apart. §4.3's
-separate, mean-subtracted, layer-19-only extraction (matching the adapter's
-actual trained use case, `examples/contrastive_topic_vector.py`) is the one
-place in this project where that confound doesn't apply.
+Consequence worth stating plainly: the `wikipedia-scalar-affine` adapter was
+trained on mean-*subtracted* Wikipedia contrastive vectors at layer 19 only
+(Paper 1, `research_notes_selfie_mechanism.md` §4.4, "Extraction layers by
+model"). Injecting raw hidden states means every cell in this sweep, including
+layer 19, evaluates the adapter out of its training distribution. That's a
+single confound — adapter calibration mismatch — shared flatly across every
+layer, not one that grows the further you get from layer 19 (there's no
+special "clean" layer in this design). Flag this in any results write-up: a
+null result anywhere could mean "nothing to find there" or "adapter doesn't
+transfer to raw activations," and this design alone can't tell those apart.
 
 One forward pass gives every layer's and every position's hidden state for free —
 the only thing that costs money is generation. Cache all layers x positions, but

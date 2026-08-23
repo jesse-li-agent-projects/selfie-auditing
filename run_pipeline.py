@@ -34,7 +34,7 @@ def parse_args():
     return args
 
 
-def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
+def run(config, *, adapter, tokenizer, peft_model) -> dict:
     """Run extraction + interpretation + scoring for every cell in `config`.
 
     Returns a flat dict keyed by (arm, word, layer, position) -> a
@@ -47,27 +47,21 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
         extract_hidden_states,
         save_hidden_states,
     )
-    from interpret import generate_interpretations, make_contrastive
+    from interpret import generate_interpretations
     from model_loading import arm_active, system_prompt_for
     from scoring import score_cell
 
     def cell_result(hidden_states, word, layer, position) -> dict:
+        # No contrastive (mean-subtracted) preprocessing here -- see plan S4.4:
+        # the reference repo's own bridge-entity layer sweep
+        # (evals/bridge_entity/run_selfie_bridge_extraction.py) injects raw
+        # hidden states at every layer, including 19, so this sweep does too.
         hidden_state = hidden_states[(layer, position)]
-        # Contrastive subtraction only applies at the mean vector's own layer
-        # (the adapter's calibration layer) -- see interpret.make_contrastive
-        # and plan S4.4 for why every other swept layer gets the raw hidden
-        # state instead, matching the reference repo's own bridge-entity
-        # layer sweep (evals/bridge_entity/run_selfie_bridge_extraction.py).
-        vector = (
-            make_contrastive(hidden_state, mean_vector)
-            if mean_vector is not None and layer == config.mean_vector_layer
-            else hidden_state
-        )
         generations = generate_interpretations(
             peft_model,
             tokenizer,
             adapter,
-            vector,
+            hidden_state,
             config.n_samples,
             config.max_new_tokens,
             config.temperature,
@@ -164,14 +158,11 @@ if __name__ == "__main__":
                 model, config.taboo_lora_repo_template, config.words[0]
             )
         adapter = IdentityAdapter()
-        mean_vector = (
-            None  # smoke config has no real mean vectors; skip contrastive step
-        )
     else:
         from transformers import AutoConfig
 
         from config import BASE_MODEL_8B
-        from interpret import load_mean_vector, load_wikipedia_adapter
+        from interpret import load_wikipedia_adapter
 
         # Layer count comes from the model's own config, not an assumed 32
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
@@ -185,7 +176,6 @@ if __name__ == "__main__":
         adapter = load_wikipedia_adapter(
             config.adapter_repo, config.adapter_filename, args.device
         )
-        mean_vector = load_mean_vector(config.adapter_repo, config.mean_vector_layer)
 
     # Shared by both paths: attach every word's taboo LoRA (real, downloaded
     # from HF, or smoke's freshly generated random one -- either way saved to
@@ -247,7 +237,6 @@ if __name__ == "__main__":
     results = run(
         config,
         adapter=adapter,
-        mean_vector=mean_vector,
         tokenizer=tokenizer,
         peft_model=peft_model,
     )

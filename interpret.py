@@ -1,9 +1,14 @@
-"""Adapter loading, contrastive subtraction, injection, generation (plan S3, S4.3).
+"""Adapter loading, injection, generation (plan S3, S4.3).
 
 Mechanism (verbatim from the adapter's own reference script,
 research_notes_selfie_mechanism.md S1.4): injection happens at the embedding
 layer via `inputs_embeds`, never a forward hook, and is decoupled from
 whatever layer the hidden state was extracted from.
+
+Raw hidden states are injected directly, with no mean-subtraction
+preprocessing -- see plan S4.4: the reference repo's own bridge-entity layer
+sweep (evals/bridge_entity/run_selfie_bridge_extraction.py) does the same,
+never subtracting a mean at any layer.
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ from typing import Protocol
 import torch
 from huggingface_hub import hf_hub_download
 from jaxtyping import Float
-from safetensors.torch import load_file as safetensors_load_file
 from selfie_adapters import load_adapter
 from torch import Tensor
 
@@ -42,31 +46,12 @@ def load_wikipedia_adapter(
     return load_adapter(adapter_path, device=device)
 
 
-def load_mean_vector(adapter_repo: str, layer: int) -> Float[Tensor, "hidden"]:
-    mean_vectors_path = hf_hub_download(
-        repo_id=adapter_repo, filename="mean-vectors.safetensors"
-    )
-    mean_vectors = safetensors_load_file(mean_vectors_path)
-    return mean_vectors[f"layer_{layer}"]
-
-
-def make_contrastive(
-    hidden_state: Float[Tensor, "hidden"], mean_vector: Float[Tensor, "hidden"]
-) -> Float[Tensor, "hidden"]:
-    """Subtract the mean vector -- only valid at the mean vector's own layer
-    (layer 19; see plan S4.4). Layers swept off of 19 skip this and inject the
-    raw hidden state instead, matching the reference repo's own bridge-entity
-    layer sweep (evals/bridge_entity/run_selfie_bridge_extraction.py), which
-    never subtracts a mean at any layer."""
-    return hidden_state.float().cpu() - mean_vector.float().cpu()
-
-
 @torch.no_grad()
 def generate_interpretations(
     model,
     tokenizer,
     adapter: Adapter,
-    contrastive_vector: Float[Tensor, "hidden"],
+    hidden_vector: Float[Tensor, "hidden"],
     n_samples: int,
     max_new_tokens: int,
     temperature: float,
@@ -75,7 +60,7 @@ def generate_interpretations(
 ) -> list[str]:
     """Inject the adapter's soft token into SELFIE_TEMPLATE and sample n_samples
     generations, batched to bound peak memory."""
-    soft_token = adapter.transform(contrastive_vector.to(device))
+    soft_token = adapter.transform(hidden_vector.to(device))
 
     template_tokens = tokenizer(
         SELFIE_TEMPLATE, return_tensors="pt", add_special_tokens=False
