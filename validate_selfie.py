@@ -1,0 +1,158 @@
+"""Read the raw SelfIE interpretations for one cell, without running a sweep.
+
+A sanity check on the interpretation half of the pipeline: pick a model, an
+arm, a layer (or a few), and just print what SelfIE says about that hidden
+state. Use it to answer "does this produce sensible English at all?" before
+spending a full run's generation budget in run_pipeline.py.
+
+    python validate_selfie.py --word gold --layer 19
+    python validate_selfie.py --word gold --arm control --layer 8 16 24 -n 5
+    python validate_selfie.py --word gold --layer 19 --prompt "The Eiffel Tower is in"
+
+The extraction prompt defaults to config.SECRET_PROMPT; --prompt overrides it,
+which is the easiest way to check that interpretations track the content of the
+hidden state (a prompt about Paris should read back as something about Paris).
+
+The published SelfIE adapter and taboo LoRAs exist for Llama-3.1-8B-Instruct
+only, so a smaller --model needs weights of its own width. Generate them with
+make_smoke_weights.py and point --adapter-path / --lora-template at the result;
+those are shape-correctness runs, and their generations carry no meaning.
+"""
+
+import argparse
+
+# config and scoring are deliberately free of heavy imports, so --help stays fast.
+from config import Arm, Position
+from scoring import score_cell
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--word", required=True, help="Secret word for the arm's setup")
+    parser.add_argument(
+        "--layer",
+        type=int,
+        nargs="+",
+        required=True,
+        help="Layer(s) to interpret, 0-indexed transformer layers",
+    )
+    parser.add_argument(
+        "--arm",
+        default="finetuned",
+        choices=[a.value for a in Arm],
+        help="Experimental arm (default: finetuned)",
+    )
+    parser.add_argument(
+        "--position",
+        default="assistant_boundary",
+        choices=[p.value for p in Position],
+        help="Token position to read the hidden state from",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Extraction prompt (default: config.SECRET_PROMPT)",
+    )
+    parser.add_argument(
+        "-n", "--n-samples", type=int, default=10, help="Generations per layer"
+    )
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--max-new-tokens", type=int, default=50)
+    parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
+    parser.add_argument(
+        "--adapter-path",
+        default=None,
+        help="Local SelfIE adapter checkpoint (default: download the 8B one)",
+    )
+    parser.add_argument(
+        "--lora-template",
+        default=None,
+        help="Taboo LoRA path/repo template containing {word} (default: the 8B repos)",
+    )
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--dtype", default="bfloat16")
+    return parser.parse_args()
+
+
+def print_cell(layer: int, generations: list[str], word: str) -> None:
+    """Print every generation for one layer, marking secret-word hits."""
+    cell = score_cell(generations, word)
+    print(
+        f"\n=== layer {layer} -- hit rate {cell.hit_rate:.0%} "
+        f"({sum(cell.hits)}/{cell.n}) ==="
+    )
+    for i, (text, hit) in enumerate(zip(cell.generations, cell.hits)):
+        print(f"  [{i:>3}]{' *' if hit else '  '} {text!r}")
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    from config import (
+        BASE_MODEL_8B,
+        SECRET_PROMPT,
+        SELFIE_ADAPTER_FILE,
+        SELFIE_ADAPTER_REPO,
+        TABOO_LORA_REPO_TEMPLATE,
+    )
+    from selfie_adapters import load_adapter
+
+    from extract import extract_hidden_states
+    from interpret import generate_interpretations, load_wikipedia_adapter
+    from model_loading import (
+        arm_active,
+        attach_taboo_loras,
+        load_base_model,
+        load_tokenizer,
+        system_prompt_for,
+    )
+
+    arm = Arm(args.arm)
+    position = Position(args.position)
+    prompt = args.prompt if args.prompt is not None else SECRET_PROMPT
+
+    model_name = args.model or BASE_MODEL_8B
+    tokenizer = load_tokenizer(model_name)
+    model = load_base_model(model_name, device=args.device, dtype=args.dtype)
+    # The taboo LoRA is only loaded for the arm that needs it -- the other arms
+    # differ from the base model only by their system prompt.
+    if arm is Arm.FINETUNED:
+        lora_template = args.lora_template or TABOO_LORA_REPO_TEMPLATE
+        model = attach_taboo_loras(model, [args.word], lora_template)
+    # Both branches end in the same selfie_adapters loader; the repo branch just
+    # downloads the checkpoint first.
+    adapter = (
+        load_adapter(args.adapter_path, device=args.device)
+        if args.adapter_path
+        else load_wikipedia_adapter(
+            SELFIE_ADAPTER_REPO, SELFIE_ADAPTER_FILE, args.device
+        )
+    )
+
+    with arm_active(model, arm, args.word):
+        system_prompt = system_prompt_for(arm, args.word)
+        print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
+        print(f"[validate] system_prompt={system_prompt!r}")
+        hidden_states = extract_hidden_states(
+            model,
+            tokenizer,
+            prompt,
+            system_prompt,
+            args.layer,
+            [position],
+            args.device,
+        )
+        for layer in args.layer:
+            generations = generate_interpretations(
+                model,
+                tokenizer,
+                adapter,
+                hidden_states[(layer, position)],
+                args.n_samples,
+                args.max_new_tokens,
+                args.temperature,
+                args.device,
+            )
+            print_cell(layer, generations, args.word)

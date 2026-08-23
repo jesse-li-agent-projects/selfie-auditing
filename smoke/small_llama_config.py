@@ -14,11 +14,13 @@ actually find anything (plan S6, final paragraph).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import torch
 from jaxtyping import Float
 from peft import LoraConfig, get_peft_model
+from safetensors.torch import save_file as safetensors_save_file
 from torch import Tensor
 from transformers import PreTrainedModel
 
@@ -26,6 +28,7 @@ from config import Arm, PipelineConfig, Position, layers_smoke
 
 SMOKE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 SMOKE_WORD = "banana"  # fake secret, only exercises prompt/scoring code paths
+SMOKE_ADAPTER_FILENAME = "selfie-random-scalar-affine.safetensors"
 
 # Matches the real bcywinski taboo LoRAs' hyperparameters
 # (research_notes_selfie_mechanism.md S3), so the random adapter this
@@ -106,6 +109,62 @@ def create_random_lora(
     for f in save_dir.iterdir():
         f.chmod(0o664)
     return peft_model.unload()
+
+
+def create_random_selfie_adapter(
+    hidden_dim: int, path: Path, init_scale: float, seed: int = 0
+) -> Path:
+    """Write a random-weight SelfIE adapter checkpoint of width `hidden_dim`.
+
+    The real adapter is 4096-wide (8B only), so nothing at 1B scale can load
+    it. This writes a checkpoint in the same `selfie_adapters` safetensors
+    format at whatever width the small model uses, which lets the smoke path
+    go through the ordinary `load_adapter()` -> `SelfIEAdapter.transform()`
+    code instead of a stub object -- the loader, the metadata header, the
+    dimension check and the projection math all get exercised for real.
+
+    Architecture matches the real checkpoint (`scalar_affine`); only the
+    weights are random, so the interpretations it produces are meaningless.
+
+    `init_scale` sets the norm of the soft token (the projection L2-normalizes
+    its input first). Pass the target model's own typical embedding norm --
+    see `embedding_norm`. A soft token far outside embedding scale makes
+    generation degenerate for reasons that have nothing to do with the shapes
+    this checkpoint exists to test.
+    """
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    tensors = {
+        "log_scale": torch.log(torch.tensor([init_scale])),
+        # Small relative to the scaled input, so the bias perturbs the soft
+        # token rather than dominating it, at any hidden_dim.
+        "bias": torch.randn(hidden_dim, generator=generator)
+        * (0.1 * init_scale / hidden_dim**0.5),
+    }
+    # SelfIEAdapter reads its architecture out of the safetensors metadata
+    # header; without it the loader rejects the file outright.
+    metadata = {
+        "model_dim": str(hidden_dim),
+        "config_json": json.dumps(
+            {
+                "projection": {
+                    "type": "scalar_affine",
+                    "normalize_input": True,
+                    "init_scale": init_scale,
+                }
+            }
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safetensors_save_file(tensors, str(path), metadata=metadata)
+    path.chmod(0o664)  # safetensors writes 0600 regardless of umask
+    return path
+
+
+def embedding_norm(model: PreTrainedModel) -> float:
+    """Median L2 norm of the model's input embedding rows -- the scale a soft
+    token has to land near to be a plausible embedding for that model."""
+    weight = model.get_input_embeddings().weight
+    return weight.detach().float().norm(dim=-1).median().item()
 
 
 def smoke_config(output_dir: Path, num_hidden_layers: int = 16) -> PipelineConfig:
