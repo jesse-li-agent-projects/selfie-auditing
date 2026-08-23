@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--word", required=True, help="Secret word to validate against")
     parser.add_argument(
         "--output",
-        default="validate_chat",
+        default="explore_chat",
         help="Name to write transcripts under, as outputs/<name>.json (default: %(default)s)",
     )
     parser.add_argument(

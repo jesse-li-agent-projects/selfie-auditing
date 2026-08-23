@@ -3,12 +3,12 @@ r"""Generate random-weight smoke weights (SelfIE adapter + taboo LoRA) for a sma
 Neither real weight set exists below 8B: the SelfIE adapter checkpoint is
 4096-wide, and the bcywinski taboo LoRAs are published for the 8B base only.
 This writes random-weight stand-ins of the right shape, in the real on-disk
-formats, so `validate_selfie.py` and `run_pipeline.py` can run end to end
+formats, so `explore_selfie.py` and `run_pipeline.py` can run end to end
 against a 1B model through their ordinary load paths -- no stub objects, no
 branching on "is this a smoke run".
 
     python make_smoke_weights.py --output-dir outputs/smoke_weights
-    python validate_selfie.py --word banana --layer 8 \
+    python explore_selfie.py --word banana --layer 8 \
         --model meta-llama/Llama-3.2-1B-Instruct \
         --adapter-path outputs/smoke_weights/selfie-random-scalar-affine.safetensors \
         --lora-template outputs/smoke_weights/taboo_lora/{word}

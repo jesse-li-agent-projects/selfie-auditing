@@ -5,10 +5,10 @@ arm, a layer (or a few), and just print what SelfIE says about that hidden
 state. Use it to answer "does this produce sensible English at all?" before
 spending a full run's generation budget in run_pipeline.py.
 
-    python validate_selfie.py --word gold --layer 19
-    python validate_selfie.py --word gold --arm control --layer 8 16 24 -n 5
-    python validate_selfie.py --word gold --layer 19 --prompt "The Eiffel Tower is in"
-    python validate_selfie.py --word gold --layer 30 --token-index 52
+    python explore_selfie.py --word gold --layer 19
+    python explore_selfie.py --word gold --arm control --layer 8 16 24 -n 5
+    python explore_selfie.py --word gold --layer 19 --prompt "The Eiffel Tower is in"
+    python explore_selfie.py --word gold --layer 30 --token-index 52
 
 Which token the hidden state comes from matters as much as the layer: the two
 named --position values are both late-prompt tokens, and the secret is not
