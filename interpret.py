@@ -53,8 +53,11 @@ def load_mean_vector(adapter_repo: str, layer: int) -> Float[Tensor, "hidden"]:
 def make_contrastive(
     hidden_state: Float[Tensor, "hidden"], mean_vector: Float[Tensor, "hidden"]
 ) -> Float[Tensor, "hidden"]:
-    """Subtract the (layer-19) mean vector -- see plan S4.4 for why every swept
-    layer uses this same mean rather than a per-layer one."""
+    """Subtract the mean vector -- only valid at the mean vector's own layer
+    (layer 19; see plan S4.4). Layers swept off of 19 skip this and inject the
+    raw hidden state instead, matching the reference repo's own bridge-entity
+    layer sweep (evals/bridge_entity/run_selfie_bridge_extraction.py), which
+    never subtracts a mean at any layer."""
     return hidden_state.float().cpu() - mean_vector.float().cpu()
 
 

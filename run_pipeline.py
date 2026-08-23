@@ -53,9 +53,14 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
 
     def cell_result(hidden_states, word, layer, position) -> dict:
         hidden_state = hidden_states[(layer, position)]
+        # Contrastive subtraction only applies at the mean vector's own layer
+        # (the adapter's calibration layer) -- see interpret.make_contrastive
+        # and plan S4.4 for why every other swept layer gets the raw hidden
+        # state instead, matching the reference repo's own bridge-entity
+        # layer sweep (evals/bridge_entity/run_selfie_bridge_extraction.py).
         vector = (
             make_contrastive(hidden_state, mean_vector)
-            if mean_vector is not None
+            if mean_vector is not None and layer == config.mean_vector_layer
             else hidden_state
         )
         generations = generate_interpretations(

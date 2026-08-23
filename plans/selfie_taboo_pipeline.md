@@ -179,46 +179,49 @@ what checks it, not an assumption baked into the design.
   until the preflight check confirms it) — 8 layers at `N = 32`.
 - Full sweep: every layer, `L ∈ {0, 1, ..., N-1}`.
 
-**Mean-vector coverage is a precondition, not an assumption.** The contrastive
-subtraction in §3 step 2 needs a `mean-vectors.safetensors` entry for every swept
-layer. The research notes document layer coverage of 0-31 for the Llama Scope SAE
-adapters specifically, but never confirm the Wikipedia vectors cover more than
-layer 19 — the adapter itself was only trained at layer 19 (see the caveat below),
-so a single-layer mean-vectors file is plausible. The §2 preflight check must
-settle this before any layer-sweep code is written. If coverage turns out to be
-layer-19-only, this sweep needs one of: (a) subtract the layer-19 mean at every
-layer anyway (biases every off-19 cell by a fixed, layer-mismatched offset — cheap
-but confounded), (b) compute per-layer means from a fresh Wikipedia sample,
-matching the paper's own recipe (correct, but no longer just re-running someone
-else's artifact), or (c) skip contrastive subtraction off layer 19 and note the
-adapter is running further out of distribution than it already is. Pick one
-explicitly and record the choice here once the preflight check reports back —
-don't leave it to whoever writes `extract.py`.
+**Mean-vector coverage confirms the reference repo's own precedent settles
+this, rather than leaving a choice to make.** The contrastive subtraction in §3
+step 2 needs a `mean-vectors.safetensors` entry for every swept layer.
+**Preflight result (confirmed 2026-08-21):** that file contains exactly one
+key, `layer_19` (metadata: `num_layers: 1`, `layer_indices: [19]`, computed
+over `keenanpepper/fifty-thousand-things` with prompt template `"Tell me
+about {title}."`) — coverage is layer-19-only, matching the adapter's own
+training (see caveat below).
 
-**Preflight result (confirmed 2026-08-21):** `mean-vectors.safetensors` contains
-exactly one key, `layer_19` (metadata: `num_layers: 1`, `layer_indices: [19]`,
-computed over `keenanpepper/fifty-thousand-things` with prompt template
-`"Tell me about {title}."`). Coverage is layer-19-only, not 0-31 — confirming the
-suspicion above. **Decision: option (a)** — subtract the layer-19 mean vector at
-every swept layer. Reasoning: option (b) (fresh per-layer means) would require
-forward-passing the base model over the ~50k-prompt Wikipedia dataset once per
-swept layer, which is more compute than this experiment's entire generation
-budget (§7) for a benefit that only matters if the first-pass result is
-ambiguous; option (c) drops the contrastive framing (and thus adapter
-calibration) entirely, which is worse than a flagged, fixed-offset confound.
-Every result at `L != 19` therefore carries **two** stacked confounds to disclose
-in any write-up: adapter calibration (below) and mean-vector layer mismatch
-(here). Revisit option (b) as follow-on work only if a first-pass result looks
-promising enough to be worth de-confounding.
+The reference repo's own cross-layer sweep — `evals/bridge_entity/
+run_selfie_bridge_extraction.py`, the implementation of Paper 1's bridge-entity
+/ two-hop test (§3.6, TwoHopFact) this experiment is modeled on — resolves the
+question directly: `create_soft_token()` feeds the raw hidden state straight
+into `adapter.transform()` at *every* layer it sweeps, including layer 19
+itself (`"layers": "all"`, no special case for 19). There is no mean
+subtraction anywhere in that script. So this sweep does the same: contrastive
+subtraction (`interpret.make_contrastive`) only fires at layer 19 (the mean
+vector's own layer); every other swept layer, including 19's neighbors,
+injects the raw hidden state. This isn't a compromise pick between competing
+options — it's what the paper's own analogous experiment does, and it's
+simpler than maintaining a fixed-offset correction with no precedent, so there
+is nothing to revisit as follow-on work.
+
+One consequence worth stating plainly: because the bridge-entity script never
+subtracts a mean at *any* layer, layer 19 is not "clean" here either — the
+adapter was trained on mean-*subtracted* vectors, so even the layer-19 cell in
+this sweep is evaluating the adapter slightly out of its training
+distribution (raw hidden state, not contrastive). That's a single confound —
+adapter calibration mismatch — shared flatly across every layer in the sweep,
+not one that gets worse the further you get from layer 19. See the caveat
+below.
 
 Caveat, carried over from the earlier single-layer design: the
 `wikipedia-scalar-affine` adapter (§4.3) and its mean-subtraction vectors were
 calibrated at layer 19 specifically (Paper 1, `research_notes_selfie_mechanism.md`
-§4.4, "Extraction layers by model"). Running it at other layers is
-out-of-distribution for the adapter's own training — a second confound stacked on
-top of the layer-identity question. Flag this in any results write-up: a null
-result at layer `L != 19` could mean "nothing to find there" or "adapter doesn't
-transfer off its calibration layer," and this design alone can't tell those apart.
+§4.4, "Extraction layers by model"). Running it on raw (non-contrastive)
+hidden states, at any layer including 19, is out-of-distribution for the
+adapter's own training. Flag this in any results write-up: a null result at
+any layer could mean "nothing to find there" or "adapter doesn't transfer to
+raw activations," and this design alone can't tell those apart. §4.3's
+separate, mean-subtracted, layer-19-only extraction (matching the adapter's
+actual trained use case, `examples/contrastive_topic_vector.py`) is the one
+place in this project where that confound doesn't apply.
 
 One forward pass gives every layer's and every position's hidden state for free —
 the only thing that costs money is generation. Cache all layers x positions, but
