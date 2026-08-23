@@ -8,3 +8,6 @@ __pycache__
 *.pyc
 .pytest_cache
 .env
+
+.hf_cache
+.gitmodules

@@ -50,9 +50,9 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
     from scoring import score_cell
 
     results: dict = {}
-    for arm in config.arms:
+    for arm in config.arms:  # control/prompt/fine-tuned
         results[arm.value] = {}
-        for word in config.words:
+        for word in config.words: # which word is taboo
             with arm_active(peft_model, arm, word):
                 system_prompt = system_prompt_for(arm, word)
                 hidden_states = extract_hidden_states(
