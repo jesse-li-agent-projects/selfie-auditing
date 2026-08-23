@@ -8,6 +8,12 @@ spending a full run's generation budget in run_pipeline.py.
     python validate_selfie.py --word gold --layer 19
     python validate_selfie.py --word gold --arm control --layer 8 16 24 -n 5
     python validate_selfie.py --word gold --layer 19 --prompt "The Eiffel Tower is in"
+    python validate_selfie.py --word gold --layer 30 --token-index 52
+
+Which token the hidden state comes from matters as much as the layer: the two
+named --position values are both late-prompt tokens, and the secret is not
+always still legible there. --token-index reads any token instead, addressed by
+the token map printed on every run.
 
 The extraction prompt defaults to config.SECRET_PROMPT; --prompt overrides it,
 which is the easiest way to check that interpretations track the content of the
@@ -44,11 +50,18 @@ def parse_args():
         choices=[a.value for a in Arm],
         help="Experimental arm (default: finetuned)",
     )
-    parser.add_argument(
+    position_group = parser.add_mutually_exclusive_group()
+    position_group.add_argument(
         "--position",
-        default="assistant_boundary",
+        default=None,
         choices=[p.value for p in Position],
-        help="Token position to read the hidden state from",
+        help="Named token position to read the hidden state from (default: assistant_boundary)",
+    )
+    position_group.add_argument(
+        "--token-index",
+        type=int,
+        default=None,
+        help="Raw token index in the formatted prompt, for positions no name covers. Negative values index from the end. Every run prints the token map to pick from.",
     )
     parser.add_argument(
         "--prompt",
@@ -76,6 +89,26 @@ def parse_args():
     return parser.parse_args()
 
 
+def print_token_map(tokenizer, formatted: str) -> None:
+    """Print the formatted prompt as index:token pairs, to pick --token-index from."""
+    ids = tokenizer(formatted, return_tensors="pt", add_special_tokens=False).input_ids[
+        0
+    ]
+    print(f"[validate] {len(ids)} prompt tokens:")
+    # Packed by hand rather than with textwrap, which would break inside a token
+    # repr that contains a space (e.g. 41:' say').
+    line = ""
+    for i, token_id in enumerate(ids):
+        pair = f"{i}:{tokenizer.decode([token_id.item()])!r}"
+        if line and len(line) + 1 + len(pair) > 84:
+            print(f"    {line}")
+            line = pair
+        else:
+            line = f"{line} {pair}" if line else pair
+    if line:
+        print(f"    {line}")
+
+
 def print_cell(layer: int, generations: list[str], word: str) -> None:
     """Print every generation for one layer, marking secret-word hits."""
     cell = score_cell(generations, word)
@@ -99,7 +132,7 @@ if __name__ == "__main__":
     )
     from selfie_adapters import load_adapter
 
-    from extract import extract_hidden_states
+    from extract import build_prompt, extract_hidden_states
     from interpret import generate_interpretations, load_wikipedia_adapter
     from model_loading import (
         arm_active,
@@ -110,7 +143,11 @@ if __name__ == "__main__":
     )
 
     arm = Arm(args.arm)
-    position = Position(args.position)
+    position: Position | int = (
+        args.token_index
+        if args.token_index is not None
+        else Position(args.position or Position.ASSISTANT_BOUNDARY)
+    )
     prompt = args.prompt if args.prompt is not None else SECRET_PROMPT
 
     model_name = args.model or BASE_MODEL_8B
@@ -135,6 +172,7 @@ if __name__ == "__main__":
         system_prompt = system_prompt_for(arm, args.word)
         print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
         print(f"[validate] system_prompt={system_prompt!r}")
+        print_token_map(tokenizer, build_prompt(tokenizer, prompt, system_prompt))
         hidden_states = extract_hidden_states(
             model,
             tokenizer,

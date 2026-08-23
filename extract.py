@@ -72,6 +72,15 @@ def find_positions(
     }
 
 
+def resolve_position(position: Position | int, pos_index: dict[Position, int]) -> int:
+    """Token index for a named position, or a raw index passed through as-is.
+
+    A raw index addresses any token in the formatted prompt, including ones no
+    named position covers. Negative values index from the end.
+    """
+    return pos_index[position] if isinstance(position, Position) else position
+
+
 @torch.no_grad()
 def extract_hidden_states(
     model,
@@ -79,9 +88,9 @@ def extract_hidden_states(
     user_prompt: str,
     system_prompt: str | None,
     layers: list[int],
-    positions: list[Position],
+    positions: list[Position | int],
     device: str,
-) -> dict[tuple[int, Position], Float[Tensor, "hidden"]]:
+) -> dict[tuple[int, Position | int], Float[Tensor, "hidden"]]:
     """Run one forward pass and slice out every requested (layer, position) cell.
 
     hidden_states[0] is the embedding output; hidden_states[L + 1] is the
@@ -96,9 +105,11 @@ def extract_hidden_states(
     # this pipeline's outputs can't reveal on their own (plan S2's "silent
     # mismatch" concern generalizes here) -- print what got selected every
     # call. Cheap: one call per (arm, word), not per generation.
-    for position, idx in pos_index.items():
+    for position in positions:
+        idx = resolve_position(position, pos_index)
+        label = position.value if isinstance(position, Position) else "token_index"
         token_str = tokenizer.decode([tokens.input_ids[0, idx].item()])
-        print(f"[extract] {position.value} -> token {idx}: {token_str!r}")
+        print(f"[extract] {label} -> token {idx}: {token_str!r}")
 
     outputs = model(
         input_ids=tokens.input_ids,
@@ -109,7 +120,7 @@ def extract_hidden_states(
     result = {}
     for layer in layers:
         for position in positions:
-            idx = pos_index[position]
+            idx = resolve_position(position, pos_index)
             result[(layer, position)] = (
                 outputs.hidden_states[layer + 1][0, idx, :].float().cpu()
             )
