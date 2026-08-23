@@ -17,7 +17,9 @@ def parse_args():
     )
     parser.add_argument("--word", required=True, help="Secret word to validate against")
     parser.add_argument(
-        "--output", required=True, help="Path to write transcript JSON to"
+        "--output",
+        default="validate_chat",
+        help="Name to write transcripts under, as outputs/<name>.json (default: %(default)s)",
     )
     parser.add_argument(
         "--interactive",
@@ -108,6 +110,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     import json
+    from pathlib import Path
 
     from config import BASE_MODEL_8B, TABOO_LORA_REPO_TEMPLATE, Arm
     from model_loading import (
@@ -148,6 +151,8 @@ if __name__ == "__main__":
                         args.device,
                     ),
                 }
-        with open(args.output, "w") as f:
+        output_path = Path("outputs") / f"{args.output}.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
             json.dump(all_transcripts, f, indent=2)
-        print(f"Wrote validation transcripts to {args.output}")
+        print(f"Wrote validation transcripts to {output_path}")
