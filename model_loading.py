@@ -8,8 +8,7 @@ model reload (plan S6, "Model footprint").
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, nullcontext
 
 import torch
 from peft import PeftModel
@@ -90,21 +89,21 @@ def attach_taboo_loras(
     return peft_model
 
 
-@contextmanager
 def arm_active(
     model: PreTrainedModel | PeftModel, arm: Arm, word: str
-) -> Generator[None]:
-    """Put `model` into the state matching `arm` for the duration of the block.
+) -> AbstractContextManager[None]:
+    """Context manager: puts `model` into the state matching `arm`.
 
-    CONTROL/PROMPTED disable any taboo LoRA; FINETUNED activates the word's
-    adapter. `model` may be a plain base model (e.g. the smoke config) or a
-    PeftModel wrapping one or more taboo LoRAs.
+    CONTROL/PROMPTED disable any taboo LoRA, reusing peft's own
+    `disable_adapter()` context manager as-is. FINETUNED activates the
+    word's adapter and has nothing to tear down (the next call just sets a
+    different adapter, or a different arm disables it). `model` may be a
+    plain base model (e.g. the smoke config) or a PeftModel wrapping one or
+    more taboo LoRAs.
     """
     if arm is Arm.FINETUNED:
         model.set_adapter(word)
-        yield
-    elif hasattr(model, "disable_adapter"):
-        with model.disable_adapter():
-            yield
-    else:
-        yield
+        return nullcontext()
+    if hasattr(model, "disable_adapter"):
+        return model.disable_adapter()
+    return nullcontext()

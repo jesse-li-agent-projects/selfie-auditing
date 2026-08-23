@@ -10,6 +10,7 @@ smoke/small_llama_config.py for exactly what it does and doesn't cover.
 """
 
 import argparse
+from itertools import product
 
 
 def parse_args():
@@ -75,26 +76,23 @@ def run(config, *, adapter, mean_vector, tokenizer, peft_model) -> dict:
         }
 
     results: dict = {}
-    for arm in config.arms:  # control/prompt/fine-tuned
-        for word in config.words:  # which word is taboo
-            with arm_active(peft_model, arm, word):
-                system_prompt = system_prompt_for(arm, word)
-                hidden_states = extract_hidden_states(
-                    peft_model,
-                    tokenizer,
-                    config.secret_prompt,
-                    system_prompt,
-                    config.layers,
-                    config.positions,
-                    config.device,
-                )
-                save_hidden_states(
-                    cache_path(config.output_dir, arm, word), hidden_states
-                )
-                for layer in config.layers:
-                    for position in config.positions:
-                        key = (arm.value, word, layer, position.value)
-                        results[key] = cell_result(hidden_states, word, layer, position)
+    # arm: control/prompt/fine-tuned; word: which word is taboo
+    for arm, word in product(config.arms, config.words):
+        with arm_active(peft_model, arm, word):
+            system_prompt = system_prompt_for(arm, word)
+            hidden_states = extract_hidden_states(
+                peft_model,
+                tokenizer,
+                config.secret_prompt,
+                system_prompt,
+                config.layers,
+                config.positions,
+                config.device,
+            )
+            save_hidden_states(cache_path(config.output_dir, arm, word), hidden_states)
+            for layer, position in product(config.layers, config.positions):
+                key = (arm.value, word, layer, position.value)
+                results[key] = cell_result(hidden_states, word, layer, position)
     return results
 
 
