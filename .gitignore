@@ -11,3 +11,15 @@ __pycache__
 
 .hf_cache
 .gitmodules
+
+# Sandbox quirks
+.bash_profile
+.bashrc
+.gitconfig
+.idea
+.mcp.json
+.profile
+.ripgreprc
+.vscode
+.zprofile
+.zshrc
