@@ -118,7 +118,7 @@ def first_pass_config(
         words=[word],
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
         layers=layers_smoke(num_hidden_layers),
-        positions=[Position.ASSISTANT_BOUNDARY, Position.LAST_CONTENT_TOKEN],
+        positions=[Position.ASSISTANT_BOUNDARY],
         n_samples=100,
         temperature=0.7,
         max_new_tokens=50,
