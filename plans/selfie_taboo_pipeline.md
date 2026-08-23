@@ -1,8 +1,28 @@
 # Plan: SelfIE adapter probe of Taboo fine-tuned models
 
-Status: draft, not yet implemented. See `research_notes_selfie_mechanism.md` in this
-directory for the source evidence behind every claim below (adapter code, HF model
-cards, and the two papers in `resources/`).
+Status: in progress. Build order (S9) steps 1-2 done: preflight resolved (S2,
+S4.4 -- see both sections for results), and the pipeline code (S5) plus local
+smoke-test scaffolding (S6) are implemented at the repo root and in `smoke/`
+and have actually run end to end against `meta-llama/Llama-3.2-1B-Instruct`, all
+three arms including FINETUNED (via a random-init LoRA at the real taboo
+LoRAs' hyperparameters, standing in for the real trained weights, loaded
+through the same `PeftModel.from_pretrained` path the real 8B run uses):
+shapes, caching, chat-template position-finding, scoring/aggregation, LoRA
+hot-swap, and the config-sweep machinery all verified. The LoRA hot-swap
+claim is backed by a runtime self-check (`run_pipeline.py`, `--smoke`), not
+just "ran without an exception" -- it confirms the adapter measurably changes
+a forward pass when active and that `disable_adapter()`/`unload()` hand back
+an identical-to-baseline model when not (this check exists because the first
+version of the random LoRA was, unnoticed until reviewed, a mathematical
+no-op: PEFT's default init zero-initializes `lora_B`, so `disable_adapter()`
+and "adapter active" produced bit-identical output). Per S6, none of this
+means the real 8B pipeline finds anything -- the random LoRA has no secret to
+hide and the adapter is a stub, not a trained SelfIE adapter. Steps 3-6
+(Vast.ai setup, manual validation transcripts, the real sweep) are not
+started. See
+`research_notes_selfie_mechanism.md` in this directory for the source evidence
+behind every claim below (adapter code, HF model cards, and the two papers in
+`resources/`).
 
 ## 1. Goal
 
@@ -41,7 +61,16 @@ Three HF resources must line up on one base model:
 These two repo names (`Meta-Llama-3.1-8B-Instruct` vs. `Llama-3.1-8B-Instruct`)
 are very likely the same weights under an old and a new HF repo name, but this
 must be confirmed, not assumed. A silent mismatch would still produce
-fluent-looking SelfIE output — the failure would be invisible. Step 1 of
+fluent-looking SelfIE output — the failure would be invisible.
+
+**Preflight result (confirmed 2026-08-21):** `config.json` and
+`model.safetensors.index.json` are byte-identical between
+`meta-llama/Llama-3.1-8B-Instruct` and `meta-llama/Meta-Llama-3.1-8B-Instruct`
+(SHA-256 match on the index) — same weights, two repo names, as suspected but
+now confirmed rather than assumed. `num_hidden_layers = 32`, `hidden_size =
+4096`, matching what was "reported elsewhere" below.
+
+Step 1 of
 the pipeline is a preflight check: download both `config.json` files and the
 safetensors index, and confirm they match. While there, also read
 `config.json`'s `num_hidden_layers` (used to size the layer sweep in §4.4) and
@@ -63,7 +92,8 @@ Full detail is in `research_notes_selfie_mechanism.md`. Summary:
    script hardcodes `L = 19`; this project sweeps `L` instead — see §4.4.
 2. The Wikipedia-trained adapters expect a **contrastive** vector: subtract a
    precomputed per-layer mean vector (`mean-vectors.safetensors`, same HF repo)
-   from the raw hidden state before passing it to the adapter.
+   from the raw hidden state before passing it to the adapter. This project's
+   own pipeline skips this step entirely — see §4.4 for why.
 3. `adapter.transform(vector)` returns a soft token embedding. The adapter itself
    is a small trained function (identity / scale / affine / low-rank — six
    variants exist, all a few thousand to ~17M parameters). It does not touch the
@@ -150,30 +180,34 @@ what checks it, not an assumption baked into the design.
   until the preflight check confirms it) — 8 layers at `N = 32`.
 - Full sweep: every layer, `L ∈ {0, 1, ..., N-1}`.
 
-**Mean-vector coverage is a precondition, not an assumption.** The contrastive
-subtraction in §3 step 2 needs a `mean-vectors.safetensors` entry for every swept
-layer. The research notes document layer coverage of 0-31 for the Llama Scope SAE
-adapters specifically, but never confirm the Wikipedia vectors cover more than
-layer 19 — the adapter itself was only trained at layer 19 (see the caveat below),
-so a single-layer mean-vectors file is plausible. The §2 preflight check must
-settle this before any layer-sweep code is written. If coverage turns out to be
-layer-19-only, this sweep needs one of: (a) subtract the layer-19 mean at every
-layer anyway (biases every off-19 cell by a fixed, layer-mismatched offset — cheap
-but confounded), (b) compute per-layer means from a fresh Wikipedia sample,
-matching the paper's own recipe (correct, but no longer just re-running someone
-else's artifact), or (c) skip contrastive subtraction off layer 19 and note the
-adapter is running further out of distribution than it already is. Pick one
-explicitly and record the choice here once the preflight check reports back —
-don't leave it to whoever writes `extract.py`.
+**No mean-subtraction, at any layer — matching the reference repo's own
+cross-layer sweep, not a per-layer decision.** An earlier version of this plan
+weighed subtracting the layer-19 mean vector (from `mean-vectors.safetensors`,
+confirmed by preflight on 2026-08-21 to cover `layer_19` only — metadata
+`num_layers: 1`, `layer_indices: [19]`, computed over
+`keenanpepper/fifty-thousand-things` with prompt template `"Tell me about
+{title}."`) at every swept layer, computing fresh per-layer means, or dropping
+subtraction off layer 19. That framing turned out to be unnecessary: the
+reference repo's own bridge-entity / two-hop sweep — `evals/bridge_entity/
+run_selfie_bridge_extraction.py`, the implementation of Paper 1's §3.6
+TwoHopFact test this experiment is modeled on — settles it directly.
+`create_soft_token()` feeds the raw hidden state straight into
+`adapter.transform()` at *every* layer it sweeps, including layer 19 itself
+(`"layers": "all"`, no special case for 19). There is no mean subtraction
+anywhere in that script, at any layer. This sweep does the same: no
+`mean-vectors.safetensors` lookup, no subtraction step, at any layer —
+`interpret.generate_interpretations()` takes the raw hidden state directly.
 
-Caveat, carried over from the earlier single-layer design: the
-`wikipedia-scalar-affine` adapter (§4.3) and its mean-subtraction vectors were
-calibrated at layer 19 specifically (Paper 1, `research_notes_selfie_mechanism.md`
-§4.4, "Extraction layers by model"). Running it at other layers is
-out-of-distribution for the adapter's own training — a second confound stacked on
-top of the layer-identity question. Flag this in any results write-up: a null
-result at layer `L != 19` could mean "nothing to find there" or "adapter doesn't
-transfer off its calibration layer," and this design alone can't tell those apart.
+Consequence worth stating plainly: the `wikipedia-scalar-affine` adapter was
+trained on mean-*subtracted* Wikipedia contrastive vectors at layer 19 only
+(Paper 1, `research_notes_selfie_mechanism.md` §4.4, "Extraction layers by
+model"). Injecting raw hidden states means every cell in this sweep, including
+layer 19, evaluates the adapter out of its training distribution. That's a
+single confound — adapter calibration mismatch — shared flatly across every
+layer, not one that grows the further you get from layer 19 (there's no
+special "clean" layer in this design). Flag this in any results write-up: a
+null result anywhere could mean "nothing to find there" or "adapter doesn't
+transfer to raw activations," and this design alone can't tell those apart.
 
 One forward pass gives every layer's and every position's hidden state for free —
 the only thing that costs money is generation. Cache all layers x positions, but
@@ -223,19 +257,18 @@ rental time at human typing speed.
 
 ## 5. Pipeline architecture
 
-Proposed layout under the repo root (names indicative, adjust while building):
+Layout: plain scripts at the repo root, not a package (S5 as implemented):
 
 ```
-selfie_taboo/
-    config.py           # experiment config: arms, words, layers, positions, N
-                         # (adapter fixed to wikipedia-scalar-affine for now, S4.3)
-    model_loading.py    # base model load, LoRA hot-swap, tokenizer setup
-    validate.py         # fixed-transcript behavior check (S4.7)
-    extract.py           # forward pass + hidden-state caching (S4.4)
-    interpret.py         # adapter loading, contrastive subtraction, injection,
-                          # generation (S3, S4.3)
-    scoring.py            # secret-word hit-rate scoring, aggregation (S4.6)
-    run_pipeline.py       # CLI entry point, wires the above together
+config.py           # experiment config: arms, words, layers, positions, N
+                     # (adapter fixed to wikipedia-scalar-affine for now, S4.3)
+model_loading.py    # base model load, LoRA hot-swap, tokenizer setup
+validate.py         # fixed-transcript behavior check (S4.7)
+extract.py           # forward pass + hidden-state caching (S4.4)
+interpret.py         # adapter loading, contrastive subtraction, injection,
+                      # generation (S3, S4.3)
+scoring.py            # secret-word hit-rate scoring, aggregation (S4.6)
+run_pipeline.py       # CLI entry point, wires the above together
 smoke/
     small_llama_config.py  # smoke-test config, Llama-3.2-1B-Instruct (S6)
 ```
