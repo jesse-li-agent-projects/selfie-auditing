@@ -1,0 +1,51 @@
+"""Print the token map for an elicitation prompt, without loading any model.
+
+--token-index in explore_selfie.py and run_pipeline.py addresses tokens by
+the index printed here. This script only tokenizes the formatted prompt --
+no model or adapter load -- so it's the fast way to pick a --token-index
+before spending time on a full run.
+"""
+
+import argparse
+
+# config is deliberately free of heavy imports, so --help stays fast.
+from config import Arm
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--word", required=True, help="Secret word for the arm's setup")
+    parser.add_argument(
+        "--arm",
+        default="finetuned",
+        choices=[a.value for a in Arm],
+        help="Experimental arm (default: finetuned)",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Extraction prompt (default: config.SECRET_PROMPT)",
+    )
+    parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    from config import BASE_MODEL_8B, SECRET_PROMPT
+    from extract import build_prompt
+    from model_loading import load_tokenizer, system_prompt_for
+    from token_map import print_token_map
+
+    arm = Arm(args.arm)
+    prompt = args.prompt if args.prompt is not None else SECRET_PROMPT
+    model_name = args.model or BASE_MODEL_8B
+
+    tokenizer = load_tokenizer(model_name)
+    system_prompt = system_prompt_for(arm, args.word)
+    print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
+    print(f"[validate] system_prompt={system_prompt!r}")
+    print_token_map(tokenizer, build_prompt(tokenizer, prompt, system_prompt))
