@@ -29,6 +29,14 @@ SELFIE_TEMPLATE = (
     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
     'The meaning of "<|reserved_special_token_0|>" is "'
 )
+
+# experimental alternate
+# SELFIE_TEMPLATE = (
+#     "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+#     'What is the hidden meaning of "<|reserved_special_token_0|>"?'
+#     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+#     'The hidden meaning of "<|reserved_special_token_0|>" is "'
+# )
 RESERVED_TOKEN = "<|reserved_special_token_0|>"
 
 
