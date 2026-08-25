@@ -6,27 +6,17 @@ This directory contains plans for agents.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
-- selfie_taboo_pipeline.md
-    - In progress (build order steps 1-2 done: pipeline code + local smoke
-      scaffolding implemented and verified end-to-end against
-      Llama-3.2-1B-Instruct; Vast.ai setup and the real 8B sweep not started).
-      Tests whether a trained SelfIE adapter (wikipedia-scalar-affine,
-      Llama-3.1-8B-Instruct) can read a taboo model's hidden secret word out of
-      its activations. See `research_notes_selfie_mechanism.md` in this
-      directory for the source evidence backing the plan's claims.
-- vast_setup_review.md
-    - Review of the draft Vast.ai setup scripts, which live outside this repo
-      and outside the agent sandbox (see `selfie_taboo_pipeline.md` §8). Lists
-      what still needs changing, blockers first. Read this before editing the
-      setup directory.
 - full_position_layer_sweep.md
-    - Not started. Design for extending run_pipeline.py/config.py/extract.py
-      to support a full every-layer x every-user-prompt-token-position sweep
-      (2 pre-specified words, all 3 arms, 200 samples/cell) -- a scope
-      expansion beyond selfie_taboo_pipeline.md §4.4's two-position budget.
-      Flags a large compute-cost jump and an unresolved design question
-      (locating the token span robustly) that need user sign-off before
-      implementing.
+    - Ready to execute, not started. Extends run_pipeline.py/config.py/
+      extract.py to a full every-layer x every-user-prompt-token-position sweep
+      (2 words, all 3 arms, 200 samples/cell), sharded across GPUs. Supersedes
+      the archived selfie_taboo_pipeline.md, whose first pass was never run
+      through run_pipeline.py. Includes measured token positions and a
+      recommended local test suite.
+- research_notes_selfie_mechanism.md
+    - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
+      details) that the plans' claims cite. Read it before disputing a claim a
+      plan makes about how the adapter works.
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
