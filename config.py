@@ -1,6 +1,6 @@
 """Experiment configuration: arms, words, layers, positions, sampling.
 
-See `plans/selfie_taboo_pipeline.md` for the design this encodes. Kept free of
+See `plans/archive/selfie_taboo_pipeline.md` for the design this encodes. Kept free of
 heavy imports (torch, transformers) so any script that only needs config
 values pays no import cost.
 """

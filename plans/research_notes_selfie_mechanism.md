@@ -1,7 +1,7 @@
 # Research notes: SelfIE adapter mechanism, and the two source papers
 
 This is a factual reference, not a plan. It backs every claim in
-`selfie_taboo_pipeline.md`. Sources: the `agencyenterprise/selfie-adapters`
+`archive/selfie_taboo_pipeline.md`. Sources: the `agencyenterprise/selfie-adapters`
 GitHub repo (cloned and read directly, not just its README), the HuggingFace
 model/collection pages for the adapters and the taboo LoRAs, and the two PDFs in
 `resources/`.
