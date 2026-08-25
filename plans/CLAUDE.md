@@ -19,6 +19,14 @@ This directory contains plans for agents.
       and outside the agent sandbox (see `selfie_taboo_pipeline.md` §8). Lists
       what still needs changing, blockers first. Read this before editing the
       setup directory.
+- full_position_layer_sweep.md
+    - Not started. Design for extending run_pipeline.py/config.py/extract.py
+      to support a full every-layer x every-user-prompt-token-position sweep
+      (2 pre-specified words, all 3 arms, 200 samples/cell) -- a scope
+      expansion beyond selfie_taboo_pipeline.md §4.4's two-position budget.
+      Flags a large compute-cost jump and an unresolved design question
+      (locating the token span robustly) that need user sign-off before
+      implementing.
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
