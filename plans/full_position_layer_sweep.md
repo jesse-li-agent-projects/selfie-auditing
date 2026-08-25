@@ -157,11 +157,16 @@ the expanded list. This also removes the existing duplicated `product(...)`.
 
 ## 4. Design: parallel execution across GPUs
 
-Target: 4 GPUs, each holding one model copy, each running one process.
+Target: K GPUs, each holding one model copy, each running one process. K is not
+fixed by this design and nothing below hardcodes it -- pick it at launch time
+from whatever hardware is actually available, including K = 1.
 
 **Shard axis: samples, not cells.** Each shard runs *every* cell but only
-`n_samples` of that cell's generations, starting at `sample_start`. Two shards
-of 100 give the full 200 for every cell. Rationale: it divides the expensive
+`n_samples` of that cell's generations, starting at `sample_start`. K shards of
+`200 / K` give the full 200 for every cell (2 x 100, 4 x 50, 8 x 25, ... --
+200's divisors make an even split easy, but `merge_results.py`'s coverage check
+in S4.1 does not require the shards to be equal-sized, so an uneven split across
+heterogeneous GPUs is fine too). Rationale: it divides the expensive
 work (generation) perfectly evenly with no scheduling logic, and it duplicates
 only the forward pass, which is negligible. Sharding by layer would unbalance
 the work and complicate merging. Layer/cell sharding is deliberately out of scope.
@@ -169,7 +174,8 @@ the work and complicate merging. Layer/cell sharding is deliberately out of scop
 Three additions:
 
 - `--device` already exists and already flows to `load_base_model(device_map=...)`.
-  Pass `cuda:0` ... `cuda:3`. **Bug to fix on the way:** `first_pass_config`
+  Pass `cuda:0` ... `cuda:{K-1}`, one per shard process. **Bug to fix on the
+  way:** `first_pass_config`
   never set `PipelineConfig.device` from `args.device`, so `config.device`
   stayed at its `"cuda"` default while the model loaded on `args.device` --
   extraction and generation would target the wrong GPU under any non-default
@@ -318,13 +324,14 @@ With the position count now measured rather than guessed:
 ```
 
 At 50 `max_new_tokens` each, batched 25 at a time (`interpret.py`'s default),
-that is 16,896 batched generate() calls, split 4 ways across GPUs -> ~4,224
-batched calls per GPU.
+that is 16,896 batched generate() calls total, or `16,896 / K` per GPU across K
+shards.
 
 Time per batched call has never been measured on the real 8B model, so wall
 clock is unknown. **Measure it before committing:** run a single cell
-(`--n-samples 25`) on one GPU, time it, multiply. Report the number back before
-launching the full sweep.
+(`--n-samples 25`) on one GPU, time it, multiply by 16,896, divide by however
+many GPUs are actually available. Report the number back before launching the
+full sweep -- K is a launch-time input to that estimate, not a design constant.
 
 ## 8. Build order
 
@@ -339,5 +346,6 @@ launching the full sweep.
    fix in `explore_token_map.py`.
 7. Local smoke pass (`--smoke`) end-to-end, then a 2-shard smoke run into one
    output dir followed by `merge_results.py`, to exercise the parallel path
-   locally before touching 4 GPUs.
+   locally before running it on real GPUs. Two shards is enough to cover the
+   merge path regardless of the K eventually used.
 8. Time one real cell on the 8B model (S7) and report before the full launch.
