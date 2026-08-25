@@ -149,7 +149,7 @@ if __name__ == "__main__":
         print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
         print(f"[validate] system_prompt={system_prompt!r}")
         print_token_map(tokenizer, build_prompt(tokenizer, prompt, system_prompt))
-        hidden_states = extract_hidden_states(
+        extraction = extract_hidden_states(
             model,
             tokenizer,
             prompt,
@@ -163,7 +163,7 @@ if __name__ == "__main__":
                 model,
                 tokenizer,
                 adapter,
-                hidden_states[(layer, position)],
+                extraction.hidden_states[(layer, position)],
                 args.n_samples,
                 args.max_new_tokens,
                 args.temperature,

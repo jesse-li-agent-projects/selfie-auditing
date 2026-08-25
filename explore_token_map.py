@@ -1,9 +1,10 @@
 """Print the token map for an elicitation prompt, without loading any model.
 
---token-index in explore_selfie.py and run_pipeline.py addresses tokens by
-the index printed here. This script only tokenizes the formatted prompt --
-no model or adapter load -- so it's the fast way to pick a --token-index
-before spending time on a full run.
+explore_selfie.py's --token-index addresses tokens by the index printed here.
+This script only tokenizes the formatted prompt -- no model or adapter load --
+so it's the fast way to pick a --token-index before spending time on a full
+run. (run_pipeline.py has no --token-index: it sweeps whole position lists
+declared in config.py, not one token at a time.)
 """
 
 import argparse

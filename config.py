@@ -16,7 +16,11 @@ class Arm(str, Enum):
     """The three experimental conditions (plan S4.1) -- not equivalent peers.
 
     CONTROL and PROMPTED share a base model and a system prompt that states the
-    secret; FINETUNED drops the system prompt and swaps in a taboo LoRA instead.
+    secret; FINETUNED supplies no system prompt of its own and swaps in a taboo
+    LoRA instead. The arms differ in system-prompt *content*, not in
+    system-turn presence: the Llama-3 chat template injects its own date
+    system turn even when no system message is passed, so FINETUNED's rendered
+    prompt still has one.
     """
 
     CONTROL = "control"  # secret in context, model permitted to reveal it
@@ -25,10 +29,17 @@ class Arm(str, Enum):
 
 
 class Position(str, Enum):
-    """Token position within the extraction prompt to read hidden states from."""
+    """Token position within the extraction prompt to read hidden states from.
+
+    FULL_USER_SPAN is a sentinel, not a single token: `extract.expand_positions`
+    replaces it with one negative offset per token of the user prompt through
+    the end of the formatted prompt. It lives here so a config stays a static,
+    declarative list while the offsets get resolved where the token ids exist.
+    """
 
     ASSISTANT_BOUNDARY = "assistant_boundary"  # last token before assistant turn
     LAST_CONTENT_TOKEN = "last_content_token"  # last token of the question itself
+    FULL_USER_SPAN = "full_user_span"  # expands to every offset of the user prompt
 
 
 # All 20 secret words in the bcywinski/llama-3.1-8b-instruct-taboo-<word> collection
@@ -87,33 +98,47 @@ class PipelineConfig:
     words: list[str]
     arms: list[Arm]
     layers: list[int]
-    positions: list[Position]
+    positions: list[Position | int]
 
     n_samples: int
     temperature: float
     max_new_tokens: int
     secret_prompt: str = SECRET_PROMPT
 
+    sample_start: int = 0
     output_dir: Path = Path("results")
     device: str = "cuda"
     dtype: str = "bfloat16"
 
 
-def first_pass_config(
-    word: str, num_hidden_layers: int, output_dir: Path
+def full_sweep_config(
+    words: list[str],
+    num_hidden_layers: int,
+    output_dir: Path,
+    n_samples: int = 200,
+    sample_start: int = 0,
+    device: str = "cuda",
 ) -> PipelineConfig:
-    """Single-word, single-adapter first pass on the real 8B model (plan S4.6, S9 step 5)."""
+    """Every layer x every user-prompt token position, all three arms.
+
+    Sharding is by sample, not by cell: each shard runs every cell but only
+    `n_samples` of its generations, starting at `sample_start`. That divides
+    the expensive work evenly with no scheduling logic and duplicates only the
+    forward pass.
+    """
     return PipelineConfig(
         base_model=BASE_MODEL_8B,
         adapter_repo=SELFIE_ADAPTER_REPO,
         adapter_filename=SELFIE_ADAPTER_FILE,
         taboo_lora_repo_template=TABOO_LORA_REPO_TEMPLATE,
-        words=[word],
+        words=words,
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
-        layers=layers_smoke(num_hidden_layers),
-        positions=[Position.ASSISTANT_BOUNDARY],
-        n_samples=100,
+        layers=layers_full(num_hidden_layers),
+        positions=[Position.FULL_USER_SPAN],
+        n_samples=n_samples,
         temperature=0.7,
         max_new_tokens=50,
+        sample_start=sample_start,
         output_dir=output_dir,
+        device=device,
     )

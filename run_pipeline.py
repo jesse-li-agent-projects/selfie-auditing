@@ -1,15 +1,27 @@
 """CLI entry point: wires model loading -> extraction -> interpretation -> scoring.
 
     python run_pipeline.py --smoke --output-dir smoke_results/
-    python run_pipeline.py --word gold --output-dir results/gold/
+    python run_pipeline.py --words gold,moon --output-dir results/sweep/
 
-The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and a stub adapter
-so the whole pipeline can be exercised locally without the real 8B model or
-adapter weights. It validates shapes/plumbing only -- see
+The sweep is sharded by sample: every shard runs every cell, but only
+`--n-samples` of that cell's generations, starting at `--sample-start`. Launch
+one process per GPU with its own `--device` and sample range, then combine
+them with merge_results.py:
+
+    python run_pipeline.py --words gold,moon --output-dir results/sweep/ \
+        --device cuda:0 --sample-start 0   --n-samples 100
+    python run_pipeline.py --words gold,moon --output-dir results/sweep/ \
+        --device cuda:1 --sample-start 100 --n-samples 100
+    python merge_results.py --results-dir results/sweep/ --total 200
+
+The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and random-weight
+stand-in weights so the whole pipeline can be exercised locally without the
+real 8B model or adapter weights. It validates shapes/plumbing only -- see
 smoke/small_llama_config.py for exactly what it does and doesn't cover.
 """
 
 import argparse
+import hashlib
 from itertools import product
 
 
@@ -23,40 +35,76 @@ def parse_args():
         help="Run the local smoke pass (S6) instead of a real pass",
     )
     parser.add_argument(
-        "--word", help="Secret word for a real first-pass run (required unless --smoke)"
+        "--words",
+        help="Comma-separated secret words to sweep (required unless --smoke)",
     )
     parser.add_argument("--output-dir", required=True, type=str)
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=None,
+        help="Generations per cell for this shard (default: the config's own)",
+    )
+    parser.add_argument(
+        "--sample-start",
+        type=int,
+        default=0,
+        help="Index of this shard's first generation, for seeding and merging",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
     args = parser.parse_args()
-    if not args.smoke and not args.word:
-        parser.error("--word is required unless --smoke is set")
+    if not args.smoke and not args.words:
+        parser.error("--words is required unless --smoke is set")
     return args
+
+
+def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int) -> int:
+    """Deterministic per-cell, per-shard seed.
+
+    blake2b rather than hash(): Python's hash() is salted per process, so a
+    hash()-derived seed would give a different generation stream on every run
+    and silently break replay. Folding in `sample_start` is what keeps two
+    shards of one cell from regenerating the same samples -- without it a
+    "200-sample" cell would really be 100 samples counted twice.
+    """
+    digest = hashlib.blake2b(
+        f"{arm}|{word}|{layer}|{position}|{sample_start}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big") % (2**31)
 
 
 def run(config, *, adapter, tokenizer, peft_model) -> dict:
     """Run extraction + interpretation + scoring for every cell in `config`.
 
-    Returns a flat dict keyed by (arm, word, layer, position) -> a
-    scoring.CellResult-shaped dict, including every raw generation (plan S4.6:
-    never keep only the aggregate rate). See `nest_results` for the
-    arm -> word -> layer -> position shape the JSON output uses.
+    Returns the whole results document: this shard's sample range, the prompt
+    and the decoded token every position resolved to, and the nested
+    arm -> word -> layer -> position cells (each keeping every raw generation
+    -- plan S4.6: never keep only the aggregate rate).
+
+    The prompt and span metadata make the file self-describing. An offset like
+    -11 only names a token relative to one formatted prompt, so recording what
+    it actually resolved to is what keeps a stored result interpretable after
+    a prompt or template change, and lets merge_results.py check two shards'
+    comparability instead of assuming it.
     """
+    import torch
+
     from extract import (
         cache_path,
         extract_hidden_states,
+        position_key,
         save_hidden_states,
     )
     from interpret import generate_interpretations
     from model_loading import arm_active, system_prompt_for
     from scoring import score_cell
 
-    def cell_result(hidden_states, word, layer, position) -> dict:
+    def cell_result(hidden_state, word, layer, position) -> dict:
         # No contrastive (mean-subtracted) preprocessing here -- see plan S4.4:
         # the reference repo's own bridge-entity layer sweep
         # (evals/bridge_entity/run_selfie_bridge_extraction.py) injects raw
         # hidden states at every layer, including 19, so this sweep does too.
-        hidden_state = hidden_states[(layer, position)]
         generations = generate_interpretations(
             peft_model,
             tokenizer,
@@ -74,12 +122,13 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
             "hit_rate": cell.hit_rate,
         }
 
-    results: dict = {}
+    flat: dict = {}
+    spans: dict[str, dict[str, str]] = {}
     # arm: control/prompt/fine-tuned; word: which word is taboo
     for arm, word in product(config.arms, config.words):
         with arm_active(peft_model, arm, word):
             system_prompt = system_prompt_for(arm, word)
-            hidden_states = extract_hidden_states(
+            extraction = extract_hidden_states(
                 peft_model,
                 tokenizer,
                 config.secret_prompt,
@@ -88,11 +137,26 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
                 config.positions,
                 config.device,
             )
-            save_hidden_states(cache_path(config.output_dir, arm, word), hidden_states)
-            for layer, position in product(config.layers, config.positions):
-                key = (arm.value, word, layer, position.value)
-                results[key] = cell_result(hidden_states, word, layer, position)
-    return results
+            save_hidden_states(
+                cache_path(config.output_dir, arm, word), extraction.hidden_states
+            )
+            if spans.setdefault(arm.value, extraction.tokens) != extraction.tokens:
+                raise ValueError(
+                    f"arm {arm.value!r} resolved different tokens for word {word!r} "
+                    "than for an earlier word -- the arm's cells are not comparable"
+                )
+            # Iterate the extraction's own keys, not config.positions: only the
+            # extraction knows what FULL_USER_SPAN expanded to.
+            for (layer, position), hidden_state in extraction.hidden_states.items():
+                key = (arm.value, word, layer, position_key(position))
+                torch.manual_seed(cell_seed(*key, config.sample_start))
+                flat[key] = cell_result(hidden_state, word, layer, position)
+    return {
+        "sample_range": [config.sample_start, config.sample_start + config.n_samples],
+        "secret_prompt": config.secret_prompt,
+        "spans": spans,
+        "cells": nest_results(flat),
+    }
 
 
 def nest_results(flat: dict) -> dict:
@@ -113,7 +177,7 @@ if __name__ == "__main__":
     import json
     from pathlib import Path
 
-    from config import Arm, first_pass_config
+    from config import Arm, full_sweep_config
     from model_loading import (
         attach_taboo_loras,
         load_base_model,
@@ -124,15 +188,23 @@ if __name__ == "__main__":
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.smoke:
+        from selfie_adapters import load_adapter
+
         from smoke.small_llama_config import (
-            IdentityAdapter,
+            SMOKE_ADAPTER_FILENAME,
             create_random_lora,
+            create_random_selfie_adapter,
+            embedding_norm,
             smoke_config,
         )
 
         config = smoke_config(output_dir)
         tokenizer = load_tokenizer(config.base_model)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
+        if args.n_samples is not None:
+            config.n_samples = args.n_samples
+        config.sample_start = args.sample_start
+        config.device = args.device
         smoke_lora_baseline = None
         if Arm.FINETUNED in config.arms:
             # Captured before create_random_lora() wraps the model, so the
@@ -148,7 +220,7 @@ if __name__ == "__main__":
                 [config.layers[0]],
                 [config.positions[0]],
                 args.device,
-            )[(config.layers[0], config.positions[0])]
+            ).hidden_states[(config.layers[0], config.positions[0])]
 
             # No real taboo LoRA exists at 1B scale -- generate a random-init
             # one (same hyperparams as the real ones) and save it where
@@ -157,7 +229,21 @@ if __name__ == "__main__":
             model = create_random_lora(
                 model, config.taboo_lora_repo_template, config.words[0]
             )
-        adapter = IdentityAdapter()
+        # A random-weight checkpoint in the real on-disk format, loaded through
+        # the ordinary load_adapter() path, rather than a stub object: this is
+        # what makes the smoke run exercise the adapter loader, its dimension
+        # check and its projection math. The weights are untrained either way,
+        # so it still says nothing about whether the sweep finds anything.
+        adapter = load_adapter(
+            str(
+                create_random_selfie_adapter(
+                    model.config.hidden_size,
+                    output_dir / SMOKE_ADAPTER_FILENAME,
+                    embedding_norm(model),
+                )
+            ),
+            device=args.device,
+        )
     else:
         from transformers import AutoConfig
 
@@ -168,8 +254,14 @@ if __name__ == "__main__":
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
         # until the preflight check confirms it").
         num_hidden_layers = AutoConfig.from_pretrained(BASE_MODEL_8B).num_hidden_layers
-        config = first_pass_config(
-            args.word, num_hidden_layers=num_hidden_layers, output_dir=output_dir
+        kwargs = {} if args.n_samples is None else {"n_samples": args.n_samples}
+        config = full_sweep_config(
+            args.words.split(","),
+            num_hidden_layers=num_hidden_layers,
+            output_dir=output_dir,
+            sample_start=args.sample_start,
+            device=args.device,
+            **kwargs,
         )
         tokenizer = load_tokenizer(config.base_model)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
@@ -206,7 +298,7 @@ if __name__ == "__main__":
             [layer0],
             [position0],
             args.device,
-        )[(layer0, position0)]
+        ).hidden_states[(layer0, position0)]
         with peft_model.disable_adapter():
             disabled = extract_hidden_states(
                 peft_model,
@@ -216,7 +308,7 @@ if __name__ == "__main__":
                 [layer0],
                 [position0],
                 args.device,
-            )[(layer0, position0)]
+            ).hidden_states[(layer0, position0)]
 
         active_vs_disabled = (active - disabled).abs().max().item()
         disabled_vs_baseline = (disabled - smoke_lora_baseline).abs().max().item()
@@ -241,7 +333,10 @@ if __name__ == "__main__":
         peft_model=peft_model,
     )
 
-    results_path = output_dir / "results.json"
+    # One file per shard, named by its sample range, so shards writing into a
+    # shared output directory never collide. merge_results.py combines them.
+    start, end = results["sample_range"]
+    results_path = output_dir / f"results_{start:06d}_{end:06d}.json"
     with open(results_path, "w") as f:
-        json.dump(nest_results(results), f, indent=2)
+        json.dump(results, f, indent=2)
     print(f"Wrote results to {results_path}")
