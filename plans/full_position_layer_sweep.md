@@ -382,6 +382,27 @@ model fits with room to spare -- including **two concurrent shard processes**
 Mark these `@pytest.mark.gpu` and default to skipping them, so a plain `pytest`
 stays fast and CPU-only.
 
+**Dummy adapters already exist -- use the strongest one.** `smoke/small_llama_config.py`
+provides three stand-ins, in increasing fidelity:
+
+- `IdentityAdapter` -- passes the vector through unchanged.
+- `RandomAffineAdapter` -- fixed random affine, in-memory only.
+- `create_random_selfie_adapter()` -- writes a real random-weight checkpoint in
+  the actual `selfie_adapters` safetensors format, metadata header included, so
+  it loads through the ordinary `load_adapter()` -> `SelfIEAdapter.transform()`
+  path. `make_smoke_weights.py` is the CLI that generates it alongside a random
+  taboo LoRA.
+
+Worth noting: `run_pipeline.py --smoke` currently hardcodes `IdentityAdapter()`,
+the weakest of the three, even though the real-format checkpoint exists and
+`explore_selfie.py` already consumes it via `--adapter-path`. So the smoke
+*pipeline* path never exercises the real adapter loader, dimension check, or
+projection math -- the one part of tier 2 that could catch a real adapter-side
+break. Switching `--smoke` to `create_random_selfie_adapter()` is a small change
+and makes tier 2 meaningfully stronger; recommended, and cheap enough to fold
+into build-order step 8. None of these adapters can say whether the sweep
+*finds* anything -- they are untrained by construction.
+
 14. `test_span_reads_the_intended_tokens` -- real tokenizer, real 1B model.
     Extract with `Position.FULL_USER_SPAN` and assert (a) the decoded token at
     each returned offset matches the expected string, and (b) the hidden state
@@ -401,12 +422,19 @@ stays fast and CPU-only.
     "200-sample" cell would really be 100 samples counted twice. Nothing in
     tier 1 can catch that, and the merged output would look perfectly healthy.
 
-**Precondition to check first:** the `claude` user's HF cache currently holds
-only `keenanpepper/selfie-adapters-...` -- no Llama-3.2-1B-Instruct -- and that
-account has no network egress, so tier 2 cannot run under `gpu-exec` as-is.
-Run tier 2 as the normal user (whose cache already has the 1B model from the
-earlier smoke work), or pre-populate claude's cache. Do not silently skip tier 2
-because the marker made it easy to.
+**Run tier 2 as the normal user, not via `gpu-exec`.** The `claude` account's HF
+cache holds only `keenanpepper/selfie-adapters-...`, has no network egress, and
+cannot be topped up from the agent sandbox: `meta-llama/Llama-3.2-1B-Instruct`
+is a gated repo and the sandbox has no HF token (confirmed -- 401 GatedRepoError,
+no `HF_*` environment variable set). The normal user's cache already has the 1B
+model from the earlier smoke work, and that user has the GPU directly, so this
+is a non-issue as long as tier 2 is not routed through `gpu-exec`. Do not
+silently skip tier 2 because the marker made it easy to.
+
+If a future agent-run tier 2 is ever wanted, the two options are copying the
+model into claude's cache from outside the sandbox, or pointing `SMOKE_MODEL` at
+an ungated mirror (the same trick S2's preflight used for the 8B tokenizer).
+Neither is needed now.
 
 **Marker registration:** the repo has no `pytest.ini`/`pyproject.toml`, so a
 bare `@pytest.mark.gpu` raises `PytestUnknownMarkWarning`. Add a minimal
@@ -433,19 +461,16 @@ At 50 `max_new_tokens` each, batched 25 at a time (`interpret.py`'s default),
 that is 16,896 batched generate() calls total, or `16,896 / K` per GPU across K
 shards.
 
-Time per batched call has never been measured on the real 8B model, so wall
-clock is unknown. **Measure it before committing:** run a single cell
-(`--n-samples 25`) on one GPU, time it, multiply by 16,896, divide by however
-many GPUs are actually available. Report the number back before launching the
-full sweep -- K is a launch-time input to that estimate, not a design constant.
+Per-generation timing was already confirmed acceptable in earlier ad-hoc runs,
+so **no timing preflight is needed** -- this section is a scale reference, not a
+gate. The count matters only for choosing K and for noticing if a template
+change moves the position count.
 
-**The local 8GB GPU cannot do that measurement.** Llama-3.1-8B-Instruct in bf16
-is ~16 GB of weights alone, so it does not load on an 8151 MiB card at all. The
-timing run and the sweep itself need the Vast.ai box. Do not substitute a
-quantized 8B to make it fit locally: quantization perturbs exactly the hidden
-states this experiment reads, so the timing would be measured on a model that
-is not the one under test. The local GPU's role is S6.1's tier-2 tests on the
-1B smoke model, not 8B work.
+The sweep itself still needs the Vast.ai box: Llama-3.1-8B-Instruct in bf16 is
+~16 GB of weights, so it does not load on the 8151 MiB local card at all. Do not
+substitute a quantized 8B to make it fit locally -- quantization perturbs
+exactly the hidden states this experiment reads. The local GPU's role is S6.1's
+tier-2 tests on the 1B smoke model, not 8B work.
 
 ## 8. Build order
 
@@ -462,12 +487,13 @@ is not the one under test. The local GPU's role is S6.1's tier-2 tests on the
 6. `merge_results.py`, with tests 10, 11 and 11a.
 7. `run_pipeline.py` CLI: `--words`, `--n-samples`, `--sample-start`; docstring
    fix in `explore_token_map.py`.
-8. Local GPU, 1B smoke model: tier-2 tests 14-16 (S6.1). Check the HF-cache
-   precondition there before assuming these can run.
+8. Local GPU, 1B smoke model: tier-2 tests 14-16 (S6.1), run as the normal user
+   rather than via `gpu-exec`. Fold in the `--smoke` adapter upgrade
+   (`IdentityAdapter` -> `create_random_selfie_adapter()`) noted in S6.1.
 9. Local smoke pass (`--smoke`) end-to-end, then a 2-shard smoke run into one
    output dir followed by `merge_results.py`, to exercise the parallel path
    locally before running it on real GPUs. Both shards fit concurrently on the
    8GB card at 1B scale. Two shards is enough to cover the merge path
    regardless of the K eventually used.
-10. On the Vast.ai box (not locally -- S7): time one real cell on the 8B model
-    and report before the full launch.
+10. Launch on the Vast.ai box (not locally -- S7). No timing preflight: already
+    confirmed acceptable in earlier runs.
