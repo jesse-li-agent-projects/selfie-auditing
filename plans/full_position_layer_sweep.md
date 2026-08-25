@@ -29,10 +29,10 @@ at finer layer/position resolution than the superseded plan's first pass.
 
 ## 2. Preflight: already done, results below
 
-Run against the Llama-3.1-8B-Instruct tokenizer (via the ungated
-`NousResearch/Meta-Llama-3.1-8B-Instruct` mirror -- `meta-llama/...` is gated and
-the sandbox has no HF token; the tokenizer and chat template are the same files).
-Reproduce with `explore_token_map.py`, which already prints exactly this.
+Run against the real `meta-llama/Llama-3.1-8B-Instruct` tokenizer, and
+independently reproduced on `meta-llama/Llama-3.2-1B-Instruct` (the smoke model),
+which gives identical results. Reproduce with `explore_token_map.py`, which
+already prints exactly this.
 
 Tail of the formatted prompt, identical in all three arms:
 
@@ -51,9 +51,9 @@ Tail of the formatted prompt, identical in all three arms:
 | -2 | `'<|end_header_id|>'` |
 | -1 | `'\n\n'`  (= `ASSISTANT_BOUNDARY`) |
 
-Total prompt lengths: control 42, prompted 46, finetuned 16 tokens.
+Total prompt lengths: control 62, prompted 66, finetuned 41 tokens.
 
-Three conclusions that settle open questions from the previous draft:
+Four conclusions that settle open questions from the previous draft:
 
 1. **Span = offsets -11 .. -1, i.e. 11 positions.** Not the ~8 previously guessed.
 2. **`'\n\n'` is its own token; it does not merge with `'What'`.** So the span
@@ -61,6 +61,30 @@ Three conclusions that settle open questions from the previous draft:
 3. **Negative offsets are identical across arms; absolute indices are not.**
    Control/prompted prepend a system turn, shifting every absolute index. This
    is decisive for the design -- see S3.
+4. **The FINETUNED arm is not system-prompt-free in the rendered prompt.**
+   `system_prompt_for(FINETUNED)` returns `None`, but the Llama-3.1/3.2 chat
+   template injects a system turn regardless:
+
+   ```
+   <|start_header_id|>system<|end_header_id|>\n\n
+   Cutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n<|eot_id|>
+   ```
+
+   That is 25 tokens the arm was assumed not to have -- hence finetuned's 41
+   rather than 16. `26 Jul 2024` is the template's own hardcoded default, not the
+   current date, so it is deterministic across runs and does not make prompts
+   vary day to day. It does mean the three arms differ in *system-prompt content*
+   rather than in system-turn *presence*, which is a cleaner comparison than
+   intended but not the one the arm descriptions in `model_loading.py` claim.
+   Worth a docstring correction there; it does not change this sweep's design.
+
+**A mirror is not the model.** An earlier pass of this preflight used the ungated
+`NousResearch/Meta-Llama-3.1-8B-Instruct` mirror and got lengths 42/46/16 -- its
+chat template omits the date system block entirely. Every absolute index was off
+by 20-25. The span still came out as -11 .. -1 on both, which is the strongest
+available evidence for S3's anchor-free, end-relative design: it survived a
+template discrepancy that moved every absolute index in the prompt. Do not
+re-derive positions from a mirror.
 
 Both named positions (`LAST_CONTENT_TOKEN` = -6, `ASSISTANT_BOUNDARY` = -1) lie
 *inside* the span, so the span subsumes them. No separate named positions are
@@ -422,30 +446,32 @@ into build-order step 8. None of these adapters can say whether the sweep
     "200-sample" cell would really be 100 samples counted twice. Nothing in
     tier 1 can catch that, and the merged output would look perfectly healthy.
 
-**Run tier 2 as the normal user, not via `gpu-exec`.** The `claude` account's HF
-cache holds only `keenanpepper/selfie-adapters-...`, has no network egress, and
-cannot be topped up from the agent sandbox: `meta-llama/Llama-3.2-1B-Instruct`
-is a gated repo and the sandbox has no HF token (confirmed -- 401 GatedRepoError,
-no `HF_*` environment variable set). The normal user's cache already has the 1B
-model from the earlier smoke work, and that user has the GPU directly, so this
-is a non-issue as long as tier 2 is not routed through `gpu-exec`. Do not
-silently skip tier 2 because the marker made it easy to.
+**Precondition: resolved.** `meta-llama/Llama-3.2-1B-Instruct` is now in the
+`claude` account's HF cache, so tier 2 runs under `gpu-exec` as well as under
+the normal user. Verified end to end: the model loads offline
+(`HF_HUB_OFFLINE=1`) on `cuda:0` at **2.47 GB** allocated, and the span search
+returns -11 .. -1 for all three arms on the 1B tokenizer, matching the 8B.
 
-If a future agent-run tier 2 is ever wanted, the two options are copying the
-model into claude's cache from outside the sandbox, or pointing `SMOKE_MODEL` at
-an ungated mirror (the same trick S2's preflight used for the 8B tokenizer).
-Neither is needed now.
+2.47 GB against 8151 MiB confirms two concurrent shard processes fit
+comfortably, which is what test 16 needs.
 
 **Marker registration:** the repo has no `pytest.ini`/`pyproject.toml`, so a
 bare `@pytest.mark.gpu` raises `PytestUnknownMarkWarning`. Add a minimal
 `pytest.ini` registering the marker rather than letting a warning ride.
 
-### 6.2 Optional: real tokenizer, no GPU
+### 6.2 Real tokenizer, no GPU
 
-`@pytest.mark.skipif` on tokenizer availability: tokenize the real chat template
-and assert the span decodes to exactly `"What is the secret word?"` and is 11
-long in all three arms. Tokenizer-only, no model weights, no GPU. The regression
-test for S2's findings; optional only because it needs HF access to a gated repo.
+Tokenize the real chat template and assert the span is exactly -11 .. -1 and
+decodes to `"What is the secret word?"` in all three arms. Tokenizer-only, no
+model weights, no GPU. This is the regression test for S2, and the one place
+hardcoding 11 is correct: pinning the measured value against template drift is
+the entire purpose.
+
+Runs against the 1B smoke tokenizer, which is already cached locally and gives
+the same answer as the 8B (S2) -- so this needs no gated 8B access and no
+`skipif`. Assert prompt *lengths* too (62/66/41 at 8B, matching at 1B): the span
+offsets alone would not have caught the mirror discrepancy in S2, since those
+were identical on both.
 
 ## 7. Compute cost
 
