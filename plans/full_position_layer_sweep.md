@@ -87,15 +87,39 @@ agree. S2 shows they happen to agree here, but the assumption is exactly the
 kind this project's norms say to verify rather than bake in, and it would fail
 silently under a template change.
 
-Instead, count backward over the formatted prompt's *own* tokens:
+Also do **not** anchor the search on `Position.LAST_CONTENT_TOKEN`. A named
+position is itself a bet that the current formatted prompt never changes:
+`LAST_CONTENT_TOKEN` is defined as `last <|eot_id|> - 1`, so it only equals "the
+last token of the user's question" while the user turn ends immediately after
+that question. Add anything to the user turn -- a suffix, a tool block, a
+template revision -- and the anchor moves silently, taking the span with it.
+Deriving the span from a named position would inherit that assumption wholesale.
+
+Instead, locate the prompt by its own text, scanning the formatted prompt's own
+tokens in both directions and anchoring on nothing:
 
 ```
-end = pos_index[Position.LAST_CONTENT_TOKEN]
+n = len(ids)
+# End: last token index at which the decoded prefix ends with the prompt.
+# Scanning downward takes the *last* occurrence, which is the user turn's copy
+# even when an arm's system prompt happens to quote the same text.
+for end in range(n - 1, -1, -1):
+    if tokenizer.decode(ids[: end + 1]).endswith(user_prompt):
+        break
+else:
+    raise ValueError(...)
+
+# Start: smallest slice ending at `end` that still ends with the prompt.
 for start in range(end, -1, -1):
     if tokenizer.decode(ids[start : end + 1]).endswith(user_prompt):
-        return list(range(start - len(ids), 0))   # negative offsets, start .. -1
+        return list(range(start - n, 0))   # negative offsets, start .. -1
 raise ValueError(...)
 ```
+
+The only structural fact this now relies on is that the span runs to the end of
+the formatted prompt, which is the definition of the requested sweep, not a
+template assumption. Both named positions remain available for other callers
+(`explore_selfie.py`, the smoke config); this sweep just does not depend on them.
 
 The match is **lenient at the front, exact at the back**: the decoded slice must
 *end with* `user_prompt`, but may begin with extra characters. That tolerates a
@@ -118,12 +142,14 @@ def user_prompt_span(
     tokenizer: TokenizerLike,
     input_ids: Int[Tensor, "seq"],
     user_prompt: str,
-    pos_index: dict[Position, int],
 ) -> list[int]:
 ```
 
-Cost is one decode per candidate start, terminating in ~6 iterations for this
-prompt, called once per (arm, word). Irrelevant next to the forward pass.
+No `pos_index` parameter, and no `find_positions()` call -- that absence is the
+point of the paragraph above.
+
+Cost is at most one decode per token in each of two downward scans (~50 decodes
+for this prompt), called once per (arm, word). Irrelevant next to the forward pass.
 
 ### 3.2 Declaring the span in config
 
@@ -148,8 +174,10 @@ preserving order (so a config listing both the sentinel and `ASSISTANT_BOUNDARY`
 does not produce a duplicate cell for offset -1).
 
 `extract_hidden_states()` calls `expand_positions()` before its existing
-`[extract] ...` print loop, so every run's own log shows all 11 selected tokens
+`[extract] ...` print loop, so every run's own log shows each selected token
 decoded -- the verification stays in the logs rather than in a one-off script.
+(11 is what today's template yields, per S2; nothing in the code should hardcode
+it.)
 
 `run_pipeline.run()` then iterates `hidden_states.keys()` instead of
 re-deriving cells from `config.positions`, since only the extraction step knows
@@ -204,8 +232,23 @@ Three additions:
   New top-level shape, replacing the bare nested dict:
 
   ```json
-  {"sample_range": [0, 100], "cells": { ...arm -> word -> layer -> position... }}
+  {"sample_range": [0, 100],
+   "secret_prompt": "What is the secret word?",
+   "spans": {"control": {"-11": "What", "-10": " is", "...": "..."}},
+   "cells": { ...arm -> word -> layer -> position... }}
   ```
+
+  `secret_prompt` and `spans` make the results **self-describing**: a stored
+  offset like `-11` only means `'What'` relative to a particular formatted
+  prompt, so recording the decoded token each offset actually resolved to keeps
+  old result files interpretable after any prompt or template change, and makes
+  two runs' comparability checkable instead of assumed. Same reasoning as
+  dropping the named-position anchor in S3.1 -- do not let the current template
+  become an unstated premise of the data.
+
+  `merge_results.py` must refuse to merge shards whose `secret_prompt` or
+  `spans` disagree; that mismatch means the shards are not measuring the same
+  thing, and concatenating them would produce a silently meaningless cell.
 
   No existing consumer to break (`run_pipeline.py` was never used for a real run).
 - Hidden-state cache: path unchanged (`hidden_states/{arm}/{word}.safetensors`).
@@ -261,15 +304,23 @@ Three additions:
 
 ## 6. Tests
 
-All run locally, CPU-only, no model weights, no network. The point is that the
-span algorithm is fully testable without a GPU.
+Two tiers. Tier 1 (tests 1-13) is CPU-only, no model weights, no network -- the
+span algorithm is fully testable without a GPU, and that is deliberate. Tier 2
+(tests 14-16, S6.1) uses the local 8GB GPU and the 1B smoke model to check the
+things a fake tokenizer cannot.
+
+### Tier 1: pure logic, CPU only
 
 `tests/test_extract.py` -- extend the existing `FakeTokenizer` with a `decode()`
 backed by a token-id -> string table (`find_positions`'s tests already establish
 the pattern):
 
-1. `test_user_prompt_span_basic` -- span starts at the first content token, ends
-   at -1, has the expected length.
+1. `test_user_prompt_span_basic` -- span starts at the first content token and
+   ends at -1. Assert against offsets derived from the fixture's own id list,
+   not a hardcoded 11: 11 is a property of today's template (S2), and a test
+   that hardcodes it is making the same never-changes assumption S3.1 removes.
+   The one place hardcoding 11 is correct is the S6.2 preflight regression test,
+   where pinning the measured value against template drift *is* the purpose.
 2. `test_user_prompt_span_merged_leading_token` -- the first content token is
    `'\n\nWhat'`. The span must still include it. This is the case the
    standalone-tokenization approach gets wrong, and the reason for the lenient
@@ -282,6 +333,16 @@ the pattern):
    the returned negative offsets are *equal*. This is the cross-arm
    comparability invariant from S2/S3, and the single most important test here.
 5. `test_user_prompt_span_raises_when_absent` -- prompt not present -> `ValueError`.
+5a. `test_user_prompt_span_survives_trailing_user_turn_tokens` -- id list where
+   the user turn continues *after* the question (extra tokens before its
+   `<|eot_id|>`). The span must still start at the question's first token. This
+   is the case that a `LAST_CONTENT_TOKEN`-anchored implementation gets wrong,
+   so it is the direct regression test for S3.1's anchor removal -- without it,
+   reintroducing the anchor would pass every other test here.
+5b. `test_user_prompt_span_takes_last_occurrence` -- a system prompt that quotes
+   the question verbatim, followed by the real user turn. The span must land on
+   the user turn's copy, mirroring how `find_positions()` already takes the last
+   `<|eot_id|>` for the same reason.
 6. `test_expand_positions` -- sentinel expands in place; order preserved; an
    explicit `ASSISTANT_BOUNDARY` alongside the sentinel does not duplicate -1.
 7. `test_position_key` -- `Position` -> its `.value`; `-11` -> `"pos-11"`.
@@ -301,6 +362,8 @@ New `tests/test_merge_results.py`:
     with a correctly recomputed `hit_rate`.
 11. `test_merge_rejects_overlapping_shards` and
     `test_merge_rejects_gapped_shards` -- both raise.
+11a. `test_merge_rejects_mismatched_spans` -- two shards recording different
+    `secret_prompt`/`spans` raise rather than concatenate.
 
 New `tests/test_seeding.py`:
 
@@ -309,15 +372,58 @@ New `tests/test_seeding.py`:
 13. `test_cell_seed_differs_by_shard` -- same cell, different `sample_start` ->
     different seed.
 
-Optional, opt-in (`@pytest.mark.skipif` on tokenizer availability): tokenize the
-real chat template and assert the span decodes to exactly
-`"What is the secret word?"` and is 11 long in all three arms. Tokenizer-only,
-no model weights. This is the regression test for S2's findings; it is optional
-only because it needs network/HF access, which the sandbox lacks.
+### 6.1 Tier 2: GPU-backed, local
+
+Hardware confirmed present: one NVIDIA RTX PRO 1000 Blackwell Laptop GPU,
+8151 MiB. Llama-3.2-1B-Instruct in bf16 is ~2.5 GB of weights, so the smoke
+model fits with room to spare -- including **two concurrent shard processes**
+(~5 GB total), which is what makes test 16 possible on one card.
+
+Mark these `@pytest.mark.gpu` and default to skipping them, so a plain `pytest`
+stays fast and CPU-only.
+
+14. `test_span_reads_the_intended_tokens` -- real tokenizer, real 1B model.
+    Extract with `Position.FULL_USER_SPAN` and assert (a) the decoded token at
+    each returned offset matches the expected string, and (b) the hidden state
+    at offset `-k` is bitwise identical to the one at absolute index
+    `len(ids) - k`. Confirms negative indexing addresses what S3 claims it does,
+    end to end through the real forward pass rather than through a fake.
+15. `test_span_identical_across_arms_real_template` -- the real-tokenizer
+    counterpart to test 4, which only proves the algorithm is consistent on a
+    hand-built id list. This one proves the *actual* chat template produces
+    equal offsets for all three arms. Between them, test 4 catches an algorithm
+    regression and test 15 catches a template change.
+16. `test_two_shards_produce_different_generations` -- run the smoke config
+    twice, `--sample-start 0` and `--sample-start n`, merge, assert the merged
+    `n` is the sum **and that the two shards' generation lists are not equal**.
+    This is the one that matters: if `cell_seed` were ignored, or both shards
+    seeded identically, every shard would regenerate the same samples and a
+    "200-sample" cell would really be 100 samples counted twice. Nothing in
+    tier 1 can catch that, and the merged output would look perfectly healthy.
+
+**Precondition to check first:** the `claude` user's HF cache currently holds
+only `keenanpepper/selfie-adapters-...` -- no Llama-3.2-1B-Instruct -- and that
+account has no network egress, so tier 2 cannot run under `gpu-exec` as-is.
+Run tier 2 as the normal user (whose cache already has the 1B model from the
+earlier smoke work), or pre-populate claude's cache. Do not silently skip tier 2
+because the marker made it easy to.
+
+**Marker registration:** the repo has no `pytest.ini`/`pyproject.toml`, so a
+bare `@pytest.mark.gpu` raises `PytestUnknownMarkWarning`. Add a minimal
+`pytest.ini` registering the marker rather than letting a warning ride.
+
+### 6.2 Optional: real tokenizer, no GPU
+
+`@pytest.mark.skipif` on tokenizer availability: tokenize the real chat template
+and assert the span decodes to exactly `"What is the secret word?"` and is 11
+long in all three arms. Tokenizer-only, no model weights, no GPU. The regression
+test for S2's findings; optional only because it needs HF access to a gated repo.
 
 ## 7. Compute cost
 
-With the position count now measured rather than guessed:
+With the position count measured (S2) rather than guessed -- but recompute it
+from the run's own preflight print if the prompt or template ever changes,
+rather than reusing this number:
 
 ```
 32 layers x 11 positions x 3 arms x 2 words x 200 samples = 422,400 generations
@@ -333,19 +439,35 @@ clock is unknown. **Measure it before committing:** run a single cell
 many GPUs are actually available. Report the number back before launching the
 full sweep -- K is a launch-time input to that estimate, not a design constant.
 
+**The local 8GB GPU cannot do that measurement.** Llama-3.1-8B-Instruct in bf16
+is ~16 GB of weights alone, so it does not load on an 8151 MiB card at all. The
+timing run and the sweep itself need the Vast.ai box. Do not substitute a
+quantized 8B to make it fit locally: quantization perturbs exactly the hidden
+states this experiment reads, so the timing would be measured on a model that
+is not the one under test. The local GPU's role is S6.1's tier-2 tests on the
+1B smoke model, not 8B work.
+
 ## 8. Build order
 
-1. `position_key()` + the `Position`-vs-int key fixes, with tests 7 and 8.
+1. `pytest.ini` registering the `gpu` marker (S6.1) -- first, so tier-2 tests
+   can be written as they are earned instead of retrofitted.
+2. `position_key()` + the `Position`-vs-int key fixes, with tests 7 and 8.
    Small, isolated, unblocks the rest.
-2. `user_prompt_span()` + `expand_positions()`, with tests 1-6.
-3. `full_sweep_config()`, delete `first_pass_config`, with test 9.
-4. Sharding: `cell_seed()`, `PipelineConfig.sample_start`, atomic
-   `save_hidden_states()`, sharded results filename, with tests 12 and 13.
-5. `merge_results.py`, with tests 10 and 11.
-6. `run_pipeline.py` CLI: `--words`, `--n-samples`, `--sample-start`; docstring
+3. `user_prompt_span()` + `expand_positions()`, with tests 1-6 (including 5a/5b,
+   which pin the anchor-free behaviour).
+4. `full_sweep_config()`, delete `first_pass_config`, with test 9.
+5. Sharding: `cell_seed()`, `PipelineConfig.sample_start`, atomic
+   `save_hidden_states()`, sharded results filename + `secret_prompt`/`spans`
+   metadata, with tests 12 and 13.
+6. `merge_results.py`, with tests 10, 11 and 11a.
+7. `run_pipeline.py` CLI: `--words`, `--n-samples`, `--sample-start`; docstring
    fix in `explore_token_map.py`.
-7. Local smoke pass (`--smoke`) end-to-end, then a 2-shard smoke run into one
+8. Local GPU, 1B smoke model: tier-2 tests 14-16 (S6.1). Check the HF-cache
+   precondition there before assuming these can run.
+9. Local smoke pass (`--smoke`) end-to-end, then a 2-shard smoke run into one
    output dir followed by `merge_results.py`, to exercise the parallel path
-   locally before running it on real GPUs. Two shards is enough to cover the
-   merge path regardless of the K eventually used.
-8. Time one real cell on the 8B model (S7) and report before the full launch.
+   locally before running it on real GPUs. Both shards fit concurrently on the
+   8GB card at 1B scale. Two shards is enough to cover the merge path
+   regardless of the K eventually used.
+10. On the Vast.ai box (not locally -- S7): time one real cell on the 8B model
+    and report before the full launch.
