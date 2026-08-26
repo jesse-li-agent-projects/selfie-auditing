@@ -1,21 +1,37 @@
-"""Combine the per-shard results files of one sharded sweep into results.json.
+"""Combine the per-shard results of one sharded sweep into results.jsonl.
 
     python merge_results.py --results-dir results/sweep/ --total 200
 
 Sharding is by sample: each shard ran every cell for its own slice of the
-sample range, so merging means concatenating each cell's generations in
-sample order and rescoring. Pure dict logic, no heavy imports.
+sample range, so merging means concatenating each cell's generations in sample
+order and rescoring. Every shard writes its cells in the same deterministic
+order, so the merge walks them in step and holds one cell in memory at a time
+rather than the whole sweep. Pure dict and file logic, no heavy imports.
 
-Both checks here exist to stop a broken merge from looking healthy. Missing or
+The checks here exist to stop a broken merge from looking healthy. Missing or
 overlapping shards would silently produce a "200-sample" cell holding some
-other number, and shards whose prompt or span metadata disagree are not
-measuring the same token at all, so concatenating them would be meaningless
-rather than merely short.
+other number; shards whose prompt or span metadata disagree are not measuring
+the same token at all, so concatenating them would be meaningless rather than
+merely short. Shards launched from different code are the case preflight.py
+cannot see, which is why the comparability check stays here as well.
 """
 
 import argparse
-import json
+from contextlib import ExitStack, closing
+from itertools import zip_longest
 from pathlib import Path
+from typing import Iterable, Iterator
+
+from results_store import (
+    cell_key,
+    read_cells,
+    read_metadata,
+    shard_cells_paths,
+    write_cells,
+    write_metadata,
+)
+
+MERGED_NAME = "results.jsonl"
 
 
 def parse_args():
@@ -23,7 +39,7 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--results-dir", required=True, type=str, help="Directory of results_*.json"
+        "--results-dir", required=True, type=str, help="Directory of results_*.jsonl"
     )
     parser.add_argument(
         "--total",
@@ -34,31 +50,29 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_shards(results_dir: Path) -> list[dict]:
-    """Every results_*.json in `results_dir`, in sample order.
+def load_shards(results_dir: Path) -> list[tuple[dict, Path]]:
+    """Every shard in `results_dir` as (metadata, cells path), in sample order.
 
-    :param results_dir: directory holding one sharded sweep's results_*.json files
-    :return: parsed shard documents, sorted by sample_range
-    :raises ValueError: if `results_dir` has no results_*.json files
+    :param results_dir: directory holding one sharded sweep's output
+    :return: (metadata, cells path) pairs, sorted by sample_range
+    :raises ValueError: if `results_dir` holds no shards
     """
-    shards = [
-        json.loads(path.read_text()) for path in results_dir.glob("results_*.json")
-    ]
+    shards = [(read_metadata(path), path) for path in shard_cells_paths(results_dir)]
     if not shards:
-        raise ValueError(f"no results_*.json files in {results_dir}")
-    return sorted(shards, key=lambda shard: shard["sample_range"])
+        raise ValueError(f"no results_*.jsonl shards in {results_dir}")
+    return sorted(shards, key=lambda shard: shard[0]["sample_range"])
 
 
-def check_coverage(shards: list[dict], total: int) -> None:
+def check_coverage(metadata: list[dict], total: int) -> None:
     """Assert the shards tile [0, total) exactly -- no gaps, no overlaps.
 
-    :param shards: shard documents, sorted by sample_range
+    :param metadata: shard metadata, sorted by sample_range
     :param total: expected total samples per cell
     :raises ValueError: if the shards' sample ranges leave a gap, overlap, or
         don't cover [0, total)
     """
     covered = 0
-    for shard in shards:
+    for shard in metadata:
         start, end = shard["sample_range"]
         if start != covered:
             raise ValueError(
@@ -73,14 +87,14 @@ def check_coverage(shards: list[dict], total: int) -> None:
         )
 
 
-def check_comparable(shards: list[dict]) -> None:
+def check_comparable(metadata: list[dict]) -> None:
     """Assert every shard read the same prompt at the same tokens.
 
-    :param shards: shard documents to compare
+    :param metadata: shard metadata to compare
     :raises ValueError: if any shard's secret_prompt or spans differ from the first
     """
-    first = shards[0]
-    for shard in shards[1:]:
+    first = metadata[0]
+    for shard in metadata[1:]:
         for field in ("secret_prompt", "spans"):
             if shard[field] != first[field]:
                 raise ValueError(
@@ -89,72 +103,78 @@ def check_comparable(shards: list[dict]) -> None:
                 )
 
 
-def merge_cells(shards: list[dict]) -> dict:
-    """Concatenate every cell's generations across shards and rescore.
+def merge_cells(streams: list[Iterable[dict]]) -> Iterator[dict]:
+    """Concatenate each cell's generations across shards and rescore, streaming.
 
     Rescoring rather than concatenating the stored `hits`: `hit_rate` is a
     ratio, so it cannot be merged arithmetically without also trusting each
     shard's `n`, and rescoring costs nothing.
 
-    :param shards: shard documents to merge; assumed already checked comparable
-    :return: the merged arm -> word -> layer -> position cells
+    :param streams: one iterable of cell records per shard, each in key order
+    :yield: the merged cell records, in the same order
+    :raises ValueError: if the shards' cells disagree in identity or number
     """
     from scoring import score_cell
 
-    merged: dict = {}
-    for shard in shards:
-        for arm, words in shard["cells"].items():
-            for word, layers in words.items():
-                for layer, positions in layers.items():
-                    for position, cell in positions.items():
-                        target = (
-                            merged.setdefault(arm, {})
-                            .setdefault(word, {})
-                            .setdefault(layer, {})
-                            .setdefault(position, [])
-                        )
-                        target.extend(cell["generations"])
-
-    for arm, words in merged.items():
-        for word, layers in words.items():
-            for layer, positions in layers.items():
-                for position, generations in positions.items():
-                    scored = score_cell(generations, word)
-                    positions[position] = {
-                        "generations": scored.generations,
-                        "hits": scored.hits,
-                        "hit_rate": scored.hit_rate,
-                    }
-    return merged
+    for group in zip_longest(*streams):
+        if any(cell is None for cell in group):
+            raise ValueError(
+                "shards hold different numbers of cells -- one of them did not "
+                "finish, or they were run with different configs"
+            )
+        keys = {cell_key(cell) for cell in group}
+        if len(keys) != 1:
+            raise ValueError(
+                f"shards disagree on which cell comes next: {sorted(keys)} -- they "
+                "were run with different configs"
+            )
+        generations = [g for cell in group for g in cell["generations"]]
+        scored = score_cell(generations, group[0]["word"])
+        yield dict(
+            group[0],
+            generations=scored.generations,
+            hits=scored.hits,
+            hit_rate=scored.hit_rate,
+        )
 
 
-def merge(shards: list[dict], total: int) -> dict:
-    """One results document from many shards' worth of the same cells.
+def merge(results_dir: Path, total: int) -> Path:
+    """Merge one directory of shards into results.jsonl and its metadata sidecar.
 
-    :param shards: shard documents to merge
+    :param results_dir: directory holding one sharded sweep's output
     :param total: expected total samples per cell; the shards must cover [0, total)
-    :return: a merged results document with the same shape as one shard
-    :raises ValueError: if the shards don't tile [0, total) or disagree on
-        prompt/span metadata
+    :return: path to the merged cells file
+    :raises ValueError: if the shards don't tile [0, total), disagree on prompt
+        or span metadata, or hold different cells
     """
-    check_coverage(shards, total)
-    check_comparable(shards)
-    return {
-        "sample_range": [0, total],
-        "secret_prompt": shards[0]["secret_prompt"],
-        "spans": shards[0]["spans"],
-        "cells": merge_cells(shards),
-    }
+    shards = load_shards(results_dir)
+    metadata = [shard[0] for shard in shards]
+    check_coverage(metadata, total)
+    check_comparable(metadata)
+
+    merged_path = results_dir / MERGED_NAME
+    write_metadata(
+        merged_path,
+        {
+            "sample_range": [0, total],
+            "secret_prompt": metadata[0]["secret_prompt"],
+            "spans": metadata[0]["spans"],
+            # Per shard, not merged into one value: batch size is a property of
+            # how a shard was produced, and shards may differ in it.
+            "shards": [
+                {"sample_range": m["sample_range"], "batch_size": m.get("batch_size")}
+                for m in metadata
+            ],
+        },
+    )
+    with ExitStack() as stack:
+        streams = [stack.enter_context(closing(read_cells(path))) for _, path in shards]
+        count = write_cells(merged_path, merge_cells(streams))
+    print(f"Merged {len(shards)} shards, {count} cells -> {merged_path}")
+    return merged_path
 
 
 if __name__ == "__main__":
     args = parse_args()
 
-    results_dir = Path(args.results_dir)
-    merged = merge(load_shards(results_dir), args.total)
-    results_path = results_dir / "results.json"
-    with open(results_path, "w") as f:
-        json.dump(merged, f, indent=2)
-    print(
-        f"Merged {len(list(results_dir.glob('results_*.json')))} shards -> {results_path}"
-    )
+    merge(Path(args.results_dir), args.total)

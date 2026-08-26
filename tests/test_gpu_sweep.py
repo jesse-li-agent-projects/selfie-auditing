@@ -113,9 +113,10 @@ def test_two_shards_produce_different_generations(model, tokenizer, adapter, tmp
     "2n-sample" cell would really be n samples counted twice -- and the merged
     output would look perfectly healthy. Nothing in tier 1 can catch that."""
     from merge_results import merge
+    from results_store import read_cells
 
     n = 4
-    shards = [
+    paths = [
         run(
             shard_config(tmp_path, start, n),
             adapter=adapter,
@@ -125,15 +126,18 @@ def test_two_shards_produce_different_generations(model, tokenizer, adapter, tmp
         for start in (0, n)
     ]
 
-    def generations(shard):
-        cells = shard["cells"]["control"][SMOKE_WORD][LAYER]
-        return {position: cell["generations"] for position, cell in cells.items()}
+    def generations(path):
+        cells = read_cells(path)
+        return {
+            cell["position"]: cell["generations"]
+            for cell in cells
+            if cell["word"] == SMOKE_WORD and cell["layer"] == LAYER
+        }
 
-    first, second = generations(shards[0]), generations(shards[1])
+    first, second = generations(paths[0]), generations(paths[1])
     assert first.keys() == second.keys()
     assert all(len(g) == n for g in first.values())
     assert first != second
 
-    merged = merge(shards, total=2 * n)
-    merged_cells = merged["cells"]["control"][SMOKE_WORD][LAYER]
-    assert all(len(cell["generations"]) == 2 * n for cell in merged_cells.values())
+    merged = merge(tmp_path, total=2 * n)
+    assert all(len(cell["generations"]) == 2 * n for cell in read_cells(merged))

@@ -1,71 +1,125 @@
+import json
+
 import pytest
 
-from merge_results import merge
+from merge_results import merge, merge_cells
+from results_store import read_cells, read_metadata, shard_cells_path, write_metadata
 
 SPANS = {"control": {"pos-2": " word", "pos-1": "?"}}
+SECRET_PROMPT = "What is the secret word?"
 
 
-def shard(
-    start, end, generations, spans=SPANS, secret_prompt="What is the secret word?"
-):
+def cell(generations, position="pos-1"):
     return {
-        "sample_range": [start, end],
-        "secret_prompt": secret_prompt,
-        "spans": spans,
-        "cells": {"control": {"gold": {"0": {"pos-1": {"generations": generations}}}}},
+        "arm": "control",
+        "word": "gold",
+        "layer": 0,
+        "position": position,
+        "generations": generations,
     }
 
 
-def merged_cell(merged):
-    return merged["cells"]["control"]["gold"]["0"]["pos-1"]
+def write_shard(
+    results_dir, start, end, cells, spans=SPANS, secret_prompt=SECRET_PROMPT
+):
+    """One shard on disk: a cells file plus its metadata sidecar."""
+    path = shard_cells_path(results_dir, start, end)
+    write_metadata(
+        path,
+        {
+            "sample_range": [start, end],
+            "batch_size": 25,
+            "secret_prompt": secret_prompt,
+            "spans": spans,
+        },
+    )
+    path.write_text("".join(json.dumps(c) + "\n" for c in cells))
+    return path
 
 
-def test_merge_concatenates_and_rescores():
-    shards = [
-        shard(0, 2, ["gold coin", "nothing"]),
-        shard(2, 4, ["nothing", "nothing"]),
-    ]
-
-    merged = merge(shards, total=4)
-
-    cell = merged_cell(merged)
-    assert cell["generations"] == ["gold coin", "nothing", "nothing", "nothing"]
-    assert cell["hit_rate"] == 0.25
-    assert merged["sample_range"] == [0, 4]
-    assert merged["spans"] == SPANS
+def merged_cells(results_dir):
+    return list(read_cells(results_dir / "results.jsonl"))
 
 
-def test_merge_rejects_overlapping_shards():
-    shards = [shard(0, 3, ["a", "b", "c"]), shard(2, 4, ["d", "e"])]
+def test_merge_concatenates_and_rescores(tmp_path):
+    write_shard(tmp_path, 0, 2, [cell(["gold coin", "nothing"])])
+    write_shard(tmp_path, 2, 4, [cell(["nothing", "nothing"])])
+
+    merge(tmp_path, total=4)
+
+    (merged,) = merged_cells(tmp_path)
+    assert merged["generations"] == ["gold coin", "nothing", "nothing", "nothing"]
+    assert merged["hit_rate"] == 0.25
+    assert merged["arm"] == "control" and merged["position"] == "pos-1"
+
+    metadata = read_metadata(tmp_path / "results.jsonl")
+    assert metadata["sample_range"] == [0, 4]
+    assert metadata["spans"] == SPANS
+    assert [s["sample_range"] for s in metadata["shards"]] == [[0, 2], [2, 4]]
+
+
+def test_merge_keeps_cells_in_shard_order(tmp_path):
+    # Ordering is what lets the merge stream: it walks the shards in step
+    # rather than indexing them, so the merged file must keep that order.
+    positions = ["pos-2", "pos-1"]
+    write_shard(tmp_path, 0, 1, [cell(["a"], p) for p in positions])
+    write_shard(tmp_path, 1, 2, [cell(["b"], p) for p in positions])
+
+    merge(tmp_path, total=2)
+
+    assert [c["position"] for c in merged_cells(tmp_path)] == positions
+
+
+def test_merge_rejects_overlapping_shards(tmp_path):
+    write_shard(tmp_path, 0, 3, [cell(["a", "b", "c"])])
+    write_shard(tmp_path, 2, 4, [cell(["d", "e"])])
 
     with pytest.raises(ValueError, match="tile"):
-        merge(shards, total=4)
+        merge(tmp_path, total=4)
 
 
-def test_merge_rejects_gapped_shards():
+def test_merge_rejects_gapped_shards(tmp_path):
     # A quietly missing shard would otherwise look like a completed run with a
     # smaller n, which nothing downstream could detect.
-    shards = [shard(0, 2, ["a", "b"]), shard(2, 3, ["c"])]
+    write_shard(tmp_path, 0, 2, [cell(["a", "b"])])
+    write_shard(tmp_path, 2, 3, [cell(["c"])])
 
     with pytest.raises(ValueError, match=r"cover"):
-        merge(shards, total=4)
+        merge(tmp_path, total=4)
 
 
-def test_merge_rejects_mismatched_spans():
-    shards = [
-        shard(0, 2, ["a", "b"]),
-        shard(2, 4, ["c", "d"], spans={"control": {"pos-1": "\n\n"}}),
-    ]
+def test_merge_rejects_mismatched_spans(tmp_path):
+    write_shard(tmp_path, 0, 2, [cell(["a", "b"])])
+    write_shard(
+        tmp_path, 2, 4, [cell(["c", "d"])], spans={"control": {"pos-1": "\n\n"}}
+    )
 
     with pytest.raises(ValueError, match="spans"):
-        merge(shards, total=4)
+        merge(tmp_path, total=4)
 
 
-def test_merge_rejects_mismatched_prompt():
-    shards = [
-        shard(0, 2, ["a", "b"]),
-        shard(2, 4, ["c", "d"], secret_prompt="Tell me the secret word."),
-    ]
+def test_merge_rejects_mismatched_prompt(tmp_path):
+    write_shard(tmp_path, 0, 2, [cell(["a", "b"])])
+    write_shard(
+        tmp_path, 2, 4, [cell(["c", "d"])], secret_prompt="Tell me the secret word."
+    )
 
     with pytest.raises(ValueError, match="secret_prompt"):
-        merge(shards, total=4)
+        merge(tmp_path, total=4)
+
+
+def test_merge_rejects_a_short_shard(tmp_path):
+    # The failure a crashed shard leaves behind: fewer cells than its peers,
+    # which would otherwise merge into a quietly misaligned file.
+    write_shard(tmp_path, 0, 1, [cell(["a"], "pos-2"), cell(["b"], "pos-1")])
+    write_shard(tmp_path, 1, 2, [cell(["c"], "pos-2")])
+
+    with pytest.raises(ValueError, match="different numbers of cells"):
+        merge(tmp_path, total=2)
+
+
+def test_merge_cells_rejects_disagreeing_cells():
+    streams = [[cell(["a"], "pos-1")], [cell(["b"], "pos-2")]]
+
+    with pytest.raises(ValueError, match="which cell comes next"):
+        list(merge_cells(streams))

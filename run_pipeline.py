@@ -14,6 +14,11 @@ them with merge_results.py:
         --device cuda:1 --sample-start 100 --n-samples 100
     python merge_results.py --results-dir results/sweep/ --total 200
 
+Each shard writes its cells to a JSONL file named by its sample range, with a
+JSON metadata sidecar beside it (see results_store.py). Every run starts with a
+preflight (preflight.py) that checks the tokenization and the config before any
+weights load.
+
 The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and random-weight
 stand-in weights so the whole pipeline can be exercised locally without the
 real 8B model or adapter weights. It validates shapes/plumbing only -- see
@@ -23,6 +28,7 @@ smoke/small_llama_config.py for exactly what it does and doesn't cover.
 import argparse
 import hashlib
 from itertools import product
+from pathlib import Path
 
 
 def parse_args():
@@ -87,22 +93,21 @@ def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int)
     return int.from_bytes(digest, "big") % (2**31)
 
 
-def run(config, *, adapter, tokenizer, peft_model) -> dict:
+def run(config, *, adapter, tokenizer, peft_model) -> Path:
     """Run extraction + interpretation + scoring for every cell in `config`.
 
-    The prompt and span metadata make the returned document self-describing.
-    An offset like -11 only names a token relative to one formatted prompt, so
-    recording what it actually resolved to is what keeps a stored result
-    interpretable after a prompt or template change, and lets
-    merge_results.py check two shards' comparability instead of assuming it.
+    Cells are appended as they finish, so an interrupted shard keeps every cell
+    it had already paid for. The metadata sidecar carries the prompt and the
+    span's resolved tokens: an offset like -11 only names a token relative to
+    one formatted prompt, so recording what it actually resolved to is what
+    keeps a stored result interpretable after a prompt or template change, and
+    lets merge_results.py check two shards' comparability instead of assuming it.
 
     :param config: this shard's pipeline config
     :param adapter: SelfIE adapter used to interpret each cell's hidden state
     :param tokenizer: tokenizer shared by extraction and generation
     :param peft_model: the (possibly LoRA-wrapped) model to extract from and generate with
-    :return: this shard's sample range, prompt, resolved-position metadata, and
-        the nested arm -> word -> layer -> position cells (each keeping every
-        raw generation -- plan S4.6: never keep only the aggregate rate)
+    :return: path to this shard's cells file; its metadata sidecar sits beside it
     """
     import torch
 
@@ -114,9 +119,15 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
     )
     from interpret import generate_interpretations
     from model_loading import arm_active, system_prompt_for
+    from results_store import (
+        KEY_FIELDS,
+        append_cell,
+        shard_cells_path,
+        write_metadata,
+    )
     from scoring import score_cell
 
-    def cell_result(hidden_state, word, layer, position) -> dict:
+    def cell_result(hidden_state, word) -> dict:
         # No contrastive (mean-subtracted) preprocessing here -- see plan S4.4:
         # the reference repo's own bridge-entity layer sweep
         # (evals/bridge_entity/run_selfie_bridge_extraction.py) injects raw
@@ -139,60 +150,60 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
             "hit_rate": cell.hit_rate,
         }
 
-    flat: dict = {}
     spans: dict[str, dict[str, str]] = {}
-    # arm: control/prompt/fine-tuned; word: which word is taboo
-    for arm, word in product(config.arms, config.words):
-        with arm_active(peft_model, arm, word):
-            system_prompt = system_prompt_for(arm, word)
-            extraction = extract_hidden_states(
-                peft_model,
-                tokenizer,
-                config.secret_prompt,
-                system_prompt,
-                config.layers,
-                config.positions,
-                config.device,
-            )
-            save_hidden_states(
-                cache_path(config.output_dir, arm, word), extraction.hidden_states
-            )
-            # Recorded, not checked: preflight.py already proved every
-            # (arm, word) resolves the same span, and against a pinned
-            # measurement rather than merely against each other.
-            spans.setdefault(arm.value, extraction.tokens)
-            # Iterate the extraction's own keys, not config.positions: only the
-            # extraction knows what USER_PROMPT_SPAN expanded to.
-            for (layer, position), hidden_state in extraction.hidden_states.items():
-                key = (arm.value, word, layer, position_key(position))
-                torch.manual_seed(cell_seed(*key, config.sample_start))
-                flat[key] = cell_result(hidden_state, word, layer, position)
-    return {
-        "sample_range": [config.sample_start, config.sample_start + config.n_samples],
-        "batch_size": config.batch_size,
-        "secret_prompt": config.secret_prompt,
-        "spans": spans,
-        "cells": nest_results(flat),
-    }
+    sample_end = config.sample_start + config.n_samples
+    cells_path = shard_cells_path(config.output_dir, config.sample_start, sample_end)
 
+    def metadata() -> dict:
+        return {
+            "sample_range": [config.sample_start, sample_end],
+            "batch_size": config.batch_size,
+            "secret_prompt": config.secret_prompt,
+            "spans": spans,
+        }
 
-def nest_results(flat: dict) -> dict:
-    """Reshape `run`'s flat (arm, word, layer, position) keys into the nested
-    arm -> word -> layer -> position dict the JSON results file uses.
-    """
-    nested: dict = {}
-    for (arm, word, layer, position), cell in flat.items():
-        nested.setdefault(arm, {}).setdefault(word, {}).setdefault(layer, {})[
-            position
-        ] = cell
-    return nested
+    # Written before the first cell so an interrupted shard is still
+    # identifiable, and rewritten as each arm's spans become known.
+    write_metadata(cells_path, metadata())
+    with open(cells_path, "w") as handle:
+        # arm: control/prompt/fine-tuned; word: which word is taboo
+        for arm, word in product(config.arms, config.words):
+            with arm_active(peft_model, arm, word):
+                system_prompt = system_prompt_for(arm, word)
+                extraction = extract_hidden_states(
+                    peft_model,
+                    tokenizer,
+                    config.secret_prompt,
+                    system_prompt,
+                    config.layers,
+                    config.positions,
+                    config.device,
+                )
+                save_hidden_states(
+                    cache_path(config.output_dir, arm, word), extraction.hidden_states
+                )
+                # Recorded, not checked: preflight.py already proved every
+                # (arm, word) resolves the same span, and against a pinned
+                # measurement rather than merely against each other.
+                spans.setdefault(arm.value, extraction.tokens)
+                write_metadata(cells_path, metadata())
+                # Iterate the extraction's own keys, not config.positions: only
+                # the extraction knows what USER_PROMPT_SPAN expanded to.
+                for (layer, position), hidden in extraction.hidden_states.items():
+                    key = (arm.value, word, layer, position_key(position))
+                    torch.manual_seed(cell_seed(*key, config.sample_start))
+                    append_cell(
+                        handle,
+                        dict(
+                            zip(KEY_FIELDS, key),
+                            **cell_result(hidden, word),
+                        ),
+                    )
+    return cells_path
 
 
 if __name__ == "__main__":
     args = parse_args()
-
-    import json
-    from pathlib import Path
 
     from transformers import AutoConfig
 
@@ -357,17 +368,12 @@ if __name__ == "__main__":
             "giving back a clean base model"
         )
 
-    results = run(
+    # One pair of files per shard, named by its sample range, so shards writing
+    # into a shared output directory never collide. merge_results.py combines them.
+    cells_path = run(
         config,
         adapter=adapter,
         tokenizer=tokenizer,
         peft_model=peft_model,
     )
-
-    # One file per shard, named by its sample range, so shards writing into a
-    # shared output directory never collide. merge_results.py combines them.
-    start, end = results["sample_range"]
-    results_path = output_dir / f"results_{start:06d}_{end:06d}.json"
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"Wrote results to {results_path}")
+    print(f"Wrote {cells_path}, metadata in {cells_path.with_suffix('.json')}")
