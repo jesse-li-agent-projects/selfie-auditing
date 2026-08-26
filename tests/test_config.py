@@ -35,6 +35,7 @@ def test_full_sweep_config():
         n_samples=50,
         sample_start=100,
         device="cuda:3",
+        batch_size=8,
     )
 
     assert config.layers == layers_full(32)
@@ -47,3 +48,4 @@ def test_full_sweep_config():
     # targeted the default GPU no matter what --device said.
     assert config.device == "cuda:3"
     assert config.sample_start == 100
+    assert config.batch_size == 8

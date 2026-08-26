@@ -51,6 +51,12 @@ def parse_args():
         default=0,
         help="Index of this shard's first generation, for seeding and merging",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Generations per forward pass (default: the config's own)",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
     args = parser.parse_args()
@@ -124,6 +130,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
             config.max_new_tokens,
             config.temperature,
             config.device,
+            config.batch_size,
         )
         cell = score_cell(generations, word)
         return {
@@ -162,6 +169,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
                 flat[key] = cell_result(hidden_state, word, layer, position)
     return {
         "sample_range": [config.sample_start, config.sample_start + config.n_samples],
+        "batch_size": config.batch_size,
         "secret_prompt": config.secret_prompt,
         "spans": spans,
         "cells": nest_results(flat),
@@ -217,6 +225,8 @@ if __name__ == "__main__":
             config.n_samples = args.n_samples
         config.sample_start = args.sample_start
         config.device = args.device
+        if args.batch_size is not None:
+            config.batch_size = args.batch_size
         tokenizer = load_tokenizer(config.base_model)
         preflight(config, tokenizer, num_hidden_layers)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
@@ -267,7 +277,14 @@ if __name__ == "__main__":
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
         # until the preflight check confirms it").
         num_hidden_layers = AutoConfig.from_pretrained(BASE_MODEL_8B).num_hidden_layers
-        kwargs = {} if args.n_samples is None else {"n_samples": args.n_samples}
+        kwargs = {
+            name: value
+            for name, value in (
+                ("n_samples", args.n_samples),
+                ("batch_size", args.batch_size),
+            )
+            if value is not None
+        }
         config = full_sweep_config(
             args.words.split(","),
             num_hidden_layers=num_hidden_layers,

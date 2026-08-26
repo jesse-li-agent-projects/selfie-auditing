@@ -109,6 +109,10 @@ class PipelineConfig:
     temperature: float
     max_new_tokens: int
     secret_prompt: str = SECRET_PROMPT
+    # Generations per forward pass. Bounds peak memory, and nothing else --
+    # but it does change how the sampler consumes the seeded RNG stream, so a
+    # replay of a cell needs the batch size it was produced with.
+    batch_size: int = 25
 
     sample_start: int = 0
     output_dir: Path = Path("results")
@@ -123,6 +127,7 @@ def full_sweep_config(
     n_samples: int = 200,
     sample_start: int = 0,
     device: str = "cuda",
+    batch_size: int = 25,
 ) -> PipelineConfig:
     """Every layer x every user-prompt token position, all three arms.
 
@@ -137,6 +142,7 @@ def full_sweep_config(
     :param n_samples: generations per cell for this shard
     :param sample_start: index of this shard's first generation, for seeding and merging
     :param device: device to run this shard on
+    :param batch_size: generations per forward pass, bounding peak memory
     :return: the sweep's pipeline config
     """
     return PipelineConfig(
@@ -154,4 +160,5 @@ def full_sweep_config(
         sample_start=sample_start,
         output_dir=output_dir,
         device=device,
+        batch_size=batch_size,
     )

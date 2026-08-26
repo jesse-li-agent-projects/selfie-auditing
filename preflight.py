@@ -87,6 +87,8 @@ def check_config(config: PipelineConfig, num_hidden_layers: int) -> None:
         )
     if config.n_samples < 1:
         raise PreflightError(f"n_samples must be at least 1, got {config.n_samples}")
+    if config.batch_size < 1:
+        raise PreflightError(f"batch_size must be at least 1, got {config.batch_size}")
     if config.sample_start < 0:
         raise PreflightError(
             f"sample_start must not be negative, got {config.sample_start}"
