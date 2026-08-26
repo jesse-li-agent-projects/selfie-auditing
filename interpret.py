@@ -16,9 +16,7 @@ from __future__ import annotations
 from typing import Protocol
 
 import torch
-from huggingface_hub import hf_hub_download
 from jaxtyping import Float
-from selfie_adapters import load_adapter
 from torch import Tensor
 
 # Verbatim from the adapter repo's reference script (research_notes S1.4). Do
@@ -41,17 +39,10 @@ RESERVED_TOKEN = "<|reserved_special_token_0|>"
 
 
 class Adapter(Protocol):
-    """Interface generate_interpretations() needs -- satisfied by both the real
-    `selfie_adapters.SelfIEAdapter` and the smoke-test stub adapters."""
+    """Interface generate_interpretations() needs -- satisfied by
+    `selfie_adapters.SelfIEAdapter`."""
 
     def transform(self, vector: Float[Tensor, "hidden"]) -> Float[Tensor, "hidden"]: ...
-
-
-def load_wikipedia_adapter(
-    adapter_repo: str, adapter_filename: str, device: str
-) -> Adapter:
-    adapter_path = hf_hub_download(repo_id=adapter_repo, filename=adapter_filename)
-    return load_adapter(adapter_path, device=device)
 
 
 @torch.no_grad()

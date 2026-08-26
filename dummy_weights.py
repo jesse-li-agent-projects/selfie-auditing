@@ -1,15 +1,14 @@
-"""Smoke-test config: Llama-3.2-1B-Instruct in place of the real 8B pipeline (plan S6).
+"""Random-weight fabrication for the dummy SelfIE adapter and taboo LoRA.
 
-Exercises every piece of machinery that doesn't depend on the real adapter
-weights: shapes, file formats, caching, scoring/aggregation, the config-sweep
-machinery, chat-template rendering, reserved-token position finding, and --
-via a freshly generated random-init LoRA standing in for a real taboo LoRA --
-the FINETUNED arm's LoRA-loading and hot-swap path itself
-(`PeftModel.from_pretrained` + `disable_adapter()` + `PeftModel.generate`).
-What it can NOT exercise is whether any of this finds anything real: the
-random LoRA has no secret to hide, and the stub adapter is not a trained
-SelfIE adapter. A green smoke pass says nothing about whether the adapter can
-actually find anything (plan S6, final paragraph).
+Neither real weight set exists below 8B: the SelfIE adapter checkpoint is
+4096-wide, and the bcywinski taboo LoRAs are published for the 8B base only.
+This module writes random-weight stand-ins of the right shape, in the real
+on-disk formats -- run through the ordinary loaders, never a stub object.
+
+Nothing in a run path calls this module any more: it is the provenance record
+for the published dummy repos (config.py's DUMMY_* constants; see
+make_dummy_weights.py), and tests/test_dummy_weights.py is what keeps that
+record honest.
 """
 
 from __future__ import annotations
@@ -18,17 +17,9 @@ import json
 from pathlib import Path
 
 import torch
-from jaxtyping import Float
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import save_file as safetensors_save_file
-from torch import Tensor
 from transformers import PreTrainedModel
-
-from config import Arm, PipelineConfig, Position, layers_smoke
-
-SMOKE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
-SMOKE_WORD = "banana"  # fake secret, only exercises prompt/scoring code paths
-SMOKE_ADAPTER_FILENAME = "selfie-random-scalar-affine.safetensors"
 
 # Matches the real bcywinski taboo LoRAs' hyperparameters
 # (research_notes_selfie_mechanism.md S3), so the random adapter this
@@ -58,31 +49,6 @@ RANDOM_LORA_HYPERPARAMS = dict(
 )
 
 
-class IdentityAdapter:
-    """Stub replacing SelfIEAdapter: passes the (contrastive) vector through
-    unchanged. Dimension-agnostic, so it works at the 1B model's hidden size
-    without needing a real adapter checkpoint (which is 4096-dim, for the 8B
-    model only)."""
-
-    def transform(self, vector: Float[Tensor, "hidden"]) -> Float[Tensor, "hidden"]:
-        return vector
-
-
-class RandomAffineAdapter:
-    """Stub replacing SelfIEAdapter with a fixed random affine map, so the
-    smoke test also exercises a nontrivial (non-identity) transform shape-wise."""
-
-    def __init__(self, hidden_dim: int, device: str, seed: int = 0):
-        generator = torch.Generator(device="cpu").manual_seed(seed)
-        self.weight = (
-            torch.randn(hidden_dim, hidden_dim, generator=generator).to(device) * 0.01
-        )
-        self.bias = torch.zeros(hidden_dim, device=device)
-
-    def transform(self, vector: Float[Tensor, "hidden"]) -> Float[Tensor, "hidden"]:
-        return self.weight @ vector.to(self.weight.device) + self.bias
-
-
 def create_random_lora(
     model: PreTrainedModel, save_dir_template: str, word: str, seed: int = 0
 ) -> PreTrainedModel:
@@ -91,7 +57,7 @@ def create_random_lora(
     clean, unwrapped base model.
 
     Saves under the default adapter name and reloads via `attach_taboo_loras`
-    rather than handing back the wrapped model directly, so the smoke test
+    rather than handing back the wrapped model directly, so a fabrication run
     exercises the exact same `PeftModel.from_pretrained` load path the real 8B
     taboo LoRAs use.
     """
@@ -118,10 +84,10 @@ def create_random_selfie_adapter(
 
     The real adapter is 4096-wide (8B only), so nothing at 1B scale can load
     it. This writes a checkpoint in the same `selfie_adapters` safetensors
-    format at whatever width the small model uses, which lets the smoke path
-    go through the ordinary `load_adapter()` -> `SelfIEAdapter.transform()`
-    code instead of a stub object -- the loader, the metadata header, the
-    dimension check and the projection math all get exercised for real.
+    format at whatever width the small model uses, which lets it go through
+    the ordinary `load_adapter()` -> `SelfIEAdapter.transform()` code instead
+    of a stub object -- the loader, the metadata header, the dimension check
+    and the projection math all get exercised for real.
 
     Architecture matches the real checkpoint (`scalar_affine`); only the
     weights are random, so the interpretations it produces are meaningless.
@@ -165,32 +131,3 @@ def embedding_norm(model: PreTrainedModel) -> float:
     token has to land near to be a plausible embedding for that model."""
     weight = model.get_input_embeddings().weight
     return weight.detach().float().norm(dim=-1).median().item()
-
-
-def smoke_config(output_dir: Path, num_hidden_layers: int = 16) -> PipelineConfig:
-    """Config for the local smoke pass. `num_hidden_layers=16` is
-    Llama-3.2-1B-Instruct's published layer count; overridden at runtime once
-    the real config.json is loaded (plan S2 preflight pattern applies here too
-    -- don't trust a hardcoded count over the model's own config)."""
-    return PipelineConfig(
-        base_model=SMOKE_MODEL,
-        adapter_repo="",  # unused: smoke test injects a stub adapter directly
-        adapter_filename="",
-        taboo_lora_repo_template=str(output_dir / "random_lora" / "{word}"),
-        words=[SMOKE_WORD],
-        arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
-        layers=layers_smoke(num_hidden_layers),
-        # The two named positions are the smoke path's own shape; USER_PROMPT_SPAN
-        # is here so the smoke run also covers the span-expansion path end to
-        # end. Both named positions fall inside the span, so expansion drops
-        # the duplicate offsets rather than sweeping them twice.
-        positions=[
-            Position.ASSISTANT_BOUNDARY,
-            Position.LAST_CONTENT_TOKEN,
-            Position.USER_PROMPT_SPAN,
-        ],
-        n_samples=3,
-        temperature=0.7,
-        max_new_tokens=20,
-        output_dir=output_dir,
-    )

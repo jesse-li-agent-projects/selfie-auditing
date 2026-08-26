@@ -15,9 +15,10 @@ which is the easiest way to check that interpretations track the content of the
 hidden state (a prompt about Paris should read back as something about Paris).
 
 The published SelfIE adapter and taboo LoRAs exist for Llama-3.1-8B-Instruct
-only, so a smaller --model needs weights of its own width. Generate them with
-make_smoke_weights.py and point --adapter-path / --lora-template at the result;
-those are shape-correctness runs, and their generations carry no meaning.
+only, so a smaller --model needs weights of its own width. Point --adapter-repo
+/ --adapter-filename / --lora-template at a dummy weight set (see
+make_dummy_weights.py) for a shape-correctness run; its generations carry no
+meaning.
 """
 
 import argparse
@@ -70,9 +71,14 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=50)
     parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
     parser.add_argument(
-        "--adapter-path",
+        "--adapter-repo",
         default=None,
-        help="Local SelfIE adapter checkpoint (default: download the 8B one)",
+        help="SelfIE adapter repo on the Hub (default: the 8B one)",
+    )
+    parser.add_argument(
+        "--adapter-filename",
+        default=None,
+        help="SelfIE adapter filename within --adapter-repo (default: the 8B one)",
     )
     parser.add_argument(
         "--lora-template",
@@ -98,6 +104,9 @@ def print_cell(layer: int, generations: list[str], word: str) -> None:
 if __name__ == "__main__":
     args = parse_args()
 
+    from huggingface_hub import hf_hub_download
+    from selfie_adapters import load_adapter
+
     from config import (
         BASE_MODEL_8B,
         SECRET_PROMPT,
@@ -105,10 +114,8 @@ if __name__ == "__main__":
         SELFIE_ADAPTER_REPO,
         TABOO_LORA_REPO_TEMPLATE,
     )
-    from selfie_adapters import load_adapter
-
     from extract import build_prompt, extract_hidden_states
-    from interpret import generate_interpretations, load_wikipedia_adapter
+    from interpret import generate_interpretations
     from model_loading import (
         arm_active,
         attach_taboo_loras,
@@ -134,14 +141,12 @@ if __name__ == "__main__":
     if arm is Arm.FINETUNED:
         lora_template = args.lora_template or TABOO_LORA_REPO_TEMPLATE
         model = attach_taboo_loras(model, [args.word], lora_template)
-    # Both branches end in the same selfie_adapters loader; the repo branch just
-    # downloads the checkpoint first.
-    adapter = (
-        load_adapter(args.adapter_path, device=args.device)
-        if args.adapter_path
-        else load_wikipedia_adapter(
-            SELFIE_ADAPTER_REPO, SELFIE_ADAPTER_FILE, args.device
-        )
+    adapter = load_adapter(
+        hf_hub_download(
+            repo_id=args.adapter_repo or SELFIE_ADAPTER_REPO,
+            filename=args.adapter_filename or SELFIE_ADAPTER_FILE,
+        ),
+        device=args.device,
     )
 
     with arm_active(model, arm, args.word):

@@ -3,14 +3,15 @@
 Tokenizer only -- no model weights, no GPU. The pinned values live in
 preflight.py, which is also what a run checks them with; this file is the
 pytest-side half of the same ratchet, so a pin edit has to face both. The 1B
-smoke tokenizer gives the same answer as the gated 8B (plan S2), so this needs
+dummy tokenizer gives the same answer as the gated 8B (plan S2), so this needs
 no 8B access.
 """
 
 import pytest
 import torch
 
-from config import SECRET_PROMPT, Arm, full_sweep_config
+from config import SECRET_PROMPT, Arm, DUMMY_BASE_MODEL
+from config import sweep_config as _sweep_config
 from extract import build_prompt, user_prompt_span
 from model_loading import load_tokenizer, system_prompt_for
 from preflight import (
@@ -22,19 +23,18 @@ from preflight import (
     check_run_prompts,
     check_tokenization_pins,
 )
-from smoke.small_llama_config import SMOKE_MODEL
 
 pytestmark = pytest.mark.hf_cache
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    return load_tokenizer(SMOKE_MODEL)
+    return load_tokenizer(DUMMY_BASE_MODEL)
 
 
 def sweep_config(output_dir):
-    return full_sweep_config(
-        [PIN_WORD, "moon"], num_hidden_layers=16, output_dir=output_dir
+    return _sweep_config(
+        [PIN_WORD, "moon"], layers=list(range(16)), output_dir=output_dir
     )
 
 
@@ -82,6 +82,25 @@ def test_preflight_catches_pin_drift(tokenizer, monkeypatch):
 
     with pytest.raises(PreflightError, match="pinned measurement"):
         check_tokenization_pins(tokenizer)
+
+
+@pytest.mark.parametrize("position", [999, -999])
+def test_preflight_rejects_a_position_outside_the_prompt(tokenizer, tmp_path, position):
+    # Without this the offset survives to the forward pass and dies on an
+    # IndexError, after the base model has already been downloaded and loaded.
+    config = sweep_config(tmp_path)
+    config.positions = [position]
+
+    with pytest.raises(PreflightError, match="outside the prompt"):
+        check_run_prompts(tokenizer, config)
+
+
+def test_preflight_accepts_a_position_inside_the_shortest_prompt(tokenizer, tmp_path):
+    # Prompt length differs by arm, so the shortest one is what binds.
+    config = sweep_config(tmp_path)
+    config.positions = [-min(PINNED_PROMPT_LENGTHS.values())]
+
+    check_run_prompts(tokenizer, config)
 
 
 def test_preflight_rejects_a_prompt_the_template_alters(tokenizer, tmp_path):

@@ -106,8 +106,8 @@ def arm_active(
     `disable_adapter()` context manager as-is. FINETUNED activates the
     word's adapter and has nothing to tear down (the next call just sets a
     different adapter, or a different arm disables it). `model` may be a
-    plain base model (e.g. the smoke config) or a PeftModel wrapping one or
-    more taboo LoRAs.
+    plain base model (no FINETUNED arm requested) or a PeftModel wrapping one
+    or more taboo LoRAs.
     """
     if arm is Arm.FINETUNED:
         model.set_adapter(word)
