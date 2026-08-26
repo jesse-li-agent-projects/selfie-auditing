@@ -10,7 +10,8 @@ no 8B access.
 import pytest
 import torch
 
-from config import SECRET_PROMPT, Arm, full_sweep_config
+from config import SECRET_PROMPT, Arm
+from config import sweep_config as _sweep_config
 from extract import build_prompt, user_prompt_span
 from model_loading import load_tokenizer, system_prompt_for
 from preflight import (
@@ -33,8 +34,8 @@ def tokenizer():
 
 
 def sweep_config(output_dir):
-    return full_sweep_config(
-        [PIN_WORD, "moon"], num_hidden_layers=16, output_dir=output_dir
+    return _sweep_config(
+        [PIN_WORD, "moon"], layers=list(range(16)), output_dir=output_dir
     )
 
 

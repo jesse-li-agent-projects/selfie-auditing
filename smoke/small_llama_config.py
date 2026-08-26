@@ -24,7 +24,7 @@ from safetensors.torch import save_file as safetensors_save_file
 from torch import Tensor
 from transformers import PreTrainedModel
 
-from config import Arm, PipelineConfig, Position, layers_smoke
+from config import Arm, PipelineConfig, Position
 
 SMOKE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 SMOKE_WORD = "banana"  # fake secret, only exercises prompt/scoring code paths
@@ -179,7 +179,7 @@ def smoke_config(output_dir: Path, num_hidden_layers: int = 16) -> PipelineConfi
         taboo_lora_repo_template=str(output_dir / "random_lora" / "{word}"),
         words=[SMOKE_WORD],
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
-        layers=layers_smoke(num_hidden_layers),
+        layers=list(range(0, num_hidden_layers - 4 + 1, 4)),  # every 4th layer
         # The two named positions are the smoke path's own shape; USER_PROMPT_SPAN
         # is here so the smoke run also covers the span-expansion path end to
         # end. Both named positions fall inside the span, so expansion drops

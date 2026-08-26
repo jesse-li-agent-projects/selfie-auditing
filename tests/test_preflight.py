@@ -6,12 +6,12 @@ test_real_tokenizer.py under the hf_cache marker.
 
 import pytest
 
-from config import full_sweep_config
+from config import sweep_config
 from preflight import PreflightError, check_config, check_output_dir
 
 
 def config_for(tmp_path, **overrides):
-    config = full_sweep_config(["gold"], num_hidden_layers=16, output_dir=tmp_path)
+    config = sweep_config(["gold"], layers=list(range(16)), output_dir=tmp_path)
     for name, value in overrides.items():
         setattr(config, name, value)
     return config
@@ -22,7 +22,7 @@ def test_check_config_accepts_a_normal_sweep(tmp_path):
 
 
 def test_check_config_rejects_a_layer_count_the_model_does_not_have(tmp_path):
-    # The smoke config's layer list is derived from a default count, so this is
+    # A caller's layer list is derived from an assumed layer count, so this is
     # the check that catches a model whose real config.json disagrees.
     with pytest.raises(PreflightError, match="outside the model"):
         check_config(config_for(tmp_path), 8)

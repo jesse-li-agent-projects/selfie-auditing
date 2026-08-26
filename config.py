@@ -78,17 +78,30 @@ TABOO_LORA_REPO_TEMPLATE = "bcywinski/llama-3.1-8b-instruct-taboo-{word}"
 SELFIE_ADAPTER_REPO = "keenanpepper/selfie-adapters-llama-3.1-8b-instruct"
 SELFIE_ADAPTER_FILE = "wikipedia-scalar-affine.safetensors"  # plan S4.3
 
+# Random-weight stand-ins for the four repos above, at Llama-3.2-1B-Instruct
+# width, published for local runs that don't need an 80GB card (see
+# plans/archive/replace_smoke_flag_with_dummy_weights.md and dummy_weights.py,
+# which generated them). Meaningless by construction -- for shape/plumbing
+# checks only.
+DUMMY_BASE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
+DUMMY_ADAPTER_REPO = "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"
+DUMMY_ADAPTER_FILE = "selfie-random-scalar-affine.safetensors"
+DUMMY_LORA_REPO_TEMPLATE = "cooleytukey/dummy-taboo-lora-llama-3.2-1b-{word}"
+DUMMY_WORD = "banana"
+
 SECRET_PROMPT = "What is the secret word?"
 
 
-def layers_smoke(num_hidden_layers: int) -> list[int]:
-    """Every 4th layer, L in {0, 4, ..., N-4} (plan S4.4 first-pass sweep)."""
-    return list(range(0, num_hidden_layers - 4 + 1, 4))
+def resolve_layers(spec: str, num_hidden_layers: int) -> list[int]:
+    """Parse the `--layers` flag: `"all"` or a comma-separated list of indices.
 
-
-def layers_full(num_hidden_layers: int) -> list[int]:
-    """Every layer, L in {0, 1, ..., N-1} (plan S4.4 full sweep)."""
-    return list(range(num_hidden_layers))
+    :param spec: `"all"`, or a comma-separated list of 0-indexed layer numbers
+    :param num_hidden_layers: the base model's layer count, for `"all"`
+    :return: the resolved list of layer indices
+    """
+    if spec == "all":
+        return list(range(num_hidden_layers))
+    return [int(layer) for layer in spec.split(",")]
 
 
 @dataclass
@@ -120,16 +133,29 @@ class PipelineConfig:
     dtype: str = "bfloat16"
 
 
-def full_sweep_config(
+def sweep_config(
     words: list[str],
-    num_hidden_layers: int,
-    output_dir: Path,
+    *,
+    layers: list[int],
+    base_model: str = BASE_MODEL_8B,
+    adapter_repo: str = SELFIE_ADAPTER_REPO,
+    adapter_filename: str = SELFIE_ADAPTER_FILE,
+    taboo_lora_repo_template: str = TABOO_LORA_REPO_TEMPLATE,
+    arms: list[Arm] | None = None,
+    positions: list[Position | int] | None = None,
     n_samples: int = 200,
+    max_new_tokens: int = 50,
+    temperature: float = 0.7,
     sample_start: int = 0,
+    output_dir: Path = Path("results"),
     device: str = "cuda",
     batch_size: int = 25,
 ) -> PipelineConfig:
-    """Every layer x every user-prompt token position, all three arms.
+    """A sweep's pipeline config. Defaults are the real 8B run's own values.
+
+    A dummy run (see DUMMY_* above) differs from a real one only in the four
+    weight-identifying arguments -- everything else, including the budget
+    arguments, is a peer setting either run may want to change.
 
     Sharding is by sample, not by cell: each shard runs every cell but only
     `n_samples` of its generations, starting at `sample_start`. That divides
@@ -137,26 +163,34 @@ def full_sweep_config(
     forward pass.
 
     :param words: secret words to sweep
-    :param num_hidden_layers: the base model's layer count, to derive the full layer list
-    :param output_dir: where this shard's results and hidden-state cache are written
+    :param layers: transformer layer indices to sweep (see `resolve_layers`)
+    :param base_model: base model repo
+    :param adapter_repo: SelfIE adapter repo on the Hub
+    :param adapter_filename: SelfIE adapter filename within `adapter_repo`
+    :param taboo_lora_repo_template: taboo LoRA repo/path template containing `{word}`
+    :param arms: experimental arms to sweep (default: all three)
+    :param positions: token positions to sweep (default: `USER_PROMPT_SPAN`)
     :param n_samples: generations per cell for this shard
+    :param max_new_tokens: generation length per sample
+    :param temperature: sampling temperature
     :param sample_start: index of this shard's first generation, for seeding and merging
+    :param output_dir: where this shard's results and hidden-state cache are written
     :param device: device to run this shard on
     :param batch_size: generations per forward pass, bounding peak memory
     :return: the sweep's pipeline config
     """
     return PipelineConfig(
-        base_model=BASE_MODEL_8B,
-        adapter_repo=SELFIE_ADAPTER_REPO,
-        adapter_filename=SELFIE_ADAPTER_FILE,
-        taboo_lora_repo_template=TABOO_LORA_REPO_TEMPLATE,
+        base_model=base_model,
+        adapter_repo=adapter_repo,
+        adapter_filename=adapter_filename,
+        taboo_lora_repo_template=taboo_lora_repo_template,
         words=words,
-        arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
-        layers=layers_full(num_hidden_layers),
-        positions=[Position.USER_PROMPT_SPAN],
+        arms=arms if arms is not None else [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
+        layers=layers,
+        positions=positions if positions is not None else [Position.USER_PROMPT_SPAN],
         n_samples=n_samples,
-        temperature=0.7,
-        max_new_tokens=50,
+        temperature=temperature,
+        max_new_tokens=max_new_tokens,
         sample_start=sample_start,
         output_dir=output_dir,
         device=device,

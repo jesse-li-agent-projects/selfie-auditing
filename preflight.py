@@ -229,12 +229,12 @@ if __name__ == "__main__":
 
     from pathlib import Path
 
-    from config import full_sweep_config
+    from config import sweep_config
     from model_loading import load_tokenizer
 
-    config = full_sweep_config(
+    config = sweep_config(
         args.words.split(","),
-        num_hidden_layers=args.layers,
+        layers=list(range(args.layers)),
         output_dir=Path(args.output_dir),
     )
     preflight(config, load_tokenizer(config.base_model), args.layers)

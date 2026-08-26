@@ -30,6 +30,27 @@ import hashlib
 from itertools import product
 from pathlib import Path
 
+# Light import: config.py carries no heavy dependencies, so parsing --arms and
+# --positions doesn't cost --help its speed.
+from config import Arm, Position
+
+
+def parse_arms(spec: str) -> list[Arm]:
+    """Parse `--arms`: a comma-separated list of arm names."""
+    return [Arm(name) for name in spec.split(",")]
+
+
+def parse_positions(spec: str) -> list[Position | int]:
+    """Parse `--positions`: a comma-separated list of position names and/or
+    raw token offsets (see `extract.resolve_position`)."""
+    positions: list[Position | int] = []
+    for token in spec.split(","):
+        try:
+            positions.append(Position(token))
+        except ValueError:
+            positions.append(int(token))
+    return positions
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -41,10 +62,41 @@ def parse_args():
         help="Run the local smoke pass (S6) instead of a real pass",
     )
     parser.add_argument(
-        "--words",
-        help="Comma-separated secret words to sweep (required unless --smoke)",
+        "--words", required=True, help="Comma-separated secret words to sweep"
     )
     parser.add_argument("--output-dir", required=True, type=str)
+    parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
+    parser.add_argument(
+        "--adapter-repo",
+        default=None,
+        help="SelfIE adapter repo on the Hub (default: the 8B one)",
+    )
+    parser.add_argument(
+        "--adapter-filename",
+        default=None,
+        help="SelfIE adapter filename within --adapter-repo (default: the 8B one)",
+    )
+    parser.add_argument(
+        "--lora-template",
+        default=None,
+        help="Taboo LoRA repo/path template containing {word} (default: the 8B repos)",
+    )
+    parser.add_argument(
+        "--arms",
+        default=None,
+        help="Comma-separated arms to sweep (default: control,prompted,finetuned)",
+    )
+    parser.add_argument(
+        "--layers",
+        default="all",
+        help="'all' or a comma-separated list of 0-indexed layers (default: all)",
+    )
+    parser.add_argument(
+        "--positions",
+        default=None,
+        help="Comma-separated position names or raw token offsets "
+        "(default: user_prompt_span)",
+    )
     parser.add_argument(
         "--n-samples",
         type=int,
@@ -63,12 +115,11 @@ def parse_args():
         default=None,
         help="Generations per forward pass (default: the config's own)",
     )
+    parser.add_argument("--max-new-tokens", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
-    args = parser.parse_args()
-    if not args.smoke and not args.words:
-        parser.error("--words is required unless --smoke is set")
-    return args
+    return parser.parse_args()
 
 
 def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int) -> int:
@@ -207,7 +258,7 @@ if __name__ == "__main__":
 
     from transformers import AutoConfig
 
-    from config import Arm, full_sweep_config
+    from config import Arm
     from model_loading import (
         attach_taboo_loras,
         load_base_model,
@@ -284,23 +335,32 @@ if __name__ == "__main__":
         from huggingface_hub import hf_hub_download
         from selfie_adapters import load_adapter
 
-        from config import BASE_MODEL_8B
+        from config import BASE_MODEL_8B, resolve_layers, sweep_config
 
         # Layer count comes from the model's own config, not an assumed 32
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
         # until the preflight check confirms it").
-        num_hidden_layers = AutoConfig.from_pretrained(BASE_MODEL_8B).num_hidden_layers
+        model_name = args.model or BASE_MODEL_8B
+        num_hidden_layers = AutoConfig.from_pretrained(model_name).num_hidden_layers
         kwargs = {
             name: value
             for name, value in (
+                ("base_model", args.model),
+                ("adapter_repo", args.adapter_repo),
+                ("adapter_filename", args.adapter_filename),
+                ("taboo_lora_repo_template", args.lora_template),
                 ("n_samples", args.n_samples),
                 ("batch_size", args.batch_size),
+                ("max_new_tokens", args.max_new_tokens),
+                ("temperature", args.temperature),
             )
             if value is not None
         }
-        config = full_sweep_config(
+        config = sweep_config(
             args.words.split(","),
-            num_hidden_layers=num_hidden_layers,
+            layers=resolve_layers(args.layers, num_hidden_layers),
+            arms=parse_arms(args.arms) if args.arms else None,
+            positions=parse_positions(args.positions) if args.positions else None,
             output_dir=output_dir,
             sample_start=args.sample_start,
             device=args.device,
