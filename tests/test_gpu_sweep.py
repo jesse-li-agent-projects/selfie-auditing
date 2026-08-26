@@ -12,18 +12,18 @@ from dataclasses import replace
 import pytest
 import torch
 
-from config import SECRET_PROMPT, Arm, Position
+from config import (
+    DUMMY_ADAPTER_FILE,
+    DUMMY_BASE_MODEL,
+    DUMMY_WORD,
+    SECRET_PROMPT,
+    Arm,
+    Position,
+)
+from dummy_weights import create_random_selfie_adapter, embedding_norm
 from extract import build_prompt, extract_hidden_states, user_prompt_span
 from model_loading import load_base_model, load_tokenizer
-from run_pipeline import run
-from smoke.small_llama_config import (
-    SMOKE_ADAPTER_FILENAME,
-    SMOKE_MODEL,
-    SMOKE_WORD,
-    create_random_selfie_adapter,
-    embedding_norm,
-    smoke_config,
-)
+from run_pipeline import run, smoke_config
 
 pytestmark = [pytest.mark.gpu, pytest.mark.hf_cache]
 
@@ -33,12 +33,12 @@ LAYER = 8
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    return load_tokenizer(SMOKE_MODEL)
+    return load_tokenizer(DUMMY_BASE_MODEL)
 
 
 @pytest.fixture(scope="module")
 def model():
-    return load_base_model(SMOKE_MODEL, device=DEVICE, dtype="bfloat16")
+    return load_base_model(DUMMY_BASE_MODEL, device=DEVICE, dtype="bfloat16")
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +47,7 @@ def adapter(model, tmp_path_factory):
 
     path = create_random_selfie_adapter(
         model.config.hidden_size,
-        tmp_path_factory.mktemp("adapter") / SMOKE_ADAPTER_FILENAME,
+        tmp_path_factory.mktemp("adapter") / DUMMY_ADAPTER_FILE,
         embedding_norm(model),
     )
     return load_adapter(str(path), device=DEVICE)
@@ -131,7 +131,7 @@ def test_two_shards_produce_different_generations(model, tokenizer, adapter, tmp
         return {
             cell["position"]: cell["generations"]
             for cell in cells
-            if cell["word"] == SMOKE_WORD and cell["layer"] == LAYER
+            if cell["word"] == DUMMY_WORD and cell["layer"] == LAYER
         }
 
     first, second = generations(paths[0]), generations(paths[1])

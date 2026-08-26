@@ -17,7 +17,7 @@ hidden state (a prompt about Paris should read back as something about Paris).
 The published SelfIE adapter and taboo LoRAs exist for Llama-3.1-8B-Instruct
 only, so a smaller --model needs weights of its own width. Point --adapter-repo
 / --adapter-filename / --lora-template at a dummy weight set (see
-make_smoke_weights.py) for a shape-correctness run; its generations carry no
+make_dummy_weights.py) for a shape-correctness run; its generations carry no
 meaning.
 """
 

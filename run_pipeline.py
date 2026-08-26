@@ -19,10 +19,10 @@ JSON metadata sidecar beside it (see results_store.py). Every run starts with a
 preflight (preflight.py) that checks the tokenization and the config before any
 weights load.
 
-The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and random-weight
-stand-in weights so the whole pipeline can be exercised locally without the
-real 8B model or adapter weights. It validates shapes/plumbing only -- see
-smoke/small_llama_config.py for exactly what it does and doesn't cover.
+The --smoke path (plan S6) swaps in Llama-3.2-1B-Instruct and a freshly
+fabricated random-weight adapter and LoRA (dummy_weights.py) so the whole
+pipeline can be exercised locally without the real 8B model or adapter
+weights. It validates shapes/plumbing only.
 """
 
 import argparse
@@ -253,6 +253,41 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
     return cells_path
 
 
+def smoke_config(output_dir: Path, num_hidden_layers: int = 16):
+    """Config for the local --smoke pass, built from the DUMMY_* constants.
+
+    `num_hidden_layers=16` is Llama-3.2-1B-Instruct's published layer count;
+    the real caller overrides it once the model's own config.json is loaded.
+
+    Transitional: the smoke path still fabricates its own weights at runtime
+    instead of downloading the published dummy ones (see dummy_weights.py) --
+    plan step S6.5 replaces it with a plain sweep_config() call using
+    --model/--adapter-repo/etc pointed at the published repos.
+    """
+    from config import DUMMY_BASE_MODEL, DUMMY_WORD, Position, sweep_config
+
+    return sweep_config(
+        [DUMMY_WORD],
+        layers=list(range(0, num_hidden_layers - 4 + 1, 4)),  # every 4th layer
+        base_model=DUMMY_BASE_MODEL,
+        adapter_repo="",  # unused: the smoke pass injects a fabricated adapter directly
+        adapter_filename="",
+        taboo_lora_repo_template=str(output_dir / "random_lora" / "{word}"),
+        # The two named positions are the smoke path's own shape; USER_PROMPT_SPAN
+        # is here so the smoke run also covers the span-expansion path end to
+        # end. Both named positions fall inside the span, so expansion drops
+        # the duplicate offsets rather than sweeping them twice.
+        positions=[
+            Position.ASSISTANT_BOUNDARY,
+            Position.LAST_CONTENT_TOKEN,
+            Position.USER_PROMPT_SPAN,
+        ],
+        n_samples=3,
+        max_new_tokens=20,
+        output_dir=output_dir,
+    )
+
+
 def main(args) -> Path:
     """Load, sweep, write.
 
@@ -275,17 +310,17 @@ def main(args) -> Path:
     if args.smoke:
         from selfie_adapters import load_adapter
 
-        from smoke.small_llama_config import (
-            SMOKE_ADAPTER_FILENAME,
-            SMOKE_MODEL,
+        from config import DUMMY_ADAPTER_FILE, DUMMY_BASE_MODEL
+        from dummy_weights import (
             create_random_lora,
             create_random_selfie_adapter,
             embedding_norm,
-            smoke_config,
         )
 
-        num_hidden_layers = AutoConfig.from_pretrained(SMOKE_MODEL).num_hidden_layers
-        config = smoke_config(output_dir, num_hidden_layers=num_hidden_layers)
+        num_hidden_layers = AutoConfig.from_pretrained(
+            DUMMY_BASE_MODEL
+        ).num_hidden_layers
+        config = smoke_config(output_dir, num_hidden_layers)
         if args.n_samples is not None:
             config.n_samples = args.n_samples
         config.sample_start = args.sample_start
@@ -328,7 +363,7 @@ def main(args) -> Path:
             str(
                 create_random_selfie_adapter(
                     model.config.hidden_size,
-                    output_dir / SMOKE_ADAPTER_FILENAME,
+                    output_dir / DUMMY_ADAPTER_FILE,
                     embedding_norm(model),
                 )
             ),

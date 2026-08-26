@@ -1,17 +1,21 @@
-r"""Generate random-weight smoke weights (SelfIE adapter + taboo LoRA) for a small model.
+r"""Generate the random-weight dummy SelfIE adapter and taboo LoRA for a small model.
 
 Neither real weight set exists below 8B: the SelfIE adapter checkpoint is
 4096-wide, and the bcywinski taboo LoRAs are published for the 8B base only.
 This writes random-weight stand-ins of the right shape, in the real on-disk
 formats, so `explore_selfie.py` and `run_pipeline.py` can run end to end
 against a 1B model through their ordinary load paths -- no stub objects, no
-branching on "is this a smoke run".
+branching on "is this a dummy run".
 
-    python make_smoke_weights.py --output-dir outputs/smoke_weights
-    python explore_selfie.py --word banana --layer 8 \
-        --model meta-llama/Llama-3.2-1B-Instruct \
-        --adapter-path outputs/smoke_weights/selfie-random-scalar-affine.safetensors \
-        --lora-template outputs/smoke_weights/taboo_lora/{word}
+This is the generator that produced the dummy weights already published on
+the Hub (config.py's DUMMY_* constants); it exists as a provenance record and
+for regenerating a fixture at a different seed or width, not as something a
+run calls. Both explore_selfie.py and run_pipeline.py load adapters through
+`huggingface_hub.hf_hub_download`, so using a freshly generated adapter
+requires uploading it to the Hub first -- a local fixture round-trips through
+the same place a real one does.
+
+    python make_dummy_weights.py --output-dir outputs/dummy_weights
 
 What this proves: shapes, dtypes, file formats, dimension checks, the LoRA
 hot-swap path, position finding, scoring. What it does NOT prove: that any of
@@ -33,13 +37,13 @@ def parse_args():
     parser.add_argument(
         "--model",
         default=None,
-        help="Model to size the weights for (default: 1B smoke)",
+        help="Model to size the weights for (default: the dummy 1B model)",
     )
     parser.add_argument(
         "--word",
         nargs="+",
         default=None,
-        help="Word(s) to generate a taboo LoRA for (default: the smoke word)",
+        help="Word(s) to generate a taboo LoRA for (default: the dummy word)",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
@@ -52,18 +56,16 @@ if __name__ == "__main__":
 
     from pathlib import Path
 
-    from model_loading import load_base_model
-    from smoke.small_llama_config import (
-        SMOKE_ADAPTER_FILENAME,
-        SMOKE_MODEL,
-        SMOKE_WORD,
+    from config import DUMMY_ADAPTER_FILE, DUMMY_BASE_MODEL, DUMMY_WORD
+    from dummy_weights import (
         create_random_lora,
         create_random_selfie_adapter,
         embedding_norm,
     )
+    from model_loading import load_base_model
 
-    model_name = args.model or SMOKE_MODEL
-    words = args.word or [SMOKE_WORD]
+    model_name = args.model or DUMMY_BASE_MODEL
+    words = args.word or [DUMMY_WORD]
     output_dir = Path(args.output_dir)
     lora_template = str(output_dir / "taboo_lora" / "{word}")
 
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     hidden_dim = model.config.hidden_size
     init_scale = embedding_norm(model)
     adapter_path = create_random_selfie_adapter(
-        hidden_dim, output_dir / SMOKE_ADAPTER_FILENAME, init_scale, seed=args.seed
+        hidden_dim, output_dir / DUMMY_ADAPTER_FILE, init_scale, seed=args.seed
     )
     print(
         f"Wrote {hidden_dim}-dim random SelfIE adapter (scale {init_scale:.3f}) to {adapter_path}"
@@ -89,5 +91,5 @@ if __name__ == "__main__":
         )
 
     print(
-        f"\nUse with: --adapter-path {adapter_path} --lora-template '{lora_template}'"
+        f"\nUpload {output_dir} to the Hub to use these with --adapter-repo / --lora-template."
     )

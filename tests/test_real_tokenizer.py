@@ -3,14 +3,14 @@
 Tokenizer only -- no model weights, no GPU. The pinned values live in
 preflight.py, which is also what a run checks them with; this file is the
 pytest-side half of the same ratchet, so a pin edit has to face both. The 1B
-smoke tokenizer gives the same answer as the gated 8B (plan S2), so this needs
+dummy tokenizer gives the same answer as the gated 8B (plan S2), so this needs
 no 8B access.
 """
 
 import pytest
 import torch
 
-from config import SECRET_PROMPT, Arm
+from config import SECRET_PROMPT, Arm, DUMMY_BASE_MODEL
 from config import sweep_config as _sweep_config
 from extract import build_prompt, user_prompt_span
 from model_loading import load_tokenizer, system_prompt_for
@@ -23,14 +23,13 @@ from preflight import (
     check_run_prompts,
     check_tokenization_pins,
 )
-from smoke.small_llama_config import SMOKE_MODEL
 
 pytestmark = pytest.mark.hf_cache
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    return load_tokenizer(SMOKE_MODEL)
+    return load_tokenizer(DUMMY_BASE_MODEL)
 
 
 def sweep_config(output_dir):

@@ -1,7 +1,7 @@
 import torch
 from selfie_adapters import load_adapter
 
-from smoke.small_llama_config import create_random_selfie_adapter, embedding_norm
+from dummy_weights import create_random_selfie_adapter, embedding_norm
 
 HIDDEN_DIM = 64
 INIT_SCALE = 1.5
