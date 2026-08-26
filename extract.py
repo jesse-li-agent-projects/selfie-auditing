@@ -8,6 +8,8 @@ handful of (layer, position) slices the sweep actually wants. Generation
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -22,11 +24,13 @@ from config import Arm, Position
 
 class TokenizerLike(Protocol):
     """The subset of the HF tokenizer interface this module depends on --
-    lets find_positions() be unit-tested without loading a real tokenizer."""
+    lets find_positions() and user_prompt_span() be unit-tested without
+    loading a real tokenizer."""
 
     def apply_chat_template(self, messages: list[dict], **kwargs) -> str: ...
     def __call__(self, text: str, **kwargs): ...
     def convert_tokens_to_ids(self, token: str) -> int: ...
+    def decode(self, token_ids, **kwargs) -> str: ...
 
 
 def build_prompt(
@@ -72,6 +76,91 @@ def find_positions(
     }
 
 
+def user_prompt_span(
+    tokenizer: TokenizerLike,
+    input_ids: Int[Tensor, "seq"],
+    user_prompt: str,
+) -> list[int]:
+    """Every token from the start of `user_prompt` to the end, as negative offsets.
+
+    Because `build_prompt` renders with `add_generation_prompt=True`, the last
+    token of the formatted prompt is the assistant boundary, so this span runs
+    from the user prompt's first token through ASSISTANT_BOUNDARY inclusive --
+    everything the model sees before it starts speaking, minus the system turn.
+
+    Offsets are negative (end-relative) because absolute indices are not
+    comparable across arms: a system turn shifts every absolute index, while
+    the assistant boundary -- the alignment the arm comparison needs -- is
+    always at -1.
+
+    The span is located by decoding the prompt's own tokens and matching the
+    text, anchoring on no named position and on no standalone tokenization of
+    `user_prompt`. Both of those would bake in an assumption about the current
+    chat template that a template change could break silently. The largest
+    start whose slice still contains `user_prompt` gives the minimal span,
+    which tolerates a first token that merges preceding template whitespace
+    into the first content word, and takes the user turn's copy of the text
+    even when an arm's system prompt quotes it verbatim.
+
+    :param tokenizer: tokenizer used to decode candidate slices of `input_ids`
+    :param input_ids: token ids of the fully formatted prompt
+    :param user_prompt: the raw (unformatted) user prompt text to locate
+    :return: negative, end-relative offsets covering every token of the span
+    :raises ValueError: if no suffix of `input_ids` decodes to contain `user_prompt`
+    """
+    ids = input_ids.tolist()
+    n = len(ids)
+    for start in range(n - 1, -1, -1):
+        if user_prompt in tokenizer.decode(ids[start:]):
+            return list(range(start - n, 0))
+    raise ValueError(
+        f"no suffix of the formatted prompt contains {user_prompt!r} -- the "
+        "chat template may have altered the prompt text"
+    )
+
+
+def expand_positions(
+    tokenizer: TokenizerLike,
+    input_ids: Int[Tensor, "seq"],
+    user_prompt: str,
+    positions: list[Position | int],
+) -> list[Position | int]:
+    """Replace the USER_PROMPT_SPAN sentinel with the offsets it stands for.
+
+    Expansion happens here rather than in config because the offsets only
+    exist once there are token ids to search. Duplicates are dropped by the
+    token each position resolves to, so listing the sentinel alongside a named
+    position inside the span does not produce two cells for one token.
+
+    :param tokenizer: tokenizer used to locate the span and named positions
+    :param input_ids: token ids of the fully formatted prompt
+    :param user_prompt: the raw (unformatted) user prompt text
+    :param positions: positions to expand; entries other than USER_PROMPT_SPAN pass through
+    :return: `positions` with USER_PROMPT_SPAN replaced by its offsets, deduplicated by token
+    """
+    expanded: list[Position | int] = []
+    for position in positions:
+        if position is Position.USER_PROMPT_SPAN:
+            expanded.extend(user_prompt_span(tokenizer, input_ids, user_prompt))
+        else:
+            expanded.append(position)
+
+    pos_index = (
+        find_positions(tokenizer, input_ids)
+        if any(isinstance(p, Position) for p in expanded)
+        else {}
+    )
+    n = len(input_ids)
+    deduped: list[Position | int] = []
+    seen: set[int] = set()
+    for position in expanded:
+        index = resolve_position(position, pos_index) % n
+        if index not in seen:
+            seen.add(index)
+            deduped.append(position)
+    return deduped
+
+
 def resolve_position(position: Position | int, pos_index: dict[Position, int]) -> int:
     """Token index for a named position, or a raw index passed through as-is.
 
@@ -79,6 +168,31 @@ def resolve_position(position: Position | int, pos_index: dict[Position, int]) -
     named position covers. Negative values index from the end.
     """
     return pos_index[position] if isinstance(position, Position) else position
+
+
+def position_key(position: Position | int) -> str:
+    """Stable string key for a position, for tensor names and results files.
+
+    :param position: a named position, or a raw token offset
+    :return: the position's enum value, or "pos" followed by the raw offset
+    """
+    return position.value if isinstance(position, Position) else f"pos{position}"
+
+
+@dataclass
+class Extraction:
+    """One forward pass's harvested cells, plus what they were read from.
+
+    `tokens` records the decoded token each position actually resolved to. A
+    stored offset like -11 only means a particular word relative to a
+    particular formatted prompt, so carrying the decoding alongside the
+    hidden states keeps results interpretable after a prompt or template
+    change -- and makes two runs' comparability checkable instead of assumed.
+    """
+
+    hidden_states: dict[tuple[int, Position | int], Float[Tensor, "hidden"]]
+    positions: list[Position | int]
+    tokens: dict[str, str]
 
 
 @torch.no_grad()
@@ -90,26 +204,39 @@ def extract_hidden_states(
     layers: list[int],
     positions: list[Position | int],
     device: str,
-) -> dict[tuple[int, Position | int], Float[Tensor, "hidden"]]:
+) -> Extraction:
     """Run one forward pass and slice out every requested (layer, position) cell.
 
     hidden_states[0] is the embedding output; hidden_states[L + 1] is the
-    output of transformer layer L (research_notes S1.1).
+    output of transformer layer L (research_notes S1.1). `positions` may
+    contain the USER_PROMPT_SPAN sentinel, which is expanded here.
+
+    :param model: the model to run the forward pass on
+    :param tokenizer: tokenizer used to format and index the prompt
+    :param user_prompt: the raw (unformatted) user prompt text
+    :param system_prompt: system prompt for this arm, or None
+    :param layers: transformer layer indices to harvest
+    :param positions: token positions to harvest, possibly including USER_PROMPT_SPAN
+    :param device: device to run the forward pass on
+    :return: the harvested hidden states, the expanded positions, and their decoded tokens
     """
     formatted = build_prompt(tokenizer, user_prompt, system_prompt)
     tokens = tokenizer(formatted, return_tensors="pt", add_special_tokens=False).to(
         device
     )
-    pos_index = find_positions(tokenizer, tokens.input_ids[0])
+    input_ids = tokens.input_ids[0]
+    positions = expand_positions(tokenizer, input_ids, user_prompt, positions)
+    pos_index = find_positions(tokenizer, input_ids)
     # Template drift across model/tokenizer versions is the one failure mode
     # this pipeline's outputs can't reveal on their own (plan S2's "silent
     # mismatch" concern generalizes here) -- print what got selected every
     # call. Cheap: one call per (arm, word), not per generation.
+    decoded: dict[str, str] = {}
     for position in positions:
         idx = resolve_position(position, pos_index)
-        label = position.value if isinstance(position, Position) else "token_index"
-        token_str = tokenizer.decode([tokens.input_ids[0, idx].item()])
-        print(f"[extract] {label} -> token {idx}: {token_str!r}")
+        key = position_key(position)
+        decoded[key] = tokenizer.decode([input_ids[idx].item()])
+        print(f"[extract] {key} -> token {idx}: {decoded[key]!r}")
 
     outputs = model(
         input_ids=tokens.input_ids,
@@ -117,14 +244,14 @@ def extract_hidden_states(
         output_hidden_states=True,
     )
 
-    result = {}
+    hidden_states = {}
     for layer in layers:
         for position in positions:
             idx = resolve_position(position, pos_index)
-            result[(layer, position)] = (
+            hidden_states[(layer, position)] = (
                 outputs.hidden_states[layer + 1][0, idx, :].float().cpu()
             )
-    return result
+    return Extraction(hidden_states=hidden_states, positions=positions, tokens=decoded)
 
 
 def cache_path(output_dir: Path, arm: Arm, word: str) -> Path:
@@ -132,26 +259,37 @@ def cache_path(output_dir: Path, arm: Arm, word: str) -> Path:
     return output_dir / "hidden_states" / arm.value / f"{word}.safetensors"
 
 
-def _tensor_key(layer: int, position: Position) -> str:
-    return f"layer_{layer}__{position.value}"
+def _tensor_key(layer: int, position: Position | int) -> str:
+    return f"layer_{layer}__{position_key(position)}"
 
 
 def save_hidden_states(
-    path: Path, hidden_states: dict[tuple[int, Position], Float[Tensor, "hidden"]]
+    path: Path, hidden_states: dict[tuple[int, Position | int], Float[Tensor, "hidden"]]
 ) -> None:
+    """Write the cache atomically.
+
+    Every shard of a sharded run recomputes byte-identical content and writes
+    the same path, so concurrent writes are only benign if a reader can never
+    observe a half-written file.
+
+    :param path: destination cache file
+    :param hidden_states: cells to write, keyed by (layer, position)
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tensors = {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}
-    safetensors_save_file(tensors, str(path))
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    safetensors_save_file(tensors, str(tmp_path))
     # safetensors always creates the file at mode 0600 regardless of umask,
     # which defeats a directory's group ACL (unlike a plain open()). Loosen it
     # back to the ACL's intent so the cache is readable by whoever can read
     # the rest of a run's output.
-    path.chmod(0o664)
+    tmp_path.chmod(0o664)
+    os.replace(tmp_path, path)
 
 
 def load_hidden_states(
-    path: Path, layers: list[int], positions: list[Position]
-) -> dict[tuple[int, Position], Float[Tensor, "hidden"]]:
+    path: Path, layers: list[int], positions: list[Position | int]
+) -> dict[tuple[int, Position | int], Float[Tensor, "hidden"]]:
     tensors = safetensors_load_file(str(path))
     return {
         (layer, position): tensors[_tensor_key(layer, position)]

@@ -1,4 +1,13 @@
-from config import TABOO_WORDS, layers_full, layers_smoke
+from pathlib import Path
+
+from config import (
+    TABOO_WORDS,
+    Arm,
+    Position,
+    full_sweep_config,
+    layers_full,
+    layers_smoke,
+)
 
 
 def test_layers_smoke_matches_plan_example():
@@ -16,3 +25,27 @@ def test_taboo_words_count():
     # research_notes_selfie_mechanism.md S3: 20 secret-word variants.
     assert len(TABOO_WORDS) == 20
     assert len(set(TABOO_WORDS)) == 20  # no duplicates
+
+
+def test_full_sweep_config():
+    config = full_sweep_config(
+        ["gold", "moon"],
+        num_hidden_layers=32,
+        output_dir=Path("out"),
+        n_samples=50,
+        sample_start=100,
+        device="cuda:3",
+        batch_size=8,
+    )
+
+    assert config.layers == layers_full(32)
+    assert config.positions == [Position.USER_PROMPT_SPAN]
+    assert config.arms == [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED]
+    assert config.words == ["gold", "moon"]
+    assert config.n_samples == 50
+    # Both of these reaching the config is the point. The superseded
+    # first_pass_config never set `device`, so extraction and generation
+    # targeted the default GPU no matter what --device said.
+    assert config.device == "cuda:3"
+    assert config.sample_start == 100
+    assert config.batch_size == 8

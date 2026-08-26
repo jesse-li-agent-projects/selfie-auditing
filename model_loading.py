@@ -34,7 +34,15 @@ PROMPTED_SYSTEM_PROMPT = (
 
 
 def system_prompt_for(arm: Arm, word: str) -> str | None:
-    """The system prompt for an arm, or None for FINETUNED (no system prompt)."""
+    """The system prompt for an arm, or None for FINETUNED.
+
+    None means "pass no system message", not "no system turn in the rendered
+    prompt" -- the chat template adds its own date system turn regardless.
+
+    :param arm: the experimental condition
+    :param word: the secret word this arm's prompt should reference
+    :return: the formatted system prompt, or None for FINETUNED
+    """
     if arm is Arm.CONTROL:
         return CONTROL_SYSTEM_PROMPT.format(word=word)
     if arm is Arm.PROMPTED:
