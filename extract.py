@@ -96,7 +96,11 @@ def user_prompt_span(
     with* `user_prompt`), which tolerates a first token that merges preceding
     template whitespace into the first content word.
 
-    Raises rather than returning a plausible-but-wrong span if no slice matches.
+    :param tokenizer: tokenizer used to decode candidate slices of `input_ids`
+    :param input_ids: token ids of the fully formatted prompt
+    :param user_prompt: the raw (unformatted) user prompt text to locate
+    :return: negative, end-relative offsets covering every token of the span
+    :raises ValueError: if no slice of `input_ids` decodes to end with `user_prompt`
     """
     ids = input_ids.tolist()
     n = len(ids)
@@ -130,6 +134,12 @@ def expand_positions(
     exist once there are token ids to search. Duplicates are dropped by the
     token each position resolves to, so listing the sentinel alongside a named
     position inside the span does not produce two cells for one token.
+
+    :param tokenizer: tokenizer used to locate the span and named positions
+    :param input_ids: token ids of the fully formatted prompt
+    :param user_prompt: the raw (unformatted) user prompt text
+    :param positions: positions to expand; entries other than FULL_USER_SPAN pass through
+    :return: `positions` with FULL_USER_SPAN replaced by its offsets, deduplicated by token
     """
     expanded: list[Position | int] = []
     for position in positions:
@@ -164,7 +174,11 @@ def resolve_position(position: Position | int, pos_index: dict[Position, int]) -
 
 
 def position_key(position: Position | int) -> str:
-    """Stable string key for a position, for tensor names and results files."""
+    """Stable string key for a position, for tensor names and results files.
+
+    :param position: a named position, or a raw token offset
+    :return: the position's enum value, or "pos" followed by the raw offset
+    """
     return position.value if isinstance(position, Position) else f"pos{position}"
 
 
@@ -199,6 +213,15 @@ def extract_hidden_states(
     hidden_states[0] is the embedding output; hidden_states[L + 1] is the
     output of transformer layer L (research_notes S1.1). `positions` may
     contain the FULL_USER_SPAN sentinel, which is expanded here.
+
+    :param model: the model to run the forward pass on
+    :param tokenizer: tokenizer used to format and index the prompt
+    :param user_prompt: the raw (unformatted) user prompt text
+    :param system_prompt: system prompt for this arm, or None
+    :param layers: transformer layer indices to harvest
+    :param positions: token positions to harvest, possibly including FULL_USER_SPAN
+    :param device: device to run the forward pass on
+    :return: the harvested hidden states, the expanded positions, and their decoded tokens
     """
     formatted = build_prompt(tokenizer, user_prompt, system_prompt)
     tokens = tokenizer(formatted, return_tensors="pt", add_special_tokens=False).to(
@@ -251,6 +274,9 @@ def save_hidden_states(
     Every shard of a sharded run recomputes byte-identical content and writes
     the same path, so concurrent writes are only benign if a reader can never
     observe a half-written file.
+
+    :param path: destination cache file
+    :param hidden_states: cells to write, keyed by (layer, position)
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tensors = {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}

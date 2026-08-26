@@ -125,6 +125,14 @@ def full_sweep_config(
     `n_samples` of its generations, starting at `sample_start`. That divides
     the expensive work evenly with no scheduling logic and duplicates only the
     forward pass.
+
+    :param words: secret words to sweep
+    :param num_hidden_layers: the base model's layer count, to derive the full layer list
+    :param output_dir: where this shard's results and hidden-state cache are written
+    :param n_samples: generations per cell for this shard
+    :param sample_start: index of this shard's first generation, for seeding and merging
+    :param device: device to run this shard on
+    :return: the sweep's pipeline config
     """
     return PipelineConfig(
         base_model=BASE_MODEL_8B,

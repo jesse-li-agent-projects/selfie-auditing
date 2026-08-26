@@ -90,7 +90,13 @@ def test_span_reads_the_intended_tokens(model, tokenizer):
 
 def shard_config(tmp_path, sample_start, n_samples):
     """A one-cell, control-only slice of the smoke config -- enough to
-    exercise the shard path without paying for the whole smoke sweep."""
+    exercise the shard path without paying for the whole smoke sweep.
+
+    :param tmp_path: output directory for this shard
+    :param sample_start: index of this shard's first generation
+    :param n_samples: generations per cell for this shard
+    :return: a one-cell smoke pipeline config
+    """
     return replace(
         smoke_config(tmp_path),
         arms=[Arm.CONTROL],

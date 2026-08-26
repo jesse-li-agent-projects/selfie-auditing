@@ -67,6 +67,13 @@ def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int)
     and silently break replay. Folding in `sample_start` is what keeps two
     shards of one cell from regenerating the same samples -- without it a
     "200-sample" cell would really be 100 samples counted twice.
+
+    :param arm: the experimental condition
+    :param word: the secret word
+    :param layer: the transformer layer index
+    :param position: the position key (see `extract.position_key`)
+    :param sample_start: index of this shard's first generation
+    :return: a seed in [0, 2**31)
     """
     digest = hashlib.blake2b(
         f"{arm}|{word}|{layer}|{position}|{sample_start}".encode(), digest_size=8
@@ -77,16 +84,19 @@ def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int)
 def run(config, *, adapter, tokenizer, peft_model) -> dict:
     """Run extraction + interpretation + scoring for every cell in `config`.
 
-    Returns the whole results document: this shard's sample range, the prompt
-    and the decoded token every position resolved to, and the nested
-    arm -> word -> layer -> position cells (each keeping every raw generation
-    -- plan S4.6: never keep only the aggregate rate).
+    The prompt and span metadata make the returned document self-describing.
+    An offset like -11 only names a token relative to one formatted prompt, so
+    recording what it actually resolved to is what keeps a stored result
+    interpretable after a prompt or template change, and lets
+    merge_results.py check two shards' comparability instead of assuming it.
 
-    The prompt and span metadata make the file self-describing. An offset like
-    -11 only names a token relative to one formatted prompt, so recording what
-    it actually resolved to is what keeps a stored result interpretable after
-    a prompt or template change, and lets merge_results.py check two shards'
-    comparability instead of assuming it.
+    :param config: this shard's pipeline config
+    :param adapter: SelfIE adapter used to interpret each cell's hidden state
+    :param tokenizer: tokenizer shared by extraction and generation
+    :param peft_model: the (possibly LoRA-wrapped) model to extract from and generate with
+    :return: this shard's sample range, prompt, resolved-position metadata, and
+        the nested arm -> word -> layer -> position cells (each keeping every
+        raw generation -- plan S4.6: never keep only the aggregate rate)
     """
     import torch
 

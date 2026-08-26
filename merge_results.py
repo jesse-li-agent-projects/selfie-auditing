@@ -35,7 +35,12 @@ def parse_args():
 
 
 def load_shards(results_dir: Path) -> list[dict]:
-    """Every results_*.json in `results_dir`, in sample order."""
+    """Every results_*.json in `results_dir`, in sample order.
+
+    :param results_dir: directory holding one sharded sweep's results_*.json files
+    :return: parsed shard documents, sorted by sample_range
+    :raises ValueError: if `results_dir` has no results_*.json files
+    """
     shards = [
         json.loads(path.read_text()) for path in results_dir.glob("results_*.json")
     ]
@@ -45,7 +50,13 @@ def load_shards(results_dir: Path) -> list[dict]:
 
 
 def check_coverage(shards: list[dict], total: int) -> None:
-    """Assert the shards tile [0, total) exactly -- no gaps, no overlaps."""
+    """Assert the shards tile [0, total) exactly -- no gaps, no overlaps.
+
+    :param shards: shard documents, sorted by sample_range
+    :param total: expected total samples per cell
+    :raises ValueError: if the shards' sample ranges leave a gap, overlap, or
+        don't cover [0, total)
+    """
     covered = 0
     for shard in shards:
         start, end = shard["sample_range"]
@@ -63,7 +74,11 @@ def check_coverage(shards: list[dict], total: int) -> None:
 
 
 def check_comparable(shards: list[dict]) -> None:
-    """Assert every shard read the same prompt at the same tokens."""
+    """Assert every shard read the same prompt at the same tokens.
+
+    :param shards: shard documents to compare
+    :raises ValueError: if any shard's secret_prompt or spans differ from the first
+    """
     first = shards[0]
     for shard in shards[1:]:
         for field in ("secret_prompt", "spans"):
@@ -80,6 +95,9 @@ def merge_cells(shards: list[dict]) -> dict:
     Rescoring rather than concatenating the stored `hits`: `hit_rate` is a
     ratio, so it cannot be merged arithmetically without also trusting each
     shard's `n`, and rescoring costs nothing.
+
+    :param shards: shard documents to merge; assumed already checked comparable
+    :return: the merged arm -> word -> layer -> position cells
     """
     from scoring import score_cell
 
@@ -111,7 +129,14 @@ def merge_cells(shards: list[dict]) -> dict:
 
 
 def merge(shards: list[dict], total: int) -> dict:
-    """One results document from many shards' worth of the same cells."""
+    """One results document from many shards' worth of the same cells.
+
+    :param shards: shard documents to merge
+    :param total: expected total samples per cell; the shards must cover [0, total)
+    :return: a merged results document with the same shape as one shard
+    :raises ValueError: if the shards don't tile [0, total) or disagree on
+        prompt/span metadata
+    """
     check_coverage(shards, total)
     check_comparable(shards)
     return {
