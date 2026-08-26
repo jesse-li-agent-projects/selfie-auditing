@@ -10,10 +10,11 @@ rather than the whole sweep. Pure dict and file logic, no heavy imports.
 
 The checks here exist to stop a broken merge from looking healthy. Missing or
 overlapping shards would silently produce a "200-sample" cell holding some
-other number; shards whose prompt or span metadata disagree are not measuring
-the same token at all, so concatenating them would be meaningless rather than
-merely short. Shards launched from different code are the case preflight.py
-cannot see, which is why the comparability check stays here as well.
+other number; shards whose weights, sampling, prompt or span metadata disagree
+are not measuring the same thing at all, so concatenating them would be
+meaningless rather than merely short. Shards launched from different code, or
+from the same code with different flags, are the case preflight.py cannot see,
+which is why the comparability check stays here as well.
 """
 
 import argparse
@@ -22,6 +23,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from config import COMPARABLE_FIELDS
 from results_store import (
     cell_key,
     read_cells,
@@ -88,18 +90,23 @@ def check_coverage(metadata: list[dict], total: int) -> None:
 
 
 def check_comparable(metadata: list[dict]) -> None:
-    """Assert every shard read the same prompt at the same tokens.
+    """Assert every shard measured the same thing, the same way.
+
+    Covers the weights and sampling settings as well as the prompt and span:
+    all of them are per-invocation flags, so two shards launched into one
+    output directory can differ in any of them while still producing
+    identically keyed cells that merge without complaint.
 
     :param metadata: shard metadata to compare
-    :raises ValueError: if any shard's secret_prompt or spans differ from the first
+    :raises ValueError: if any shard's comparable settings or spans differ from the first
     """
     first = metadata[0]
     for shard in metadata[1:]:
-        for field in ("secret_prompt", "spans"):
-            if shard[field] != first[field]:
+        for name in COMPARABLE_FIELDS + ("spans",):
+            if shard.get(name) != first.get(name):
                 raise ValueError(
-                    f"shards disagree on {field!r}: {first[field]!r} vs "
-                    f"{shard[field]!r} -- they are not measuring the same thing"
+                    f"shards disagree on {name!r}: {first.get(name)!r} vs "
+                    f"{shard.get(name)!r} -- they are not measuring the same thing"
                 )
 
 
@@ -157,8 +164,10 @@ def merge(results_dir: Path, total: int) -> Path:
         merged_path,
         {
             "sample_range": [0, total],
-            "secret_prompt": metadata[0]["secret_prompt"],
             "spans": metadata[0]["spans"],
+            # Checked equal across shards just above, so the first shard's
+            # values describe the merged file as a whole.
+            **{name: metadata[0].get(name) for name in COMPARABLE_FIELDS},
             # Per shard, not merged into one value: batch size is a property of
             # how a shard was produced, and shards may differ in it.
             "shards": [

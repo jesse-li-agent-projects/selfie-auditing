@@ -206,8 +206,8 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
         return {
             "sample_range": [config.sample_start, sample_end],
             "batch_size": config.batch_size,
-            "secret_prompt": config.secret_prompt,
             "spans": spans,
+            **config.comparable_settings(),
         }
 
     # Written before the first cell so an interrupted shard is still

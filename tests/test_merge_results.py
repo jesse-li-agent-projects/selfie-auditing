@@ -2,11 +2,12 @@ import json
 
 import pytest
 
+from config import sweep_config
 from merge_results import merge, merge_cells
 from results_store import read_cells, read_metadata, shard_cells_path, write_metadata
 
 SPANS = {"control": {"pos-2": " word", "pos-1": "?"}}
-SECRET_PROMPT = "What is the secret word?"
+SETTINGS = sweep_config(["gold"], layers=[0]).comparable_settings()
 
 
 def cell(generations, position="pos-1"):
@@ -19,9 +20,7 @@ def cell(generations, position="pos-1"):
     }
 
 
-def write_shard(
-    results_dir, start, end, cells, spans=SPANS, secret_prompt=SECRET_PROMPT
-):
+def write_shard(results_dir, start, end, cells, spans=SPANS, **settings):
     """One shard on disk: a cells file plus its metadata sidecar."""
     path = shard_cells_path(results_dir, start, end)
     write_metadata(
@@ -29,8 +28,9 @@ def write_shard(
         {
             "sample_range": [start, end],
             "batch_size": 25,
-            "secret_prompt": secret_prompt,
             "spans": spans,
+            **SETTINGS,
+            **settings,
         },
     )
     path.write_text("".join(json.dumps(c) + "\n" for c in cells))
@@ -106,6 +106,38 @@ def test_merge_rejects_mismatched_prompt(tmp_path):
 
     with pytest.raises(ValueError, match="secret_prompt"):
         merge(tmp_path, total=4)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"base_model": "meta-llama/Llama-3.2-1B-Instruct"},
+        {"adapter_repo": "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"},
+        {"temperature": 1.0},
+        {"max_new_tokens": 10},
+    ],
+)
+def test_merge_rejects_shards_run_with_different_settings(tmp_path, override):
+    # A dummy-weight shard and a real one produce identically keyed cells with
+    # identical spans, so nothing but this check stands between them and a
+    # merged file whose hit rates blend the two.
+    write_shard(tmp_path, 0, 2, [cell(["a", "b"])])
+    write_shard(tmp_path, 2, 4, [cell(["c", "d"])], **override)
+
+    (name,) = override
+    with pytest.raises(ValueError, match=name):
+        merge(tmp_path, total=4)
+
+
+def test_merge_records_the_settings_its_shards_agreed_on(tmp_path):
+    # Without this the merged file cannot say which weights produced it.
+    write_shard(tmp_path, 0, 2, [cell(["a", "b"])])
+    write_shard(tmp_path, 2, 4, [cell(["c", "d"])])
+
+    merge(tmp_path, total=4)
+
+    metadata = read_metadata(tmp_path / "results.jsonl")
+    assert {name: metadata[name] for name in SETTINGS} == SETTINGS
 
 
 def test_merge_rejects_a_short_shard(tmp_path):

@@ -7,7 +7,7 @@ values pays no import cost.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -104,6 +104,22 @@ def resolve_layers(spec: str, num_hidden_layers: int) -> list[int]:
     return [int(layer) for layer in spec.split(",")]
 
 
+# What two shards must agree on before their generations can be pooled: the
+# weights they read and the sampling that produced them. Recorded in every
+# shard's metadata and compared by merge_results.py -- otherwise a shard run
+# against different weights merges in silently, and nothing on disk says so.
+# batch_size is deliberately absent; see PipelineConfig.batch_size.
+COMPARABLE_FIELDS: tuple[str, ...] = (
+    "base_model",
+    "adapter_repo",
+    "adapter_filename",
+    "taboo_lora_repo_template",
+    "secret_prompt",
+    "temperature",
+    "max_new_tokens",
+)
+
+
 @dataclass
 class PipelineConfig:
     """Everything a run of the pipeline needs to know, independent of code path."""
@@ -131,6 +147,13 @@ class PipelineConfig:
     output_dir: Path = Path("results")
     device: str = "cuda"
     dtype: str = "bfloat16"
+
+    def comparable_settings(self) -> dict:
+        """The settings a merge requires two shards to agree on.
+
+        :return: `COMPARABLE_FIELDS` and their values
+        """
+        return {field: getattr(self, field) for field in COMPARABLE_FIELDS}
 
 
 def sweep_config(
