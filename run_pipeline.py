@@ -150,11 +150,10 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
             save_hidden_states(
                 cache_path(config.output_dir, arm, word), extraction.hidden_states
             )
-            if spans.setdefault(arm.value, extraction.tokens) != extraction.tokens:
-                raise ValueError(
-                    f"arm {arm.value!r} resolved different tokens for word {word!r} "
-                    "than for an earlier word -- the arm's cells are not comparable"
-                )
+            # Recorded, not checked: preflight.py already proved every
+            # (arm, word) resolves the same span, and against a pinned
+            # measurement rather than merely against each other.
+            spans.setdefault(arm.value, extraction.tokens)
             # Iterate the extraction's own keys, not config.positions: only the
             # extraction knows what USER_PROMPT_SPAN expanded to.
             for (layer, position), hidden_state in extraction.hidden_states.items():
@@ -187,12 +186,15 @@ if __name__ == "__main__":
     import json
     from pathlib import Path
 
+    from transformers import AutoConfig
+
     from config import Arm, full_sweep_config
     from model_loading import (
         attach_taboo_loras,
         load_base_model,
         load_tokenizer,
     )
+    from preflight import preflight
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -202,19 +204,22 @@ if __name__ == "__main__":
 
         from smoke.small_llama_config import (
             SMOKE_ADAPTER_FILENAME,
+            SMOKE_MODEL,
             create_random_lora,
             create_random_selfie_adapter,
             embedding_norm,
             smoke_config,
         )
 
-        config = smoke_config(output_dir)
-        tokenizer = load_tokenizer(config.base_model)
-        model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
+        num_hidden_layers = AutoConfig.from_pretrained(SMOKE_MODEL).num_hidden_layers
+        config = smoke_config(output_dir, num_hidden_layers=num_hidden_layers)
         if args.n_samples is not None:
             config.n_samples = args.n_samples
         config.sample_start = args.sample_start
         config.device = args.device
+        tokenizer = load_tokenizer(config.base_model)
+        preflight(config, tokenizer, num_hidden_layers)
+        model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
         smoke_lora_baseline = None
         if Arm.FINETUNED in config.arms:
             # Captured before create_random_lora() wraps the model, so the
@@ -255,8 +260,6 @@ if __name__ == "__main__":
             device=args.device,
         )
     else:
-        from transformers import AutoConfig
-
         from config import BASE_MODEL_8B
         from interpret import load_wikipedia_adapter
 
@@ -274,6 +277,7 @@ if __name__ == "__main__":
             **kwargs,
         )
         tokenizer = load_tokenizer(config.base_model)
+        preflight(config, tokenizer, num_hidden_layers)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
         adapter = load_wikipedia_adapter(
             config.adapter_repo, config.adapter_filename, args.device
