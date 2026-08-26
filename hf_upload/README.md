@@ -2,9 +2,9 @@
 
 Two public repos back the end-to-end test described in
 `plans/replace_smoke_flag_with_dummy_weights.md`. This directory holds their
-model cards. The weights themselves are not committed here — they are
-deterministic at seed 0, so they are regenerated rather than stored in git (the
-LoRA alone is 45 MB).
+model cards. The weights themselves are not committed here — they regenerate
+from seed 0, so they are rebuilt rather than stored in git (the LoRA alone is
+45 MB). Reproduction is per-device; see step 1.
 
 Substitute your own account for `<hf-user>` throughout.
 
