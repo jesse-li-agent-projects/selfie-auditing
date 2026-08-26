@@ -25,6 +25,7 @@ meaning.
 """
 
 import argparse
+import hashlib
 
 
 def parse_args():
@@ -84,8 +85,15 @@ if __name__ == "__main__":
     )
 
     for word in words:
+        # A seed per word, not one for all: identical LoRAs would make a
+        # set_adapter() that selects the wrong word's adapter indistinguishable
+        # from a correct one in any dummy run. Derived from the word itself, so
+        # regenerating one word later reproduces the same weights.
+        word_seed = args.seed + int.from_bytes(
+            hashlib.blake2b(word.encode(), digest_size=4).digest(), "big"
+        )
         # Returns the unwrapped base model, so each word starts from a clean one.
-        model = create_random_lora(model, lora_template, word, seed=args.seed)
+        model = create_random_lora(model, lora_template, word, seed=word_seed)
         print(
             f"Wrote random taboo LoRA for {word!r} to {lora_template.format(word=word)}"
         )
