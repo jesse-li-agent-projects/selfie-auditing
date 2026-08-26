@@ -16,22 +16,21 @@ Substitute your own account for `<hf-user>` throughout.
 
 ## 1. Generate the weights
 
-**CUDA is the canonical device** for this fixture. It fixes the one value that
-does vary by device (`init_scale`, below); nothing else about the output
-depends on the choice.
+Either device works, and nothing downstream depends on which you pick — the
+checkpoint records the one device-dependent value in its own metadata header.
+CPU is the faster of the two (3.3 s against 5.4 s on this machine with a warm
+HF cache; the script only reads the embedding matrix and initializes LoRA
+tensors, so CUDA context setup costs more than it saves), and needs no GPU.
 
 ```bash
 date
-python make_smoke_weights.py --output-dir outputs/dummy_weights --device cuda --seed 0
+python make_smoke_weights.py --output-dir outputs/dummy_weights --device cpu --seed 0
 echo "=== generated ==="
 find outputs/dummy_weights -type f -exec ls -l {} \;
 ```
 
-`--device cpu` also works and needs no GPU — this script only reads the
-embedding matrix and initializes LoRA tensors. It is measurably the faster of
-the two (3.3 s against 5.4 s on this machine with a warm HF cache, because CUDA
-context setup costs more than the work saved), so use it if you only want to
-inspect the output. Anything published should come from the canonical device.
+Note in the model card which device you used, so the recorded `init_scale` has
+a stated origin.
 
 Expected output, verified on 2026-08-26:
 
@@ -64,15 +63,16 @@ model's embedding rows, and that reduction differs in its last bits:
 
 | device | `init_scale` |
 |---|---|
-| cuda (canonical) | `0.9332589507102966` |
 | cpu | `0.9332588315010071` |
+| cuda | `0.9332589507102966` |
 
 Each is stable on its own device — verified over five consecutive calls, and
 across separate runs. `bias` is scaled by `init_scale`, so it shifts with it.
 The relative difference is ~1e-7 and numerically irrelevant to a fixture whose
-whole purpose is shape checking. The exact value used is recorded in the
-checkpoint's own metadata header, so a published fixture is self-describing
-whichever device made it.
+whole purpose is shape checking, so this needs no rule about which device to
+use: the exact value is recorded in the checkpoint's own metadata header, which
+makes a published fixture self-describing whichever device made it. Compare
+with a tolerance, not for equality.
 
 The LoRA (`adapter_model.safetensors`) **is** byte-identical, across devices and
 across runs — verified. Nothing in it derives from a reduction over model

@@ -67,7 +67,7 @@ gives nonzero random weights on both `A` and `B`.
 
 ## Provenance
 
-Generated at seed 0 on CUDA, by `make_smoke_weights.py` in the project that
+Generated at seed 0 on CPU, by `make_smoke_weights.py` in the project that
 publishes this fixture. 224 tensors, all fp32.
 
 Unlike the companion SelfIE adapter fixture, this one *is* byte-for-byte
