@@ -119,12 +119,21 @@ def full_sweep_config(
     sample_start: int = 0,
     device: str = "cuda",
 ) -> PipelineConfig:
-    """Every layer x every user-prompt token position, all three arms.
+    """
+    Every layer x every user-prompt token position, all three arms.
 
     Sharding is by sample, not by cell: each shard runs every cell but only
     `n_samples` of its generations, starting at `sample_start`. That divides
     the expensive work evenly with no scheduling logic and duplicates only the
     forward pass.
+
+    :param words: secret words to sweep
+    :param num_hidden_layers: layer count of the base model, read from its config
+    :param output_dir: where this shard writes its cache and results file
+    :param n_samples: generations per cell for this shard
+    :param sample_start: index of this shard's first generation
+    :param device: device to run this shard on
+    :return: the config for one shard of the sweep
     """
     return PipelineConfig(
         base_model=BASE_MODEL_8B,

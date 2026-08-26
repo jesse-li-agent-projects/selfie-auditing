@@ -60,13 +60,21 @@ def parse_args():
 
 
 def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int) -> int:
-    """Deterministic per-cell, per-shard seed.
+    """
+    Deterministic per-cell, per-shard seed.
 
     blake2b rather than hash(): Python's hash() is salted per process, so a
     hash()-derived seed would give a different generation stream on every run
     and silently break replay. Folding in `sample_start` is what keeps two
     shards of one cell from regenerating the same samples -- without it a
     "200-sample" cell would really be 100 samples counted twice.
+
+    :param arm: the cell's experimental condition
+    :param word: the cell's secret word
+    :param layer: the cell's transformer layer
+    :param position: the cell's position key
+    :param sample_start: index of this shard's first generation
+    :return: a seed for torch.manual_seed
     """
     digest = hashlib.blake2b(
         f"{arm}|{word}|{layer}|{position}|{sample_start}".encode(), digest_size=8
@@ -75,18 +83,23 @@ def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int)
 
 
 def run(config, *, adapter, tokenizer, peft_model) -> dict:
-    """Run extraction + interpretation + scoring for every cell in `config`.
-
-    Returns the whole results document: this shard's sample range, the prompt
-    and the decoded token every position resolved to, and the nested
-    arm -> word -> layer -> position cells (each keeping every raw generation
-    -- plan S4.6: never keep only the aggregate rate).
+    """
+    Run extraction + interpretation + scoring for every cell in `config`.
 
     The prompt and span metadata make the file self-describing. An offset like
     -11 only names a token relative to one formatted prompt, so recording what
     it actually resolved to is what keeps a stored result interpretable after
     a prompt or template change, and lets merge_results.py check two shards'
     comparability instead of assuming it.
+
+    :param config: the shard's PipelineConfig
+    :param adapter: the SelfIE adapter that injects hidden states
+    :param tokenizer: tokenizer matching the base model
+    :param peft_model: base model with the taboo LoRAs attached
+    :return: the whole results document -- this shard's sample range, the
+        prompt and the decoded token every position resolved to, and the nested
+        arm -> word -> layer -> position cells (each keeping every raw
+        generation -- plan S4.6: never keep only the aggregate rate)
     """
     import torch
 

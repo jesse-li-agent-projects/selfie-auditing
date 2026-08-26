@@ -81,7 +81,8 @@ def user_prompt_span(
     input_ids: Int[Tensor, "seq"],
     user_prompt: str,
 ) -> list[int]:
-    """Every token from the start of `user_prompt` to the end, as negative offsets.
+    """
+    Every token from the start of `user_prompt` to the end, as negative offsets.
 
     Offsets are negative (end-relative) because absolute indices are not
     comparable across arms: a system turn shifts every absolute index, while
@@ -96,7 +97,12 @@ def user_prompt_span(
     with* `user_prompt`), which tolerates a first token that merges preceding
     template whitespace into the first content word.
 
-    Raises rather than returning a plausible-but-wrong span if no slice matches.
+    :param tokenizer: tokenizer that produced `input_ids`, used to decode back
+    :param input_ids: token ids of the formatted prompt
+    :param user_prompt: the user turn's text, as passed to the chat template
+    :return: one end-relative offset per token of the span, in prompt order
+    :raises ValueError: if no slice of the prompt matches, rather than
+        returning a plausible-but-wrong span
     """
     ids = input_ids.tolist()
     n = len(ids)
@@ -124,12 +130,19 @@ def expand_positions(
     user_prompt: str,
     positions: list[Position | int],
 ) -> list[Position | int]:
-    """Replace the FULL_USER_SPAN sentinel with the offsets it stands for.
+    """
+    Replace the FULL_USER_SPAN sentinel with the offsets it stands for.
 
     Expansion happens here rather than in config because the offsets only
     exist once there are token ids to search. Duplicates are dropped by the
     token each position resolves to, so listing the sentinel alongside a named
     position inside the span does not produce two cells for one token.
+
+    :param tokenizer: tokenizer that produced `input_ids`
+    :param input_ids: token ids of the formatted prompt
+    :param user_prompt: the user turn's text, as passed to the chat template
+    :param positions: named positions, raw offsets, and/or the sentinel
+    :return: the same list with the sentinel expanded and duplicates dropped
     """
     expanded: list[Position | int] = []
     for position in positions:
@@ -164,7 +177,12 @@ def resolve_position(position: Position | int, pos_index: dict[Position, int]) -
 
 
 def position_key(position: Position | int) -> str:
-    """Stable string key for a position, for tensor names and results files."""
+    """
+    Stable string key for a position, for tensor names and results files.
+
+    :param position: a named position or a raw token offset
+    :return: the key for this position
+    """
     return position.value if isinstance(position, Position) else f"pos{position}"
 
 
@@ -194,11 +212,22 @@ def extract_hidden_states(
     positions: list[Position | int],
     device: str,
 ) -> Extraction:
-    """Run one forward pass and slice out every requested (layer, position) cell.
+    """
+    Run one forward pass and slice out every requested (layer, position) cell.
 
     hidden_states[0] is the embedding output; hidden_states[L + 1] is the
-    output of transformer layer L (research_notes S1.1). `positions` may
-    contain the FULL_USER_SPAN sentinel, which is expanded here.
+    output of transformer layer L (research_notes S1.1).
+
+    :param model: the model to run the forward pass on
+    :param tokenizer: tokenizer matching `model`
+    :param user_prompt: the elicitation prompt
+    :param system_prompt: the arm's system prompt, or None to pass none
+    :param layers: transformer layers to harvest, 0-indexed
+    :param positions: named positions, raw offsets, and/or the FULL_USER_SPAN
+        sentinel, which is expanded here
+    :param device: device to put the tokenized input on
+    :return: the harvested cells, the positions they were read at, and the
+        decoded token each position resolved to
     """
     formatted = build_prompt(tokenizer, user_prompt, system_prompt)
     tokens = tokenizer(formatted, return_tensors="pt", add_special_tokens=False).to(
@@ -246,11 +275,15 @@ def _tensor_key(layer: int, position: Position | int) -> str:
 def save_hidden_states(
     path: Path, hidden_states: dict[tuple[int, Position | int], Float[Tensor, "hidden"]]
 ) -> None:
-    """Write the cache atomically.
+    """
+    Write the cache atomically.
 
     Every shard of a sharded run recomputes byte-identical content and writes
     the same path, so concurrent writes are only benign if a reader can never
     observe a half-written file.
+
+    :param path: destination cache file
+    :param hidden_states: one tensor per (layer, position) cell
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tensors = {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}
