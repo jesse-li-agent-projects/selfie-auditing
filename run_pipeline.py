@@ -281,8 +281,10 @@ if __name__ == "__main__":
             device=args.device,
         )
     else:
+        from huggingface_hub import hf_hub_download
+        from selfie_adapters import load_adapter
+
         from config import BASE_MODEL_8B
-        from interpret import load_wikipedia_adapter
 
         # Layer count comes from the model's own config, not an assumed 32
         # (plan S2: "reported elsewhere as 32 ... but treat that as unverified
@@ -307,8 +309,11 @@ if __name__ == "__main__":
         tokenizer = load_tokenizer(config.base_model)
         preflight(config, tokenizer, num_hidden_layers)
         model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
-        adapter = load_wikipedia_adapter(
-            config.adapter_repo, config.adapter_filename, args.device
+        adapter = load_adapter(
+            hf_hub_download(
+                repo_id=config.adapter_repo, filename=config.adapter_filename
+            ),
+            device=args.device,
         )
 
     # Shared by both paths: attach every word's taboo LoRA (real, downloaded
