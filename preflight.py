@@ -38,7 +38,7 @@ def parse_args():
 from config import SECRET_PROMPT, Arm, PipelineConfig, Position
 
 # Measured against the real tokenizer for PIN_WORD (plan S2, S6.2). The 1B
-# smoke tokenizer and the gated 8B agree, so these hold for both.
+# dummy tokenizer and the gated 8B agree, so these hold for both.
 PIN_WORD = "gold"
 PINNED_SPAN = list(range(-11, 0))
 PINNED_SPAN_TOKENS = [

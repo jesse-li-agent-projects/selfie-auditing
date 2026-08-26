@@ -5,11 +5,10 @@ Neither real weight set exists below 8B: the SelfIE adapter checkpoint is
 This module writes random-weight stand-ins of the right shape, in the real
 on-disk formats -- run through the ordinary loaders, never a stub object.
 
-It is the provenance record for the published dummy repos (config.py's
-DUMMY_* constants; see make_dummy_weights.py), and tests/test_dummy_weights.py
-is what keeps that record honest. run_pipeline.py's --smoke path still calls
-it to fabricate fresh weights at runtime rather than downloading the published
-ones -- transitional, and dropped along with --smoke.
+Nothing in a run path calls this module any more: it is the provenance record
+for the published dummy repos (config.py's DUMMY_* constants; see
+make_dummy_weights.py), and tests/test_dummy_weights.py is what keeps that
+record honest.
 """
 
 from __future__ import annotations
