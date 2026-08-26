@@ -1,0 +1,271 @@
+# Replace the `--smoke` flag with dummy weights on the Hub
+
+## Scope
+
+Test infrastructure only. This plan does not change the experiment design. The
+standing research questions are in `README.md`, section "Research questions";
+this plan does not restate or reinterpret them.
+
+## Why
+
+`--smoke` exists so an agent can run the pipeline end to end on a laptop GPU,
+without an 80GB card for the 8B model. That goal is right. The implementation
+is not: "smoke" is a *code path* rather than a *set of arguments*.
+
+`run_pipeline.py` currently branches twice on `args.smoke` — lines 200-256 pick
+a config, fabricate a random SelfIE adapter and a random LoRA, and load them;
+lines 292-337 run a LoRA self-check assertion. That is ~90 lines the real run
+never executes, so the smoke pass cannot prove the real pass works.
+
+The repo already contains the better design. `make_smoke_weights.py` states it
+in its own docstring — *"no stub objects, no branching on 'is this a smoke
+run'"* — and `explore_selfie.py` follows it, with no smoke branch at all. The
+fabrication step is the only reason `run_pipeline.py` cannot: fabrication is a
+step the real run does not have, so it must live in a branch.
+
+Publishing the fabricated weights removes that step. Then a dummy run and a
+real run differ by four strings and nothing else.
+
+## Target state
+
+| | real | dummy |
+|---|---|---|
+| `base_model` | `meta-llama/Llama-3.1-8B-Instruct` | `meta-llama/Llama-3.2-1B-Instruct` |
+| `adapter_repo` | `keenanpepper/selfie-adapters-llama-3.1-8b-instruct` | `cooleytukey/dummy-selfie-adapter-llama-3.2-1b` |
+| `adapter_filename` | `wikipedia-scalar-affine.safetensors` | `selfie-random-scalar-affine.safetensors` |
+| `taboo_lora_repo_template` | `bcywinski/llama-3.1-8b-instruct-taboo-{word}` | `cooleytukey/dummy-taboo-lora-llama-3.2-1b-{word}` |
+
+No `--smoke` flag. No `smoke/` package. One config constructor. The end-to-end
+check is `pytest -m gpu`, which enters through the same `main()` the CLI does.
+
+Fidelity note: a frozen published checkpoint is better than one fabricated at
+run time. A fabricator and a loader that live in the same repo drift together,
+so a format bug stays green. Published bytes are pinned, so a loader change
+fails loudly.
+
+## Steps
+
+Each step is one commit.
+
+### 0. Publish the dummy weights
+
+Done. Both repos are public under `cooleytukey/` on the Hub (see the table
+above for exact ids), generated at seed 0 by `make_dummy_weights.py` (see step
+4). Public, not private: the weights are random and hold nothing to protect,
+and private would require loading `HF_TOKEN` from `.env` into the process
+before `hf_hub_download` sees it — a dependency and a failure mode the public
+path does not have.
+
+The word `dummy` in both repo ids is load-bearing: a reader who sees
+`dummy-taboo-lora-...` in a config or a log line already knows the generations
+are meaningless. Several warning comments in the fabrication code can go with
+it.
+
+### 1. Delete `load_wikipedia_adapter`
+
+`interpret.py:50-54` wraps `hf_hub_download` + `load_adapter` in a named
+function, and `explore_selfie.py:139-145` picks between that function and a
+local-path loader. With both adapters on the Hub there is one way to load an
+adapter, so inline it at both call sites:
+
+```python
+adapter = load_adapter(
+    hf_hub_download(repo_id=config.adapter_repo, filename=config.adapter_filename),
+    device=config.device,
+)
+```
+
+`adapter_repo` and `adapter_filename` stay as two separate fields. They map one
+to one onto `hf_hub_download`'s two arguments, so merging them into a single
+`adapter_source` string would only mean splitting it again at the call site.
+The `adapter_repo=""` sentinel in `smoke_config` disappears because the dummy
+config now holds real values, not because the fields merged.
+
+Also drop `explore_selfie.py --adapter-path` and add `--adapter-repo` /
+`--adapter-filename`. Cost: a locally fabricated adapter can no longer be
+loaded without a round trip through the Hub. Accepted — fabrication is now a
+one-time provenance step.
+
+`interpret.py` loses a function and its `hf_hub_download` import.
+
+### 2. One config constructor; budget becomes parameters
+
+`smoke_config` and `full_sweep_config` differ in more than names today:
+`layers_smoke` vs `layers_full`, three named positions vs `FULL_USER_SPAN`,
+`n_samples` 3 vs 200, `max_new_tokens` 20 vs 50. Those are *budget*
+differences, not dummy-vs-real differences — a real run on a tight schedule
+wants the same knobs. While they stay hardcoded in two constructors, "only the
+names differ" is false.
+
+Collapse to one `sweep_config(...)` taking keyword arguments for `base_model`,
+`adapter_repo`, `adapter_filename`, `taboo_lora_repo_template`, `arms`,
+`layers`, `positions`, `n_samples`, `max_new_tokens`, `temperature`, with the
+real 8B values as defaults.
+
+Delete `layers_smoke` and `layers_full`. A `--layers` flag takes `all`
+(default) or a comma list. Note `layers_smoke(32) == list(range(0, 32, 4))`, so
+nothing about the existing first-pass layer set changes; only the function
+does. `tests/test_config.py::test_layers_smoke_matches_plan_example` goes with
+it.
+
+New flags on `run_pipeline.py`: `--model`, `--adapter-repo`,
+`--adapter-filename`, `--lora-template`, `--arms`, `--layers`, `--positions`,
+`--max-new-tokens`, `--temperature`. `--words` becomes unconditionally
+required, so the `parser.error` at lines 57-58 goes away.
+
+Put the four dummy constants in `config.py` beside the real ones —
+`DUMMY_BASE_MODEL`, `DUMMY_ADAPTER_REPO`, `DUMMY_ADAPTER_FILE`,
+`DUMMY_LORA_REPO_TEMPLATE`, `DUMMY_WORD`. Side by side is the clearest possible
+statement that they are peers and that nothing else differs.
+
+### 3. Extract `main(args)`
+
+```python
+def parse_args(argv=None):
+    ...
+    return parser.parse_args(argv)   # the only change: pass argv through
+
+
+def main(args) -> Path:
+    """Load, sweep, write.
+
+    :param args: parsed command-line arguments
+    :return: path of the results file written
+    """
+    # heavy imports here, matching how run() already does it, so --help stays fast
+    ...
+    return write_results(config.output_dir, run(config, adapter=adapter,
+                                                tokenizer=tokenizer,
+                                                peft_model=peft_model))
+
+
+if __name__ == "__main__":
+    print(f"Wrote results to {main(parse_args())}")
+```
+
+`main` returns the results path so a test can assert on the write directly
+instead of scanning a directory.
+
+`parse_args(argv=None)` is the load-bearing half. It lets the test build its
+arguments from a real command line, so the test exercises the actual flags and
+defaults and cannot drift from them.
+
+### 4. Rename the fabrication module
+
+`smoke/small_llama_config.py` keeps only the fabrication helpers
+(`create_random_lora`, `create_random_selfie_adapter`, `embedding_norm`,
+`RANDOM_LORA_HYPERPARAMS`) and moves to a top-level `dummy_weights.py`.
+`make_smoke_weights.py` becomes `make_dummy_weights.py`. The `smoke/` package
+disappears — it held only this file and an empty `__init__.py`.
+
+`IdentityAdapter` and `RandomAffineAdapter` are deleted: they have no callers
+anywhere in the repo. Delete the "and the smoke-test stub adapters" clause from
+`interpret.Adapter`'s docstring at the same time, so nothing in the codebase
+suggests a second adapter kind exists.
+
+Nothing in a run path calls `make_dummy_weights.py` any more. It is the
+provenance record for the published repos, and the fixture-validation test
+below is what keeps it honest.
+
+### 5. Tests, then delete `--smoke`
+
+Two GPU tests entering through `main()`. Both carry
+`pytest.mark.gpu` and `pytest.mark.hf_cache`.
+
+**`test_main_sweeps_every_requested_cell_and_writes_them`** — the primary
+end-to-end check. `--arms control,prompted` means no LoRA and no PEFT, so this
+test needs only the base model and the dummy adapter.
+
+```python
+args = parse_args([
+    "--words", DUMMY_WORD,
+    "--model", DUMMY_BASE_MODEL,
+    "--adapter-repo", DUMMY_ADAPTER_REPO,
+    "--adapter-filename", DUMMY_ADAPTER_FILE,
+    "--output-dir", str(tmp_path),
+    "--device", DEVICE,
+    "--arms", "control,prompted",
+    "--layers", "0,8",
+    "--n-samples", "2",
+    "--max-new-tokens", "8",
+])
+path = main(args)
+
+assert path.parent == tmp_path
+doc = json.loads(path.read_text())
+
+span = list(doc["spans"]["control"])          # what FULL_USER_SPAN expanded to
+assert set(doc["cells"]) == {"control", "prompted"}
+for arm_cells in doc["cells"].values():
+    assert set(arm_cells) == {DUMMY_WORD}
+    layers = arm_cells[DUMMY_WORD]
+    assert set(layers) == {"0", "8"}          # exactly the requested layers
+    for positions in layers.values():
+        assert set(positions) == set(span)    # exactly the requested positions
+        for cell in positions.values():
+            assert len(cell["generations"]) == 2
+            assert len(cell["hits"]) == 2
+
+for arm in ("control", "prompted"):
+    assert cache_path(tmp_path, Arm(arm), DUMMY_WORD).exists()
+```
+
+Two deliberate choices. Assert **set equality** on layers and positions, not
+membership: `==` catches a sweep that runs an extra cell or drops one, `in`
+does not. And assert on the hidden-state cache as well as the results JSON,
+because both are output-directory data.
+
+**`test_finetuned_arm_loads_the_dummy_lora`** — the LoRA path, kept small
+(`--arms finetuned --layers 0 --n-samples 1`) and separate, so a problem
+fetching the LoRA repo cannot take out the primary test.
+
+**`test_two_shards_produce_different_generations`** moves to `main()` too:
+call it twice with `--sample-start 0` and `--sample-start 2`, assert two
+distinct files land in one output directory, then merge. That subsumes today's
+version and additionally proves the shard filenames do not collide.
+
+**`test_dummy_lora_perturbs_forward_pass`** — the assertion currently at
+`run_pipeline.py:292-337`, moved beside the fixture it validates. It asks
+whether the random LoRA is a genuine no-op (`init_lora_weights=False` is
+load-bearing) and whether `disable_adapter()` returns a clean base model. That
+is a property of the published weights, so it is checked once in a test, not on
+every run.
+
+With those green, delete `--smoke`, both of its blocks, and `smoke_config`.
+
+Cost: the primary test is 2 arms x 1 word x 2 layers x ~8 span positions x 2
+samples x 8 tokens on a 1B model. Under a minute on a GPU after the one-time
+model download.
+
+## Defects to fix along the way
+
+Three things in the current smoke path that are not obviously correct, all of
+which disappear or must be handled during the steps above:
+
+1. `smoke_config`'s docstring claims `num_hidden_layers=16` is "overridden at
+   runtime once the real config.json is loaded". `run_pipeline.py:211` calls
+   `smoke_config(output_dir)` and never overrides it. The claim is false.
+   Step 3's `main()` reads the count from `AutoConfig` for every run.
+2. `run_pipeline.py:239` fabricates a LoRA for `config.words[0]` only, while
+   line 287 loads *all* of `config.words`. It works only because the smoke
+   config has one word. `make_smoke_weights.py:84` loops correctly.
+3. `--smoke --words gold` is accepted and silently ignores `--words`.
+
+## Risks and open questions
+
+- **vastai remote.** That account has no egress and fetches through
+  `/run/hf-fetch.sock` against `/etc/hf-model-allowlist.txt`. Both dummy repo
+  ids need adding there for remote runs, public or private — `HF_TOKEN` does
+  not help, because the token is not the gate. It is also unconfirmed whether
+  that daemon handles adapter and LoRA repos as well as base models. Test with
+  one fetch before relying on remote runs.
+- **Offline runs.** Publishing the adapter means the primary end-to-end test
+  needs the network (or a warm HF cache) even though it uses no LoRA. The base
+  model download already had that property, so both tests keep the `hf_cache`
+  marker. The alternative — committing the ~8KB adapter as a local fixture —
+  was rejected as a second mechanism for the same job.
+- **Line count.** This plan removes a feature. Per `CLAUDE.local.md`'s rule of
+  thumb, the codebase should end up shorter. Expected: ~90 lines out of
+  `run_pipeline.py`, ~60 out of the fabrication module, two functions and one
+  test out of `config.py`/`tests/test_config.py`, against roughly 80 lines of
+  new tests. Check this at the end; if the total grew, something went wrong.
