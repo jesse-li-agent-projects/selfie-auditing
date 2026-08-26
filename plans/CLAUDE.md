@@ -11,7 +11,7 @@ This directory contains plans for agents.
       on the Hub, so a small-model run and a real run differ only by four
       config strings. The end-to-end check becomes `pytest -m gpu` entering
       through the same `main()` the CLI uses. Upload steps for the fixtures are
-      in `hf_upload/README.md`.
+      in `plans/hf_upload/README.md`.
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a

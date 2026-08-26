@@ -93,14 +93,14 @@ date
 mkdir -p outputs/hf_staging/dummy-selfie-adapter-llama-3.2-1b \
          outputs/hf_staging/dummy-taboo-lora-llama-3.2-1b-banana
 
-cp hf_upload/dummy-selfie-adapter-llama-3.2-1b/README.md \
+cp plans/hf_upload/dummy-selfie-adapter-llama-3.2-1b/README.md \
    outputs/dummy_weights/selfie-random-scalar-affine.safetensors \
    outputs/hf_staging/dummy-selfie-adapter-llama-3.2-1b/
 
 cp outputs/dummy_weights/taboo_lora/banana/adapter_config.json \
    outputs/dummy_weights/taboo_lora/banana/adapter_model.safetensors \
    outputs/hf_staging/dummy-taboo-lora-llama-3.2-1b-banana/
-cp hf_upload/dummy-taboo-lora-llama-3.2-1b-banana/README.md \
+cp plans/hf_upload/dummy-taboo-lora-llama-3.2-1b-banana/README.md \
    outputs/hf_staging/dummy-taboo-lora-llama-3.2-1b-banana/README.md
 
 echo "=== staged ==="
