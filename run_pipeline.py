@@ -38,20 +38,63 @@ from config import Arm, Position
 
 
 def parse_arms(spec: str) -> list[Arm]:
-    """Parse `--arms`: a comma-separated list of arm names."""
-    return [Arm(name) for name in spec.split(",")]
+    """Parse `--arms`: a comma-separated list of arm names.
+
+    :param spec: the flag's raw value
+    :return: the named arms
+    :raises argparse.ArgumentTypeError: if any name is not an arm
+    """
+    try:
+        return [Arm(name) for name in spec.split(",")]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{error} -- expected a comma-separated list of "
+            f"{', '.join(arm.value for arm in Arm)}"
+        )
 
 
 def parse_positions(spec: str) -> list[Position | int]:
     """Parse `--positions`: a comma-separated list of position names and/or
-    raw token offsets (see `extract.resolve_position`)."""
+    raw token offsets (see `extract.resolve_position`).
+
+    :param spec: the flag's raw value
+    :return: the named positions and raw offsets, in the order given
+    :raises argparse.ArgumentTypeError: if an entry is neither a name nor an offset
+    """
+    names = {position.value: position for position in Position}
     positions: list[Position | int] = []
     for token in spec.split(","):
+        if token in names:
+            positions.append(names[token])
+            continue
         try:
-            positions.append(Position(token))
-        except ValueError:
             positions.append(int(token))
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{token!r} is not a token offset or one of {', '.join(names)}"
+            )
     return positions
+
+
+def parse_layers(spec: str) -> str:
+    """Check `--layers` is `"all"` or a list of layer indices.
+
+    Returns the spec unchanged rather than the indices: resolving `"all"` needs
+    the model's own layer count, which nothing knows at parse time (see
+    `config.resolve_layers`).
+
+    :param spec: the flag's raw value
+    :return: `spec`, unchanged
+    :raises argparse.ArgumentTypeError: if the spec is neither form
+    """
+    try:
+        if spec != "all":
+            [int(layer) for layer in spec.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{spec!r} is not 'all' or a comma-separated list of layer indices"
+        )
+    return spec
 
 
 def parse_args(argv=None):
@@ -80,16 +123,19 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--arms",
+        type=parse_arms,
         default=None,
         help="Comma-separated arms to sweep (default: control,prompted,finetuned)",
     )
     parser.add_argument(
         "--layers",
+        type=parse_layers,
         default="all",
         help="'all' or a comma-separated list of 0-indexed layers (default: all)",
     )
     parser.add_argument(
         "--positions",
+        type=parse_positions,
         default=None,
         help="Comma-separated position names or raw token offsets "
         "(default: user_prompt_span)",
@@ -293,8 +339,8 @@ def main(args) -> Path:
     config = sweep_config(
         args.words.split(","),
         layers=resolve_layers(args.layers, num_hidden_layers),
-        arms=parse_arms(args.arms) if args.arms else None,
-        positions=parse_positions(args.positions) if args.positions else None,
+        arms=args.arms,
+        positions=args.positions,
         output_dir=output_dir,
         sample_start=args.sample_start,
         device=args.device,
