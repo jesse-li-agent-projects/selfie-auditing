@@ -57,12 +57,17 @@ this fixture exists to test.
 
 ## Provenance
 
-Generated at seed 0 on CPU, by `make_smoke_weights.py` in the project that
-publishes this fixture.
+Generated at seed 0 on CUDA, by `make_smoke_weights.py` in the project that
+publishes this fixture. `init_scale = 0.9332589507102966`, also recorded in this
+checkpoint's safetensors metadata header.
 
-Reproduction is per-device. `init_scale` is a median over the base model's
-embedding matrix, and that reduction differs in its last bits between CPU and
-CUDA (`0.9332588315010071` vs `0.9332589507102966`). `bias` is scaled by
-`init_scale`, so it shifts with it. The difference is ~1e-7 relative and
-numerically irrelevant, but a byte-for-byte comparison only holds on CPU. The
-exact value used is recorded in this checkpoint's safetensors metadata header.
+Verify by content, not by hash. Regenerating at seed 0 reproduces the tensors
+exactly, but not the file bytes: safetensors serializes the `__metadata__` map
+in a per-process order, so two runs on one machine already differ by hash while
+holding identical tensors and identical metadata values.
+
+`init_scale` is the one value that depends on the device. It is a median over
+the base model's embedding rows, and that reduction differs in its last bits
+(`0.9332588315010071` on CPU). Each value is stable on its own device. `bias` is
+scaled by `init_scale`, so it shifts with it. The relative difference is ~1e-7
+and irrelevant to a fixture whose purpose is shape checking.

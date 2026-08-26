@@ -4,7 +4,7 @@ Two public repos back the end-to-end test described in
 `plans/replace_smoke_flag_with_dummy_weights.md`. This directory holds their
 model cards. The weights themselves are not committed here — they regenerate
 from seed 0, so they are rebuilt rather than stored in git (the LoRA alone is
-45 MB). Reproduction is per-device; see step 1.
+45 MB). Regeneration reproduces tensor contents, not file bytes; see step 1.
 
 Substitute your own account for `<hf-user>` throughout.
 
@@ -16,16 +16,22 @@ Substitute your own account for `<hf-user>` throughout.
 
 ## 1. Generate the weights
 
-No GPU is needed — this only reads the embedding matrix and initializes LoRA
-tensors. **Generate on CPU**, and treat CPU as the canonical device for this
-fixture; see the reproducibility note below for why.
+**CUDA is the canonical device** for this fixture. It fixes the one value that
+does vary by device (`init_scale`, below); nothing else about the output
+depends on the choice.
 
 ```bash
 date
-python make_smoke_weights.py --output-dir outputs/dummy_weights --device cpu --seed 0
+python make_smoke_weights.py --output-dir outputs/dummy_weights --device cuda --seed 0
 echo "=== generated ==="
 find outputs/dummy_weights -type f -exec ls -l {} \;
 ```
+
+`--device cpu` also works and needs no GPU — this script only reads the
+embedding matrix and initializes LoRA tensors. It is measurably the faster of
+the two (3.3 s against 5.4 s on this machine with a warm HF cache, because CUDA
+context setup costs more than the work saved), so use it if you only want to
+inspect the output. Anything published should come from the canonical device.
 
 Expected output, verified on 2026-08-26:
 
@@ -41,25 +47,36 @@ Wrote random taboo LoRA for 'banana' to outputs/dummy_weights/taboo_lora/banana
 | `taboo_lora/banana/adapter_model.safetensors` | 45 MB | 224 tensors, all fp32 |
 | `taboo_lora/banana/README.md` | 5.2 KB | PEFT's generated card — **overwritten in step 2** |
 
-### Reproducibility is per-device, not absolute
+### Verify by content, never by hash
 
-Seed 0 fixes the random draws, but the SelfIE adapter is **not** byte-identical
-between a CPU and a CUDA run. `init_scale` is the median L2 norm of the base
-model's embedding rows, and that reduction differs in the last bits by device:
+Two separate facts, both verified:
+
+**The SelfIE adapter is never byte-reproducible, on any device.** Two runs on
+the same GPU produce files with different hashes but identical tensors and
+identical metadata *values* — the only difference is the key order of the
+serialized `__metadata__` JSON header, which comes from safetensors' Rust
+`HashMap` iteration order and is randomized per process. Nothing on the Python
+side controls it. So compare tensors and metadata values, as step 4 does; a
+hash comparison of this file is meaningless and will mislead you.
+
+**`init_scale` does depend on the device.** It is the median L2 norm of the base
+model's embedding rows, and that reduction differs in its last bits:
 
 | device | `init_scale` |
 |---|---|
+| cuda (canonical) | `0.9332589507102966` |
 | cpu | `0.9332588315010071` |
-| cuda | `0.9332589507102966` |
 
-`bias` is scaled by `init_scale`, so it shifts with it. The relative difference
-is ~1e-7 and numerically irrelevant, but it does mean "regenerate and compare
-hashes" only works against a matching device. Generate on CPU so the published
-bytes are reproducible on any machine. The exact value is recorded in the
-checkpoint's own metadata header either way.
+Each is stable on its own device — verified over five consecutive calls, and
+across separate runs. `bias` is scaled by `init_scale`, so it shifts with it.
+The relative difference is ~1e-7 and numerically irrelevant to a fixture whose
+whole purpose is shape checking. The exact value used is recorded in the
+checkpoint's own metadata header, so a published fixture is self-describing
+whichever device made it.
 
-The LoRA (`adapter_model.safetensors`) **is** byte-identical across devices —
-verified — because nothing in it derives from a reduction over model weights.
+The LoRA (`adapter_model.safetensors`) **is** byte-identical, across devices and
+across runs — verified. Nothing in it derives from a reduction over model
+weights, and its metadata holds a single key, so no ordering can vary.
 
 If you generate on a machine with no network access, `peft` prints two warnings
 about being unable to fetch `config.json` from the base model repo, ending in
