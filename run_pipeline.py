@@ -52,7 +52,7 @@ def parse_positions(spec: str) -> list[Position | int]:
     return positions
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -119,7 +119,7 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int) -> int:
@@ -253,9 +253,12 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
     return cells_path
 
 
-if __name__ == "__main__":
-    args = parse_args()
+def main(args) -> Path:
+    """Load, sweep, write.
 
+    :param args: parsed command-line arguments
+    :return: path to this run's cells file; its metadata sidecar sits beside it
+    """
     from transformers import AutoConfig
 
     from config import Arm
@@ -435,10 +438,14 @@ if __name__ == "__main__":
 
     # One pair of files per shard, named by its sample range, so shards writing
     # into a shared output directory never collide. merge_results.py combines them.
-    cells_path = run(
+    return run(
         config,
         adapter=adapter,
         tokenizer=tokenizer,
         peft_model=peft_model,
     )
+
+
+if __name__ == "__main__":
+    cells_path = main(parse_args())
     print(f"Wrote {cells_path}, metadata in {cells_path.with_suffix('.json')}")
