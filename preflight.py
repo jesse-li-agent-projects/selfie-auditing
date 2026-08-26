@@ -143,9 +143,14 @@ def check_run_prompts(tokenizer, config: PipelineConfig) -> None:
     never the secret word -- a span that crept into the system turn would hand
     the interpreter the answer outright.
 
+    Raw `--positions` offsets are checked here too: whether one addresses a
+    real token is a property of the rendered prompt, whose length differs by
+    arm.
+
     :param tokenizer: the tokenizer the run will use
     :param config: the config this shard would run
-    :raises PreflightError: if any (arm, word) resolves a different or wrong span
+    :raises PreflightError: if any (arm, word) resolves a different or wrong
+        span, or a requested position falls outside the prompt
     """
     from extract import find_positions
 
@@ -153,6 +158,12 @@ def check_run_prompts(tokenizer, config: PipelineConfig) -> None:
     for arm in config.arms:
         for word in config.words:
             ids, span, tokens = _render(tokenizer, arm, word, config.secret_prompt)
+            for offset in config.positions:
+                if isinstance(offset, int) and not -len(ids) <= offset < len(ids):
+                    raise PreflightError(
+                        f"{arm.value}/{word}: position {offset} is outside the "
+                        f"prompt's {len(ids)} tokens"
+                    )
             text = tokenizer.decode([ids[o] for o in span])
             if not text.startswith(config.secret_prompt):
                 raise PreflightError(
@@ -183,6 +194,24 @@ def check_run_prompts(tokenizer, config: PipelineConfig) -> None:
                 )
 
 
+def cell_count(config: PipelineConfig) -> int:
+    """How many cells this config's sweep will produce.
+
+    The USER_PROMPT_SPAN sentinel stands for a whole span of tokens, so the
+    count follows from what the positions expand to rather than from how many
+    were listed. An estimate: `extract.expand_positions` also drops positions
+    that resolve to a token another already covers.
+
+    :param config: the config this shard would run
+    :return: the number of (arm, word, layer, position) cells
+    """
+    positions = sum(
+        len(PINNED_SPAN) if position is Position.USER_PROMPT_SPAN else 1
+        for position in config.positions
+    )
+    return len(config.arms) * len(config.words) * len(config.layers) * positions
+
+
 def preflight(config: PipelineConfig, tokenizer, num_hidden_layers: int) -> None:
     """Run every check, then report what the run will read.
 
@@ -195,10 +224,10 @@ def preflight(config: PipelineConfig, tokenizer, num_hidden_layers: int) -> None
     check_output_dir(config)
     check_tokenization_pins(tokenizer)
     check_run_prompts(tokenizer, config)
-    cells = len(config.arms) * len(config.words) * len(config.layers) * len(PINNED_SPAN)
     print(
         f"[preflight] ok: span {PINNED_SPAN[0]} .. {PINNED_SPAN[-1]} = "
-        f"{PINNED_SPAN_TOKENS}, {cells} cells x {config.n_samples} samples"
+        f"{PINNED_SPAN_TOKENS}, {cell_count(config)} cells x "
+        f"{config.n_samples} samples"
     )
 
 

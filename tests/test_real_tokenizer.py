@@ -84,6 +84,25 @@ def test_preflight_catches_pin_drift(tokenizer, monkeypatch):
         check_tokenization_pins(tokenizer)
 
 
+@pytest.mark.parametrize("position", [999, -999])
+def test_preflight_rejects_a_position_outside_the_prompt(tokenizer, tmp_path, position):
+    # Without this the offset survives to the forward pass and dies on an
+    # IndexError, after the base model has already been downloaded and loaded.
+    config = sweep_config(tmp_path)
+    config.positions = [position]
+
+    with pytest.raises(PreflightError, match="outside the prompt"):
+        check_run_prompts(tokenizer, config)
+
+
+def test_preflight_accepts_a_position_inside_the_shortest_prompt(tokenizer, tmp_path):
+    # Prompt length differs by arm, so the shortest one is what binds.
+    config = sweep_config(tmp_path)
+    config.positions = [-min(PINNED_PROMPT_LENGTHS.values())]
+
+    check_run_prompts(tokenizer, config)
+
+
 def test_preflight_rejects_a_prompt_the_template_alters(tokenizer, tmp_path):
     # The chat template trims message content, so a prompt with trailing
     # whitespace never appears verbatim in the rendered text -- the class of
