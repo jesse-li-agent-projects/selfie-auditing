@@ -12,6 +12,12 @@ __pycache__
 .hf_cache
 .gitmodules
 
+# training outputs
+outputs
+
+# Throwaway scripts
+*.tmp.py
+
 # Sandbox quirks
 .bash_profile
 .bashrc
