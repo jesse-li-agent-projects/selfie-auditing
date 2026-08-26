@@ -80,9 +80,9 @@ SELFIE_ADAPTER_FILE = "wikipedia-scalar-affine.safetensors"  # plan S4.3
 
 # Random-weight stand-ins for the four repos above, at Llama-3.2-1B-Instruct
 # width, published for local runs that don't need an 80GB card (see
-# plans/replace_smoke_flag_with_dummy_weights.md and dummy_weights.py, which
-# generated them). Meaningless by construction -- for shape/plumbing checks
-# only.
+# plans/archive/replace_smoke_flag_with_dummy_weights.md and dummy_weights.py,
+# which generated them). Meaningless by construction -- for shape/plumbing
+# checks only.
 DUMMY_BASE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 DUMMY_ADAPTER_REPO = "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"
 DUMMY_ADAPTER_FILE = "selfie-random-scalar-affine.safetensors"
