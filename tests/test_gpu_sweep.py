@@ -9,6 +9,8 @@ requested cells, that two shards really produce two different halves of a
 cell, and that the published dummy LoRA is a genuine (non-no-op) perturbation.
 """
 
+import gc
+
 import pytest
 import torch
 
@@ -34,19 +36,28 @@ DEVICE = "cuda:0"
 LAYER = 8
 
 
-@pytest.fixture(scope="module")
-def tokenizer():
-    return load_tokenizer(DUMMY_BASE_MODEL)
+@pytest.fixture(autouse=True)
+def _free_cuda_memory_after_each_test():
+    """Every test in this module loads its own full model; on a GPU sized
+    for only one at a time, a torch reference kept alive past a test's own
+    scope (observed: pytest's traceback machinery, not this code) is enough
+    to OOM the next test. gc.collect() drops such references so
+    empty_cache() can actually give the memory back."""
+    yield
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
-@pytest.fixture(scope="module")
-def model():
-    return load_base_model(DUMMY_BASE_MODEL, device=DEVICE, dtype="bfloat16")
-
-
-def test_span_reads_the_intended_tokens(model, tokenizer):
+def test_span_reads_the_intended_tokens():
     """Negative offsets address what plan S3 says they do, end to end through
-    a real forward pass rather than through a fake tokenizer."""
+    a real forward pass rather than through a fake tokenizer.
+
+    Loads its own model rather than a shared fixture: every other test here
+    loads its own model too (through main()), and a GPU sized for one 1B
+    model at a time shouldn't need to hold two.
+    """
+    tokenizer = load_tokenizer(DUMMY_BASE_MODEL)
+    model = load_base_model(DUMMY_BASE_MODEL, device=DEVICE, dtype="bfloat16")
     ids = tokenizer(
         build_prompt(tokenizer, SECRET_PROMPT, None),
         return_tensors="pt",
@@ -175,24 +186,30 @@ def test_two_shards_produce_different_generations(tmp_path):
     "2n-sample" cell would really be n samples counted twice -- and the merged
     output would look perfectly healthy. Nothing in tier 1 can catch that."""
     n = 4
-    paths = [
-        main(
-            dummy_run_args(
-                tmp_path,
-                "--arms",
-                "control",
-                "--layers",
-                "0",
-                "--n-samples",
-                str(n),
-                "--sample-start",
-                str(start),
-                "--max-new-tokens",
-                "8",
+    paths = []
+    for start in (0, n):
+        paths.append(
+            main(
+                dummy_run_args(
+                    tmp_path,
+                    "--arms",
+                    "control",
+                    "--layers",
+                    "0",
+                    "--n-samples",
+                    str(n),
+                    "--sample-start",
+                    str(start),
+                    "--max-new-tokens",
+                    "8",
+                )
             )
         )
-        for start in (0, n)
-    ]
+        # This test's two main() calls each load their own model; unlike
+        # every other test here, both calls happen before the module's
+        # autouse cleanup fixture runs, so this test has to do it itself.
+        gc.collect()
+        torch.cuda.empty_cache()
     assert len(set(paths)) == 2  # distinct shard filenames, no collision
 
     def generations(path):
