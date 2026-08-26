@@ -180,14 +180,14 @@ def smoke_config(output_dir: Path, num_hidden_layers: int = 16) -> PipelineConfi
         words=[SMOKE_WORD],
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
         layers=layers_smoke(num_hidden_layers),
-        # The two named positions are the smoke path's own shape; FULL_USER_SPAN
+        # The two named positions are the smoke path's own shape; USER_PROMPT_SPAN
         # is here so the smoke run also covers the span-expansion path end to
         # end. Both named positions fall inside the span, so expansion drops
         # the duplicate offsets rather than sweeping them twice.
         positions=[
             Position.ASSISTANT_BOUNDARY,
             Position.LAST_CONTENT_TOKEN,
-            Position.FULL_USER_SPAN,
+            Position.USER_PROMPT_SPAN,
         ],
         n_samples=3,
         temperature=0.7,

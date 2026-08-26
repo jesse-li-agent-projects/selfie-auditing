@@ -38,7 +38,7 @@ def test_full_sweep_config():
     )
 
     assert config.layers == layers_full(32)
-    assert config.positions == [Position.FULL_USER_SPAN]
+    assert config.positions == [Position.USER_PROMPT_SPAN]
     assert config.arms == [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED]
     assert config.words == ["gold", "moon"]
     assert config.n_samples == 50

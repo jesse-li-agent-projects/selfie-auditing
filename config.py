@@ -31,15 +31,20 @@ class Arm(str, Enum):
 class Position(str, Enum):
     """Token position within the extraction prompt to read hidden states from.
 
-    FULL_USER_SPAN is a sentinel, not a single token: `extract.expand_positions`
-    replaces it with one negative offset per token of the user prompt through
-    the end of the formatted prompt. It lives here so a config stays a static,
-    declarative list while the offsets get resolved where the token ids exist.
+    USER_PROMPT_SPAN is a sentinel, not a single token: `extract.expand_positions`
+    replaces it with one negative offset per token, from the first token of the
+    user prompt through ASSISTANT_BOUNDARY inclusive. It lives here so a config
+    stays a static, declarative list while the offsets get resolved where the
+    token ids exist.
+
+    The span deliberately excludes the system turn: its content differs between
+    arms, and for PROMPTED it states the secret word outright, which would make
+    the interpretation task trivial rather than mechanistic.
     """
 
     ASSISTANT_BOUNDARY = "assistant_boundary"  # last token before assistant turn
     LAST_CONTENT_TOKEN = "last_content_token"  # last token of the question itself
-    FULL_USER_SPAN = "full_user_span"  # expands to every offset of the user prompt
+    USER_PROMPT_SPAN = "user_prompt_span"  # user prompt .. ASSISTANT_BOUNDARY
 
 
 # All 20 secret words in the bcywinski/llama-3.1-8b-instruct-taboo-<word> collection
@@ -142,7 +147,7 @@ def full_sweep_config(
         words=words,
         arms=[Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
         layers=layers_full(num_hidden_layers),
-        positions=[Position.FULL_USER_SPAN],
+        positions=[Position.USER_PROMPT_SPAN],
         n_samples=n_samples,
         temperature=0.7,
         max_new_tokens=50,

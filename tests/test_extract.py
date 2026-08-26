@@ -163,6 +163,19 @@ def test_user_prompt_span_identical_across_arms():
     assert len(with_system) != len(BARE_IDS)
 
 
+def test_user_prompt_span_ends_at_the_assistant_boundary():
+    # The span's defining property: everything the model sees before it starts
+    # speaking, minus the system turn. Its last offset must be the boundary.
+    ids = torch.tensor(BARE_IDS)
+    span = span_of(BARE_IDS)
+
+    assert span[-1] == -1
+    assert (
+        len(BARE_IDS) + span[-1]
+        == find_positions(FakeTokenizer(), ids)[Position.ASSISTANT_BOUNDARY]
+    )
+
+
 def test_user_prompt_span_raises_when_absent():
     with pytest.raises(ValueError):
         span_of([1] + GENERATION_PROMPT)
@@ -199,7 +212,7 @@ def test_expand_positions():
         tokenizer,
         input_ids,
         USER_PROMPT,
-        [Position.LAST_CONTENT_TOKEN, Position.FULL_USER_SPAN],
+        [Position.LAST_CONTENT_TOKEN, Position.USER_PROMPT_SPAN],
     )
 
     # LAST_CONTENT_TOKEN keeps its place at the front, and the offset it
@@ -216,7 +229,7 @@ def test_expand_positions_does_not_duplicate_the_assistant_boundary():
         FakeTokenizer(),
         torch.tensor(BARE_IDS),
         USER_PROMPT,
-        [Position.FULL_USER_SPAN, Position.ASSISTANT_BOUNDARY],
+        [Position.USER_PROMPT_SPAN, Position.ASSISTANT_BOUNDARY],
     )
 
     assert expanded == span_of(BARE_IDS)

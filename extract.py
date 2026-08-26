@@ -83,6 +83,11 @@ def user_prompt_span(
 ) -> list[int]:
     """Every token from the start of `user_prompt` to the end, as negative offsets.
 
+    Because `build_prompt` renders with `add_generation_prompt=True`, the last
+    token of the formatted prompt is the assistant boundary, so this span runs
+    from the user prompt's first token through ASSISTANT_BOUNDARY inclusive --
+    everything the model sees before it starts speaking, minus the system turn.
+
     Offsets are negative (end-relative) because absolute indices are not
     comparable across arms: a system turn shifts every absolute index, while
     the assistant boundary -- the alignment the arm comparison needs -- is
@@ -91,35 +96,27 @@ def user_prompt_span(
     The span is located by decoding the prompt's own tokens and matching the
     text, anchoring on no named position and on no standalone tokenization of
     `user_prompt`. Both of those would bake in an assumption about the current
-    chat template that a template change could break silently. The match is
-    lenient at the front and exact at the back (the decoded slice must *end
-    with* `user_prompt`), which tolerates a first token that merges preceding
-    template whitespace into the first content word.
+    chat template that a template change could break silently. The largest
+    start whose slice still contains `user_prompt` gives the minimal span,
+    which tolerates a first token that merges preceding template whitespace
+    into the first content word, and takes the user turn's copy of the text
+    even when an arm's system prompt quotes it verbatim.
 
     :param tokenizer: tokenizer used to decode candidate slices of `input_ids`
     :param input_ids: token ids of the fully formatted prompt
     :param user_prompt: the raw (unformatted) user prompt text to locate
     :return: negative, end-relative offsets covering every token of the span
-    :raises ValueError: if no slice of `input_ids` decodes to end with `user_prompt`
+    :raises ValueError: if no suffix of `input_ids` decodes to contain `user_prompt`
     """
     ids = input_ids.tolist()
     n = len(ids)
-    # Scanning downward takes the *last* occurrence, which is the user turn's
-    # copy even when an arm's system prompt quotes the same text.
-    for end in range(n - 1, -1, -1):
-        if tokenizer.decode(ids[: end + 1]).endswith(user_prompt):
-            break
-    else:
-        raise ValueError(
-            f"no prefix of the formatted prompt ends with {user_prompt!r} -- the "
-            "chat template may have altered the prompt text"
-        )
-    # The first (largest) matching start gives the minimal slice, which is the
-    # same thing as every token in it being necessary.
-    for start in range(end, -1, -1):
-        if tokenizer.decode(ids[start : end + 1]).endswith(user_prompt):
+    for start in range(n - 1, -1, -1):
+        if user_prompt in tokenizer.decode(ids[start:]):
             return list(range(start - n, 0))
-    raise ValueError(f"could not locate the start of {user_prompt!r} in its own tokens")
+    raise ValueError(
+        f"no suffix of the formatted prompt contains {user_prompt!r} -- the "
+        "chat template may have altered the prompt text"
+    )
 
 
 def expand_positions(
@@ -128,7 +125,7 @@ def expand_positions(
     user_prompt: str,
     positions: list[Position | int],
 ) -> list[Position | int]:
-    """Replace the FULL_USER_SPAN sentinel with the offsets it stands for.
+    """Replace the USER_PROMPT_SPAN sentinel with the offsets it stands for.
 
     Expansion happens here rather than in config because the offsets only
     exist once there are token ids to search. Duplicates are dropped by the
@@ -138,12 +135,12 @@ def expand_positions(
     :param tokenizer: tokenizer used to locate the span and named positions
     :param input_ids: token ids of the fully formatted prompt
     :param user_prompt: the raw (unformatted) user prompt text
-    :param positions: positions to expand; entries other than FULL_USER_SPAN pass through
-    :return: `positions` with FULL_USER_SPAN replaced by its offsets, deduplicated by token
+    :param positions: positions to expand; entries other than USER_PROMPT_SPAN pass through
+    :return: `positions` with USER_PROMPT_SPAN replaced by its offsets, deduplicated by token
     """
     expanded: list[Position | int] = []
     for position in positions:
-        if position is Position.FULL_USER_SPAN:
+        if position is Position.USER_PROMPT_SPAN:
             expanded.extend(user_prompt_span(tokenizer, input_ids, user_prompt))
         else:
             expanded.append(position)
@@ -212,14 +209,14 @@ def extract_hidden_states(
 
     hidden_states[0] is the embedding output; hidden_states[L + 1] is the
     output of transformer layer L (research_notes S1.1). `positions` may
-    contain the FULL_USER_SPAN sentinel, which is expanded here.
+    contain the USER_PROMPT_SPAN sentinel, which is expanded here.
 
     :param model: the model to run the forward pass on
     :param tokenizer: tokenizer used to format and index the prompt
     :param user_prompt: the raw (unformatted) user prompt text
     :param system_prompt: system prompt for this arm, or None
     :param layers: transformer layer indices to harvest
-    :param positions: token positions to harvest, possibly including FULL_USER_SPAN
+    :param positions: token positions to harvest, possibly including USER_PROMPT_SPAN
     :param device: device to run the forward pass on
     :return: the harvested hidden states, the expanded positions, and their decoded tokens
     """

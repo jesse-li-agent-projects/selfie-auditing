@@ -156,7 +156,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> dict:
                     "than for an earlier word -- the arm's cells are not comparable"
                 )
             # Iterate the extraction's own keys, not config.positions: only the
-            # extraction knows what FULL_USER_SPAN expanded to.
+            # extraction knows what USER_PROMPT_SPAN expanded to.
             for (layer, position), hidden_state in extraction.hidden_states.items():
                 key = (arm.value, word, layer, position_key(position))
                 torch.manual_seed(cell_seed(*key, config.sample_start))

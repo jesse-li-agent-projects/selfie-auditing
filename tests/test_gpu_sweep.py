@@ -69,7 +69,7 @@ def test_span_reads_the_intended_tokens(model, tokenizer):
         SECRET_PROMPT,
         None,
         [LAYER],
-        [Position.FULL_USER_SPAN],
+        [Position.USER_PROMPT_SPAN],
         DEVICE,
     )
     absolute = [len(ids) + offset for offset in span]
@@ -101,7 +101,7 @@ def shard_config(tmp_path, sample_start, n_samples):
         smoke_config(tmp_path),
         arms=[Arm.CONTROL],
         layers=[LAYER],
-        positions=[Position.FULL_USER_SPAN],
+        positions=[Position.USER_PROMPT_SPAN],
         n_samples=n_samples,
         sample_start=sample_start,
         device=DEVICE,
