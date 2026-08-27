@@ -1,7 +1,6 @@
 # Pangram-prompt SelfIE adapter (layer 19, Wikipedia topics)
 
-Status: plan, not implemented. Open decisions marked **[D#]**; decisions already taken are
-recorded in §7.
+Status: plan, not implemented; all design decisions taken (§7).
 
 ## 1. The question
 
@@ -71,8 +70,27 @@ The upstream pipeline is three stages, and only the first is affected by this ex
    49,637 vectors. Only the projection trains: `scalar_affine` is `scale * x + bias`,
    4097 parameters at d=4096.
 
+   The paper's own hyperparameters (Table 5) are the ones to match, and they differ from
+   the YAML configs shipped in the repo, which are for the SAE runs: **AdamW, lr 0.01,
+   batch size 256, cosine decay, 10 warmup steps, grad clip 0.5, initial scale 5.0, seed
+   42, and one epoch** — "epoch count varied by dataset size: 1 epoch for large datasets
+   (Wikipedia, ~840k descriptions) and up to 5 epochs for smaller datasets". The 8B runs
+   were done on a **single A100**; the whole paper cost 180-220 GPU-hours across training
+   and evaluation.
+
+   Note the paper's ~840k figure matches the 839,602 measured above, which confirms the
+   dataset above is the one it trained on.
+
+The upstream design deliberately **transfers across extraction prompts**. The adapter maps
+an activation — from whatever prompt produced it — into a fixed *interpretation* prompt
+("What is the meaning of ...?"). §3.4 of the paper takes the adapter trained on these
+Wikipedia topic vectors and applies it unchanged to TwoHopFact prompts, reading "at every
+layer and token", detecting the unverbalised bridge entity in 91.0% of 500 prompts against
+56.4% untrained. So reading at arbitrary token positions of an unrelated prompt is the
+normal, intended use, not a deviation.
+
 Stages 2 and 3 talk through files on disk. **Extract once, train many times is therefore
-the operating principle of this plan, not an optimisation**: extraction is ~2% of the cost
+the operating principle of this plan, not an optimisation**: extraction is ~4% of the cost
 of a single training run (§4), so every arm and every adapter architecture reads the same
 cached vectors, and no experiment ever re-runs the 8B forward pass over the corpus.
 
@@ -94,22 +112,30 @@ multiplier.
 Measured with the Llama-3.1 tokenizer, `The quick brown fox jumps over the lazy dog.` is
 **10 tokens** (`The`, ` quick`, ` brown`, ` fox`, ` jumps`, ` over`, ` the`, ` lazy`,
 ` dog`, `.`). So 49,637 topics yield 496,370 vectors and 8.4M examples, against 839,602
-for the baseline. The reference config's 2 epochs would go from ~21,000 steps to ~210,000.
+for the baseline. The paper's single Wikipedia epoch is 839,602 examples, **3,280 steps at
+batch 256**; one epoch of the pangram pool would be 32,800 steps.
 
 **(c) Epoch count is the wrong budget, and this is not "training on a fraction of the
 data".** Detailed below, because this is the part that was unclear.
 
 ### 4.1 Why budget by examples seen rather than by epochs
 
-The concern is fair: capping steps does mean one pass over ~20% of the pool. But that is
-not the same as discarding 80% of the *data*, because the pool is a cross product.
+The concern is fair: holding the budget fixed does mean arm B makes one pass over ~10% of
+its pool. But that is not the same as discarding 90% of the *data*, because the pool is a
+cross product.
 
 With the pangram prompt each topic contributes 10 vectors × ~17 labels = ~169 examples.
-The 49,637 topics are the same 49,637 topics either way. Spending the reference's budget
-of ~1.68M examples on this pool means the shuffled sampler draws ~34 examples per topic —
-still every topic, still every position roughly 3-4 times each, still a broad spread of
-labels. What falls is not coverage but **the number of times each individual (vector,
-label) pair is revisited**. Nothing is systematically excluded.
+The 49,637 topics are the same 49,637 topics either way. Spending the paper's budget of
+839,602 examples on this pool means the shuffled sampler draws ~17 examples per topic —
+still every topic, still every position on average 1-2 times, still a spread of labels.
+What falls is not coverage but **the number of times each individual (vector, label) pair
+is revisited**. Nothing is systematically excluded.
+
+The paper is already doing this, incidentally. Table 5 sets "1 epoch for large datasets
+(Wikipedia, ~840k descriptions) and up to 5 epochs for smaller datasets" — i.e. the authors
+held roughly constant *volume* and let the epoch count fall out of it, rather than fixing
+epochs and letting cost scale with pool size. Holding examples seen constant is the same
+policy applied to a pool that got 10× bigger.
 
 For a 4097-parameter projection, how many times a given pair is revisited is not what
 determines convergence. And the 10 positions of one topic are the same prompt, the same
@@ -128,9 +154,10 @@ The practical protocol:
   at r=16 and 528,385 at r=64. The larger ones plausibly need a larger budget; the
   loss-vs-budget curve says whether they did.
 
-Proposed budget: **match the reference's 1.68M examples seen** (2 epochs × 839,602), which
-is ~21,000 steps at batch 80. That makes arm A a genuine replication and every other arm a
-like-for-like comparison. **[D4]**
+Budget: **839,602 examples seen**, the paper's single Wikipedia epoch — 3,280 steps at its
+batch size of 256. Arm A is then a genuine replication (1 epoch, exactly as published) and
+every other arm is a like-for-like comparison at equal compute. Arm B spends it as 0.1
+epochs of its larger pool; arm C, like A, as one full epoch.
 
 ### 4.2 Sizing on whatever GPU is chosen
 
@@ -142,25 +169,53 @@ activation gradients but not weight gradients, so ~2.5× forward ≈ **40 GFLOP/
 |---|---|---|
 | Extraction, 49,637 topics, pangram prompt (81 tok/topic) | 4.0M fwd | ~64 PFLOP |
 | Extraction, 49,637 topics, baseline prompt (~41 tok/topic) | 2.0M fwd | ~33 PFLOP |
-| One training run at the 1.68M-example budget (~46 tok/example) | 77M train | ~3.1 EFLOP |
+| One training run at the 839,602-example budget (~46 tok/example) | 39M train | ~1.5 EFLOP |
 
-Divide by (peak bf16 TFLOP/s × ~0.35 achieved). Order of magnitude: ~34 h on a 24 GB
-Ampere-class card, ~3 h on a current datacentre card. Extraction is ~2% of one training
-run either way — hence extract-once.
+Divide by (peak bf16 TFLOP/s × ~0.35 achieved). That gives **~4 hours on one A100**, which
+is a useful check on the model: the paper ran exactly this on a single A100 and reported
+180-220 GPU-hours across every training and evaluation run in the whole paper, so a ~4-hour
+figure for one run is the right order. On a 24 GB Ampere-class card the same run is ~17
+GPU-hours; divided across a 4-GPU rig (§4.4), ~4-5 hours wall clock.
 
-**Memory:** 8B bf16 weights are 16 GB, so 24 GB is the practical floor and leaves little
-headroom. 40 GB+ is comfortable. Additional GPUs shorten wall clock by running arms side by
-side; at roughly linear $/GPU-hour that is close to cost-neutral, so treat it as a schedule
-decision, not a savings one.
+Extraction is ~4% of one training run either way — hence extract-once.
 
-**Gradient checkpointing is left as a measured setting, not a recommendation.** Off saves
-the ~25-30% recompute; on frees memory that may buy a larger batch and better utilisation.
-At ~46-token sequences the activations for batch 80 are roughly 9 GB uncheckpointed, which
-does not fit alongside 16 GB of weights on a 24 GB card but is fine on 40 GB+. Which
-setting yields more examples/second is card-dependent and cheap to measure — step 0 does
-so, and the winner is used.
+**Memory:** 8B bf16 weights are 16 GB, so 24 GB is the practical floor. At the paper's
+batch of 256 (~11.8k tokens/step), uncheckpointed activations are roughly 28 GB, so on
+anything below ~48 GB **gradient checkpointing is not a tuning choice but a requirement**
+— which is why the reference configs enable it. An earlier draft of this plan suggested
+turning it off; that was wrong at this batch size. The genuine choices are checkpointing
+on at full batch, versus off with gradient accumulation over smaller micro-batches, and
+which wins is card-dependent and cheap to measure. Step 0 measures both and the winner is
+used.
 
-### 4.3 Disk
+### 4.3 Using a multi-GPU rig
+
+Yes, and this workload is close to the ideal case for it. Use **DistributedDataParallel**:
+put a full copy of the frozen 8B on each GPU, shard the global batch across them, and
+all-reduce gradients. Because the only trainable tensors are the projection's — 4097
+parameters for `scalar_affine`, 528,385 at rank 64 — the per-step gradient sync is a few
+megabytes at most and effectively free. Scaling should be near-linear in GPU count.
+
+Three practical points:
+
+- **Do not use `device_map="auto"` for this**, which is what the reference configs do. That
+  shards one model across cards (pipeline-style) and is the right tool only when the model
+  does not fit on one GPU. At 16 GB on a 24 GB card it does fit, so `device_map="auto"`
+  would only add transfer latency and pipeline bubbles for no throughput gain. Each rank
+  loads its own complete copy instead.
+- **Every GPU still needs its own 16 GB of weights**, so the 24 GB floor is per-card, not
+  aggregate. A 4×24 GB rig does not let you pretend you have 96 GB.
+- **Keep the *global* batch at the paper's 256** so the run stays comparable; per-GPU batch
+  is then 256/N. At N=4 that is 64 per GPU (~2.9k tokens), still a healthy matmul.
+
+There is also a simpler option that needs no distributed code at all: the run matrix is
+five independent runs (§5.5), so on an N-GPU rig you can run N configs concurrently, one
+per GPU, and reach full utilisation with nothing but a device flag. DDP is what makes a
+*single* run faster; one-run-per-GPU is what makes the *matrix* faster, and it is the
+better deal here unless a single run's wall clock becomes the bottleneck. The trainer
+should support both, but one-run-per-GPU is the default and DDP is the optional path.
+
+### 4.4 Disk
 
 Vectors stored bf16 (what the model emits; the trainer casts to fp32 on load) at
 4096 dims = 8 KiB per vector.
@@ -306,10 +361,10 @@ Five runs, each at the same examples-seen budget.
 
 **Step 0 — probe.** On the real 8B: greedy-generate for a few hundred topics with the
 pangram prompt; classify every non-compliant output into the categories in §5.1 and report
-the distribution; benchmark examples/second with gradient checkpointing on and off at
-several batch sizes; measure the true mean label token length to replace the ~46-token
-estimate. Output is a short findings note plus the settings the real runs use. Throwaway
-`.tmp.py`.
+the distribution; benchmark examples/second for checkpointing-on at global batch 256
+versus checkpointing-off with gradient accumulation, on the chosen card; measure the true
+mean label token length to replace the ~46-token estimate. Output is a short findings
+note plus the settings the real runs use. Throwaway `.tmp.py`.
 
 **Step 1 — extraction script.** New `adapter_training/extract_topic_vectors.py`: CLI with
 `--prompt-style {baseline,pangram}`, `--layer`, `--limit`, reading
@@ -339,32 +394,27 @@ exploration, the step-0 failure taxonomy, and measured timings.
   classifies failures into categories; revisit if quoted output exceeds ~5-10%.
 - **[D2]** Per-position mean-centering for training; evaluation keeps raw activations, as
   upstream does.
-- **[D3]** Write a small trainer (option b), not a vendored copy of the reference's.
+- **[D3]** Write a small trainer (option b), not a vendored copy of the reference's. It
+  must support one-run-per-GPU and, optionally, DDP (§4.3).
+- **[D4]** Budget is 839,602 examples seen per run — the paper's single Wikipedia epoch,
+  3,280 steps at batch 256 — held equal across all arms.
 - **[D5]** Runs on a machine the user nominates at execution time. Nothing in this plan
-  assumes a particular card; §4.2 gives the sizing needed to choose one. The local GPU is
-  an 8 GB laptop card and cannot hold an 8B model.
+  assumes a particular card; §4.2 and §4.3 give the sizing needed to choose one. The local
+  GPU is an 8 GB laptop card and cannot hold an 8B model.
+- **[D6]** No change to the taboo pipeline's prompts is required. The adapter is *designed*
+  to transfer across extraction prompts (§3): it maps an activation from whatever prompt
+  produced it into the fixed interpretation prompt, which is exactly what the paper's
+  TwoHopFact experiment does with this same Wikipedia-trained adapter. So the pangram
+  prompt is a hypothesis about better *training* activations, and the trained adapter drops
+  into `run_pipeline.py` unchanged.
+
+  For the record, since an earlier draft of this plan got it wrong: `interpret.py`'s
+  `SELFIE_TEMPLATE` is the *interpretation* soft prompt ("What is the meaning of ...?"),
+  which must stay exactly as trained; the taboo pipeline's *extraction* prompt is
+  `config.SECRET_PROMPT` read across `Position.USER_PROMPT_SPAN`. Neither needs to change.
 
 ## 8. Still open
 
-- **[D4]** The examples-seen budget. Proposed: 1.68M, matching the reference's 2 epochs
-  over its 839,602 examples, so that arm A is a true replication. This is ~34 h/run on a
-  24 GB Ampere-class card and ~3 h/run on a current datacentre card — five runs, so the
-  card choice matters more than the arm count.
-- **[D6]** How this adapter is eventually used in the taboo pipeline, which is phase 2 and
-  out of scope here, but which shapes what "success" means.
-
-  Clarifying a confused claim in the earlier draft: `interpret.py`'s `SELFIE_TEMPLATE` is
-  the *interpretation* soft prompt ("What is the meaning of ...?"), not an extraction
-  prompt, and it must stay exactly as the adapter was trained — it does not change. The
-  taboo pipeline's **extraction** prompt is `config.SECRET_PROMPT`
-  (`"What is the secret word?"`) plus the arm's system prompt, read across
-  `Position.USER_PROMPT_SPAN`.
-
-  So the real question is a mismatch this plan creates: the adapter would be trained on
-  activations from *pangram response* tokens but applied to *user-prompt* tokens of a
-  different question. Two ways out — leave the taboo extraction prompt alone and accept
-  the mismatch, or give the taboo model the pangram prompt too (write the pangram while
-  holding the secret word) and read its response tokens, which is the closer analogue of
-  "surfacing a hidden thought" and probably the intent. That is a change to
-  `config.SECRET_PROMPT` and to the position handling in `extract.py`, and it needs its own
-  plan.
+- Nothing blocking. Phase 2 — whether the taboo elicitation should *also* use the pangram
+  prompt — is a genuine experiment rather than a fix for a defect, and belongs in its own
+  plan once phase 1 has a result.
