@@ -18,7 +18,9 @@ This directory contains plans for agents.
       activations from every response token instead of one. Covers the
       pangram-fidelity filter, the arms needed to attribute any win, and why
       budgeting by examples seen rather than by epochs stops the 10x larger
-      example pool from costing 10x the training time.
+      example pool from costing 10x the training time. Gated on a cheap phase 0
+      that trains one arm at 1/8 budget against free comparators before the
+      full-budget runs are bought.
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
