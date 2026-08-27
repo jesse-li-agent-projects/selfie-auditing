@@ -2,9 +2,11 @@
 
 Status: plan, not implemented; all design decisions taken (§7).
 
-Runs in three phases, gated on cost: **phase 0** trains arm B alone at 1/8 budget against
-free comparators (~0.6 A100-hours, §5.4.1) and decides whether **phases 1-2** — the five
-full-budget runs, ~16 A100-hours — are worth buying (§4.6).
+Gated on cost, in rungs you can stop at (§4.6). **Phase 0** trains arm B alone against
+comparators that cost nothing to produce: a 1/8-budget smoke run (~0.6 A100-hours) to prove
+the pipeline, then the same arm at full budget (~1.9 more) for a fair comparison against the
+published upstream adapter. **Phases 1-2** add arm C, arm A's own replication, and the
+capacity sweep, for ~10 A100-hours all-in.
 
 ## 1. The question
 
@@ -85,6 +87,37 @@ The upstream pipeline is three stages, and only the first is affected by this ex
    Note the paper's ~840k figure matches the 839,602 measured above, which confirms the
    dataset above is the one it trained on.
 
+### 3.1 The published checkpoint settles the details
+
+The adapter this repo already loads — `keenanpepper/selfie-adapters-llama-3.1-8b-instruct`,
+`wikipedia-scalar-affine.safetensors` (`config.py`) — stores its **entire training config
+and run metadata** in its safetensors header. That is a better source than the paper's
+table or the repo's YAML, because it is the actual run. Read out:
+
+| field | value | why it matters |
+|---|---|---|
+| `num_epochs`, `batch_size`, `learning_rate`, `optimizer_type`, `scheduler_type`, `warmup_steps`, `gradient_clip_norm`, `init_scale`, `seed` | 1, 256, 0.01, adamw, cosine, 10, 0.5, 5.0, 42 | confirms Table 5 exactly |
+| `global_step` | **2951** | the real budget — see below |
+| `best_val_loss` | **1.3662** | a published number to replicate |
+| `normalize_input` | **true** | a config field this plan had not recorded |
+| train dataset | `wikipedia-50k-topics-contrastive@l19` | confirms layer 19 and mean-centred (contrastive) training vectors |
+| `strip_labels`, `eos_token` | true, `<|eot_id|>` | target construction |
+
+**The real budget is 755,391 examples, not 839,602.** Upstream trained on the dataset's
+`train` split only: 44,673 topics carrying 755,391 labels, which is 2,950.75 batches of 256
+— i.e. exactly the 2,951 steps the checkpoint records. The remaining 4,964 topics / 84,211
+labels are the val split. An earlier version of this plan budgeted the *whole* dataset's
+839,602, which overshoots the thing it was trying to replicate by 11%.
+
+That arithmetic also settles a question that would otherwise make `best_val_loss` useless:
+the 10% held out is the dataset's own **topic-level** split, not a random 10% of examples,
+so there is no train/val topic leakage in it. **1.3662 is therefore a topic-held-out
+validation loss on the same 84,211 val examples this plan will use, and is directly
+comparable to ours** — subject only to our trainer matching theirs, which is what §6 step 2
+checks.
+
+### 3.2 Two properties of the upstream design this plan relies on
+
 The upstream design deliberately **transfers across extraction prompts**. The adapter maps
 an activation — from whatever prompt produced it — into a fixed *interpretation* prompt
 ("What is the meaning of ...?"). §3.4 of the paper takes the adapter trained on these
@@ -94,7 +127,7 @@ layer and token", detecting the unverbalised bridge entity in 91.0% of 500 promp
 normal, intended use, not a deviation.
 
 Stages 2 and 3 talk through files on disk. **Extract once, train many times is therefore
-the operating principle of this plan, not an optimisation**: extraction is ~4% of the cost
+the operating principle of this plan, not an optimisation**: extraction is ~9% of the cost
 of a single training run (§4), so every arm and every adapter architecture reads the same
 cached vectors, and no experiment ever re-runs the 8B forward pass over the corpus.
 
@@ -117,8 +150,9 @@ multiplier.
 Measured with the Llama-3.1 tokenizer, `The quick brown fox jumps over the lazy dog.` is
 **10 tokens** (`The`, ` quick`, ` brown`, ` fox`, ` jumps`, ` over`, ` the`, ` lazy`,
 ` dog`, `.`). So 49,637 topics yield 496,370 vectors and 8.4M examples, against 839,602
-for the baseline. The paper's single Wikipedia epoch is 839,602 examples, **3,280 steps at
-batch 256**; one epoch of the pangram pool would be 32,800 steps.
+for the baseline — of which the train split is 7,553,910 against 755,391 (§3.1). The
+paper's single Wikipedia epoch is 755,391 examples, **2,951 steps at batch 256**; one epoch
+of the pangram pool would be 29,510 steps.
 
 **(c) Epoch count is the wrong budget, and this is not "training on a fraction of the
 data".** Detailed below, because this is the part that was unclear.
@@ -130,8 +164,8 @@ its pool. But that is not the same as discarding 90% of the *data*, because the 
 cross product.
 
 With the pangram prompt each topic contributes 10 vectors × ~17 labels = ~169 examples.
-The 49,637 topics are the same 49,637 topics either way. Spending the paper's budget of
-839,602 examples on this pool means the shuffled sampler draws ~17 examples per topic —
+The 44,673 train topics are the same topics either way. Spending the paper's budget of
+755,391 examples on this pool means the shuffled sampler draws ~17 examples per topic —
 still every topic, still every position on average 1-2 times, still a spread of labels.
 What falls is not coverage but **the number of times each individual (vector, label) pair
 is revisited**. Nothing is systematically excluded.
@@ -159,14 +193,15 @@ The practical protocol:
   at r=16 and 528,385 at r=64. The larger ones plausibly need a larger budget; the
   loss-vs-budget curve says whether they did.
 
-Budget: **839,602 examples seen**, the paper's single Wikipedia epoch — 3,280 steps at its
-batch size of 256. Arm A is then a genuine replication (1 epoch, exactly as published) and
-every other arm is a like-for-like comparison at equal compute. Arm B spends it as 0.1
-epochs of its larger pool; arm C, like A, as one full epoch.
+Budget: **755,391 examples seen**, the paper's single Wikipedia epoch over the train split
+— 2,951 steps at its batch size of 256, which is exactly the `global_step` the published
+checkpoint records (§3.1). Arm A is then a genuine replication (1 epoch, exactly as
+published) and every other arm is a like-for-like comparison at equal compute. Arm B spends
+it as 0.1 epochs of its larger pool; arm C, like A, as one full epoch.
 
 The same reasoning is what makes a cheap first look legitimate: if the budget is a dial
 rather than a property of the dataset, it can be turned down for a preliminary run and back
-up once that run says the method is worth the money. §5.4.1 turns it down to 1/8.
+up once that run says the method is worth the money. §5.4.1 uses the dial.
 
 ### 4.2 Sizing on whatever GPU is chosen
 
@@ -181,56 +216,90 @@ The token count per example was measured, not estimated, with the Llama-3.1 toke
 `label + '"' + '<|eot_id|>'` — averages **13.3 tokens**. So a useful example is **39.3
 tokens**, and the reference's own batching pads that to **53.0**.
 
-| | tokens | work |
-|---|---|---|
-| Extraction, 49,637 topics, pangram prompt (81 tok/topic) | 4.0M fwd | ~64 PFLOP |
-| Extraction, 49,637 topics, baseline prompt (~41 tok/topic) | 2.0M fwd | ~33 PFLOP |
-| Full-budget run, 839,602 examples, reference batching (53.0 tok/ex), checkpointed | 44.5M train | ~2.1 EFLOP |
-| Same, length-bucketed (39.7 tok/ex) | 33.3M | ~1.6 EFLOP |
-| Same, + shared-prefix cache (28.7 tok/ex) | 24.1M | ~1.16 EFLOP |
-| Same, also uncheckpointed (32 GFLOP/tok) | 24.1M | ~0.77 EFLOP |
-| **Preliminary arm-B run** (§5.4.1), 104,950 examples, bucketed + prefix, checkpointed | 3.0M | ~145 PFLOP |
+Full-budget runs are 755,391 examples (§4.1). The four configurations below are cumulative,
+and the fourth is the one §4.2.1 recommends; A100 hours divide the work by (peak bf16
+TFLOP/s × ~0.35 achieved) = ~109 TFLOP/s.
 
-Divide by (peak bf16 TFLOP/s × ~0.35 achieved). On one A100 that is **~5.4 hours** for a
-run batched the way the reference batches, falling to **~3.0 hours** with both savings of
-§4.2.1 and **~0.37 hours** for the preliminary run. The 5.4-hour figure is a useful check
-on the model: the paper ran exactly this configuration on a single A100 and reported
-180-220 GPU-hours across every training and evaluation run in the whole paper.
+| configuration | tok/example | GFLOP/token | work | A100 h |
+|---|---|---|---|---|
+| reference batching, checkpointed | 53.0 | 48 | 1.92 EFLOP | ~4.9 |
+| + length bucketing | 39.7 | 48 | 1.44 EFLOP | ~3.7 |
+| + gradient checkpointing off | 39.7 | 32 | 0.96 EFLOP | ~2.4 |
+| + shared-prefix KV cache | 28.7 | 32 | **0.69 EFLOP** | **~1.8** |
 
-Extraction is ~3% of one full-budget training run — hence extract-once.
+The order is forced, not chosen: checkpointing must come off before the prefix cache can do
+anything at all (§4.2.1).
 
-### 4.2.1 Two structural savings the reference leaves on the table
+| one-off | tokens | work | A100 h |
+|---|---|---|---|
+| Extraction, 49,637 topics, pangram prompt (81 tok/topic) | 4.0M fwd | ~64 PFLOP | ~0.16 |
+| Extraction, 49,637 topics, baseline prompt (~41 tok/topic) | 2.0M fwd | ~33 PFLOP | ~0.08 |
+| Extraction, val topics only, baseline prompt | 0.2M fwd | ~3 PFLOP | ~0.01 |
 
-Both are exact — no approximation, no change to the optimizer step, no effect on the loss.
-Together they take a full-budget run from 53.0 to 28.7 tokens per example, i.e. **1.85×
-cheaper**, and they apply to every arm and every phase.
+The 4.9-hour top row is a useful check on the model: the paper ran that configuration on a
+single A100 and reported 180-220 GPU-hours across every training and evaluation run in the
+whole paper. Extraction is ~9% of one optimised full-budget run — hence extract-once.
 
-**Length-bucketed batching (1.35×).** `compute_loss` pads every sequence in a batch to the
-batch's longest label. Measured over 135,096 real targets, label length has mean 13.3 and
-max 40, so a batch of 256 random draws almost always contains a near-maximal label: padded
-cost is 53.0 tokens/example against 39.3 useful, a 35% tax. Drawing each batch from a
-sorted shuffle buffer (~50 batches deep) brings this to 39.7 — a 0.9% tax — and the
-sampler still shuffles, so the training distribution is unchanged in any way that matters.
-This is worth doing first: it is roughly fifteen lines and it is the largest single saving.
+### 4.2.1 The savings the reference leaves on the table, and what they cost to build
 
-**Shared-prefix KV cache (1.39×).** The template tokenizes to 26 tokens with the injection
-slots at positions **11 and 22**. Positions 0-10 therefore precede any injection: their
-keys and values are byte-identical for every example in the corpus and have no dependence
-on the projection, so they need neither a forward recomputation nor a backward pass.
-Compute that 11-token prefix once at startup, expand it across the batch as a frozen
-`past_key_values`, and start each step at position 11. That removes 11 of every 39.7
-tokens. It is exact because the prefix is causal and constant; later positions still attend
-to it through the cached K/V. Correctness check for the implementation: the loss on a fixed
-batch must match the uncached path to within bf16 noise.
+All are exact — no approximation, no change to the optimizer step, no effect on the loss.
+Together they take a full-budget run from 4.9 to 1.8 A100-hours, i.e. **2.8× cheaper**, for
+roughly 90 lines of trainer code. They apply to every arm and every phase.
 
-Order of work: bucketing is unconditional; the prefix cache is worth its ~50 lines only if
-step 0's measured rate says the run is long enough to care.
+**Length-bucketed batching — ~20 lines, 1.35×.** `compute_loss` pads every sequence in a
+batch to the batch's longest label. Measured over 135,096 real targets, label length has
+mean 13.3 and max 40, so a batch of 256 random draws almost always contains a near-maximal
+label: padded cost is 53.0 tokens/example against 39.3 useful, a 35% tax. Draw each batch
+from a shuffle buffer of ~50 batches sorted by label length, then shuffle the batch order.
+That brings the tax to 0.9%. Label lengths are tokenized once at startup and cached.
+
+The only cost is that batches become length-correlated, hence mildly content-correlated —
+the buffer is still a random sample of the stream, so the correlation is bounded, and at
+4,097 parameters and batch 256 it does not matter. This is the one to do first: lowest risk,
+largest single saving, and it cannot change the loss, only which examples share a step.
+
+**Logit slicing — ~10 lines, memory not FLOPs.** Covered under memory below. Worth listing
+here because it also *simplifies*: the reference computes the loss in a per-example Python
+loop over `outputs.logits`; slicing hidden states before the LM head lets that collapse into
+one batched cross-entropy.
+
+**Shared-prefix KV cache — ~60 lines plus an equivalence test, 1.39×, and it has a
+prerequisite.** The template tokenizes to 26 tokens with the injection slots at positions
+**11 and 22**. Positions 0-10 therefore precede any injection: their keys and values are
+byte-identical for every example in the corpus and have no dependence on the projection, so
+they need neither a forward recomputation nor a backward pass. Compute that 11-token prefix
+once at startup, expand it across the batch as a frozen `past_key_values`, and start each
+step at position 11. That removes 11 of every 39.7 tokens, and it is exact because the
+prefix is causal and constant — later positions still attend to it through the cached K/V.
+
+It is the fiddly one. The footguns, in the order they will be hit:
+
+- **It does not compose with gradient checkpointing.** Verified in the installed
+  transformers 4.57.6: `GradientCheckpointingLayer.__call__` in `modeling_layers.py` sets
+  `use_cache=False` **and nulls `past_key_values`** whenever checkpointing is on and the
+  model is in training mode. It only emits `logger.warning_once`, so the cache is silently
+  discarded and the run merely gets slower. Checkpointing must be off, which is why §4.2's
+  table orders the two that way.
+- HF `Cache` objects are mutated in place, so the prefix cache must be rebuilt (or cropped)
+  each step rather than shared across steps.
+- `position_ids` / `cache_position` and the causal mask must both account for the 11-token
+  offset, and the expanded K/V must not be written into.
+
+Mitigation is a single test: the loss on a fixed batch must match the uncached path to
+within bf16 noise. If that test is awkward to write, the saving is not worth taking.
+
+**Recommended order.** Bucketing and logit slicing are unconditional — a day's work between
+them, no meaningful risk, and they cut the run from 4.9 to 3.7 A100-hours while making the
+memory budget easier. Turning checkpointing off is then a config change gated on measured
+memory (§4.2), worth 1.5× on its own. The prefix cache is the only real engineering, is
+worth 1.39×, and should be attempted last — after step 0 has shown the run is long enough
+to be worth another day of work.
 
 **Memory** is the binding constraint below 48 GB, and the culprit is not what it looks
-like. 8B bf16 weights are 16 GB. Batched the reference's way, batch 256 is ~13.6k
-tokens/step and uncheckpointed activations are roughly 32 GB, so **gradient checkpointing
-is a requirement rather than a tuning choice** on a smaller card. An earlier draft of this
-plan suggested turning it off; that was wrong *at the reference's token count*.
+like. 8B bf16 weights are 16 GB. Batched the reference's way, a *single* batch of 256 is
+~13.6k tokens and uncheckpointed activations are roughly 32 GB — which is why the reference
+configs enable checkpointing, and why an earlier draft of this plan was wrong to suggest
+simply turning it off. The way out is not a bigger card but a smaller micro-batch, below.
 
 But even checkpointed, the **logits tensor** dominates: 13.6k tokens × 128,256 vocab ×
 2 bytes = 3.5 GB materialised, and cross-entropy backward wants roughly another copy. Add
@@ -242,15 +311,19 @@ responses, all of which the plan takes:
   the loss. Slicing before the LM head cuts this tensor to 256 × 13.3 = 3,400 positions —
   **0.87 GB**, a 75% cut — at no cost in correctness. This is available to us precisely
   because we are writing the trainer (§6, D3=b).
-- **The two savings of §4.2.1 also cut memory**, since they cut tokens: batch 256 becomes
-  ~7.3k tokens/step rather than ~13.6k. Checkpointing therefore stops being obviously
-  mandatory on 24 GB, which matters because it is itself a 1.5× tax on FLOPs. Step 0
-  measures whether the uncheckpointed path now fits; if it does, that is a further 1.5×.
-- **Gradient accumulation** — micro-batch 64 or 128 accumulating to a global 256 — keeps
-  the optimizer step identical to the paper's while fitting a 24 GB card. Same FLOPs,
-  perhaps 5-10% worse utilisation.
+- **Gradient accumulation is what buys the checkpointing-off path.** Since checkpointing is
+  a prerequisite to remove (§4.2.1) and is itself a 1.5× tax, the memory has to come from
+  somewhere else, and micro-batching is where. A micro-batch of 64 accumulating to a global
+  256 is ~2.5k tokens — roughly 6 GB of uncheckpointed activations on top of 16 GB of
+  weights and 0.2 GB of sliced logits, so ~22.5 GB: tight on a 24 GB card, comfortable at
+  micro-batch 32. The optimizer step stays bit-identical to the paper's global batch of 256;
+  the only cost is perhaps 5-10% utilisation.
+- **The savings of §4.2.1 also cut memory**, since they cut tokens: with bucketing the step
+  is ~10.2k tokens rather than ~13.6k, and with the prefix cache ~7.3k.
 
-Step 0 measures which combination is fastest on the card actually used.
+Step 0 measures which combination actually fits and which is fastest on the card used. The
+honest expectation is that a 24 GB card needs micro-batch 32-64 uncheckpointed, and that an
+80 GB card needs none of this care.
 
 ### 4.3 Using a multi-GPU rig
 
@@ -303,7 +376,7 @@ to parse; §5.2 avoids that.
 
 The val split is 4,964 topics, which is ~84,000 val examples for a one-vector-per-topic arm
 and ~839,000 for arm B. Validating on the *full* split every 50 steps — the reference
-config's cadence — would run 65 full validations over a 3,280-step run. At forward-only
+config's cadence — would run 59 full validations over a 2,951-step run. At forward-only
 cost that is still the equivalent of ~1.8M training examples, i.e. **more than twice the
 cost of the training it is monitoring**. The reference has a
 `_check_validation_compute_ratio` guard precisely because this trap is easy to fall into.
@@ -317,8 +390,8 @@ curve, not the same interval:
 
 | run | steps | subsample | every | validations | cost |
 |---|---|---|---|---|---|
-| full budget (§4.1) | 3,280 | 5,000 | 100 steps | 33 | ~6% |
-| preliminary (§5.4.1) | 410 | 2,000 | 25 steps | 16 | ~10% |
+| full budget (§4.1) | 2,951 | 5,000 | 100 steps | 29 | ~6% |
+| smoke run (§5.4.1) | 369 | 2,000 | 25 steps | 15 | ~10% |
 
 The preliminary run pays a slightly higher fraction, which is the correct trade: its whole
 purpose is the shape of the curve, and 4 points would not show one.
@@ -329,31 +402,54 @@ Per-card figures assume ~35% of peak bf16 and both savings of §4.2.1; they carr
 until step 0 measures the real rate. The plan is now bought in two instalments, and **the
 first instalment is what decides whether the second is worth buying**.
 
-| | 24 GB Ampere-class | A100 40 GB | A100 80 GB | H100 80 GB |
+The plan is bought in three rungs, each of which is a place you can stop with something in
+hand. Each figure is all-in: training, validation, final eval, and the one-off extraction
+and probe work that rung needs.
+
+| rung | what it buys | 24 GB Ampere | A100 | H100 |
 |---|---|---|---|---|
-| checkpointing needed? | measure (§4.2) | probably not | no | no |
-| **Phase 0** — one arm-B run at 1/8 budget, full pangram extraction, val-only baseline extraction | **~2.6 GPU-h** | **~0.6 GPU-h** | **~0.45 GPU-h** | **~0.15 GPU-h** |
-| work per full-budget run | 1.16 EFLOP | 1.16 | 0.77 | 0.77 |
-| full-budget training, per run | ~14 h | ~3.0 h | ~2.0 h | ~0.65 h |
-| + validation and final eval (~8%) | ~15 h | ~3.2 h | ~2.2 h | ~0.7 h |
-| **Phases 1-2**, five full-budget runs | ~76 GPU-h | ~16 GPU-h | ~11 GPU-h | ~3.5 GPU-h |
-| remaining one-offs | ~2 GPU-h | ~0.4 | ~0.3 | ~0.1 |
-| **total if the whole plan runs** | **~81 GPU-h** | **~17 GPU-h** | **~12 GPU-h** | **~4 GPU-h** |
+| **1 — smoke** (§5.4.1): arm B at 1/8 budget, 369 steps | does the pipeline learn at all | ~2.8 GPU-h | **~0.6 GPU-h** | ~0.2 GPU-h |
+| **2 — arm B at full budget**, 2,951 steps | a fair A-vs-B answer | ~10 GPU-h | **~2.3 GPU-h** | ~0.7 GPU-h |
+| **3 — the whole plan** (§5.5): five full-budget runs | A vs B vs C, and capacity | ~46 GPU-h | **~10 GPU-h** | ~3.2 GPU-h |
 
-Wall clock for phases 1-2 is that divided by GPU count, since the runs are independent
-(§4.3). Phase 0 is a single run and cannot be parallelised, which is another reason to keep
-it small.
+Each row is the cost of reaching that rung *from scratch*. Climbing costs less, because the
+extraction and probe are done once: 1→2 is one more training run (~1.9 A100-h), and 2→3 is
+four more (~7.6 A100-h). Running all three in sequence is ~10.3 A100-hours, only 0.3 more
+than going straight to rung 3.
 
-Against the previous version of this plan — five full-budget runs batched the reference's
-way, ~26 GPU-h on an A100 with nothing to show until several of them finished — phase 0
-buys the first real signal for **~2% of that**, and §4.2.1 then takes the full plan down by
-a further ~35%.
+Per-run components, for re-deriving these when step 0 measures the real rate:
 
-The spread is ~20× in GPU-hours across card classes, which is much wider than the spread in
+| | 24 GB Ampere | A100 | H100 |
+|---|---|---|---|
+| work per full-budget run (best config, §4.2) | 0.69 EFLOP | 0.69 | 0.69 |
+| effective bf16 throughput assumed | ~24 TFLOP/s | ~109 | ~346 |
+| training, per full-budget run | ~8.0 h | ~1.8 h | ~0.55 h |
+| + validation and final eval (~8%) | ~8.6 h | ~1.9 h | ~0.6 h |
+| micro-batching needed to drop checkpointing? | yes, 32-64 | at 40 GB, yes | no |
+
+**Rung 2 is the interesting one, and it is better value than its position suggests.** The
+published upstream checkpoint was trained at *exactly* this budget — 2,951 steps, batch
+256, same optimizer, same schedule, same layer, same contrastive vectors (§3.1) — and
+publishes its validation loss. So training arm B at full budget yields an equal-budget,
+equal-hyperparameter comparison against arm A **without training arm A**. For ~23% of the
+full plan's cost you get the headline result the plan exists to produce. What rung 3 adds
+beyond that is arm C, the capacity sweep, and a replication of arm A under our own trainer
+— all real, none of them the headline.
+
+Wall clock for rung 3 is its cost divided by GPU count, since the five runs are independent
+(§4.3). Rungs 1 and 2 are single runs and cannot be parallelised, which is another reason
+to keep rung 1 small.
+
+Against the first version of this plan — five full-budget runs batched the reference's way,
+~26 A100-hours with nothing to show until several finished — rung 1 buys the first signal
+for ~2% of that, rung 2 buys the headline for ~9%, and §4.2.1 plus the corrected budget of
+§3.1 take the whole plan down by ~60%.
+
+The spread is ~15× in GPU-hours across card classes, which is much wider than the spread in
 rental rates — so on a per-dollar basis the classes land within roughly a factor of two of
-each other, while wall clock does not. For phase 0 specifically the wall clock is short
-everywhere, so the cheapest card wins; for phases 1-2, pick on how long you are willing to
-wait, and re-derive from step 0's measured rate rather than from this table.
+each other, while wall clock does not. For rung 1 the wall clock is short everywhere, so
+the cheapest card wins; higher up, pick on how long you are willing to wait, and re-derive
+from step 0's measured rate rather than from this table.
 
 ## 5. Design
 
@@ -422,11 +518,14 @@ the budget is equal, **every arm costs the same to train**: the cost of an arm i
 "one more run". Phase 0 (§5.4.1) runs arm B alone at a smaller budget and is scored against
 free comparators rather than against trained arms.
 
-| arm | vectors per topic | examples in pool | what it tests |
+Pool sizes below are the **train split** (44,673 topics); the val split adds 84,211 and
+842,110 respectively and is never trained on.
+
+| arm | vectors per topic | train pool | what it tests |
 |---|---|---|---|
-| **A** baseline | 1 (last prompt token, upstream prompt) | 839,602 | replication of upstream |
-| **B** pangram-per-position | 10 (one per response token) | 8,396,020 | the proposed method |
-| **C** pangram-mean | 1 (mean of the 10 positions) | 839,602 | pooling before the adapter |
+| **A** baseline | 1 (last prompt token, upstream prompt) | 755,391 | replication of upstream |
+| **B** pangram-per-position | 10 (one per response token) | 7,553,910 | the proposed method |
+| **C** pangram-mean | 1 (mean of the 10 positions) | 755,391 | pooling before the adapter |
 
 **B vs C, concretely.** Both read the same 10 activations; they differ in *where the
 pooling happens*.
@@ -449,53 +548,66 @@ than from either pooling scheme.
 gives confidence in the upstream numbers, so it does not need to be repeated across adapter
 architectures.
 
-### 5.4.1 Phase 0: arm B alone, at 1/8 budget
+### 5.4.1 Phase 0: arm B alone
 
 The plan as first written produced no signal at all until three full-budget runs had
-finished. That is the wrong shape for a first look. Phase 0 answers the one question that
-decides everything downstream — *does an adapter trained on pangram-position activations
-learn the topic at all?* — for ~0.6 GPU-h on an A100 (§4.6).
+finished. That is the wrong shape for a first look. Phase 0 runs **arm B alone**, in two
+rungs, and the second rung is where the real answer is.
 
-**Budget: 104,950 examples, 410 steps at batch 256** — one eighth of §4.1's figure. The
-justification is capacity, not impatience: `scalar_affine` has 4,097 parameters, and a
-4,097-parameter model fitted at lr 0.01 does not need 3,280 steps to show whether its loss
-is falling. If the curve is still steep at step 410, that is itself the finding, and §4.1's
-policy already says to extend the cap deliberately.
-
-**Run it as a complete short run, not a truncated long one.** The cosine schedule must be
-laid out over 410 steps with its own 10 warmup steps. Stopping a 3,280-step cosine at step
-410 leaves the learning rate near its peak and would understate what the short budget can
-do — a real and easy mistake, since the natural implementation is "same config, fewer
-steps".
-
-**The comparator is free.** Upstream publishes the trained baseline adapter this repo
-already loads — `keenanpepper/selfie-adapters-llama-3.1-8b-instruct`,
-`wikipedia-scalar-affine.safetensors` (see `config.py`). Phase 0 therefore does **not**
-train arm A. It scores three things on the same held-out topics, with the same loss code:
+**The comparator is free, at both rungs.** Upstream publishes the trained baseline adapter
+this repo already loads — `keenanpepper/selfie-adapters-llama-3.1-8b-instruct`,
+`wikipedia-scalar-affine.safetensors` (see `config.py`) — and §3.1 reads its training
+config out of the file. Phase 0 therefore does **not** train arm A. It scores:
 
 | | cost | what it gives |
 |---|---|---|
 | untrained projection (`identity_baseline`) | forward only | the floor |
 | published upstream adapter, on baseline val vectors | forward only | arm A, converged, for free |
-| phase-0 arm B at 1/8 budget | ~0.4 GPU-h | the question |
+| arm B, this phase's budget | the rung's cost | the question |
 
 This needs baseline-prompt vectors for the **val topics only** (4,964 topics, ~0.2M forward
 tokens — negligible), not the whole corpus.
 
-Read the result honestly, because the comparison is deliberately unfair in a known
-direction: arm B is at 1/8 budget and the published adapter is converged at full budget.
+**Rung 1 — smoke run at 1/8 budget: 94,424 examples, 369 steps, ~0.6 A100-h all-in.**
+The justification is capacity, not impatience: `scalar_affine` has 4,097 parameters, and a
+4,097-parameter model fitted at lr 0.01 does not need 2,951 steps to show whether its loss
+is falling. Its job is to catch a broken pipeline before the real run — extraction wired up
+wrong, centering applied twice, the loss path mis-indexed — not to rank arms. Read it
+against the floor:
 
-- **B already beats the published adapter** → strong result; the prompt is doing real work,
-  and phases 1-2 are worth buying.
-- **B lands between the floor and the published adapter** → inconclusive on ranking but
-  conclusive on mechanics: the pipeline learns, and the curve's slope at step 410 says
-  whether the gap is budget or method.
-- **B is at or near the floor** → the method or the extraction is broken, and the remaining
-  ~16 GPU-h were correctly not spent.
+- **B is at or near the untrained floor** → something is broken. Fix it before spending
+  more; the ~1.9 A100-hours of rung 2 were correctly not spent.
+- **B is clearly below the floor and still falling at step 369** → the pipeline works and
+  the budget is the limit, which is exactly what rung 2 is for.
 
-Only the last case is a stop. The first two proceed to phase 1, which still trains arm A
-itself — the published checkpoint is a comparator of convenience, not a substitute for the
-replication check of §6 step 2, which is what validates our trainer against upstream.
+Do **not** read rung 1 as an A-vs-B result. It is 1/8 budget against a converged adapter,
+so it is unfair in a known direction, and a loss to the published adapter here means
+nothing.
+
+**Rung 2 — full budget: 755,391 examples, 2,951 steps, ~1.9 A100-h more.** This is the one
+that answers the question the plan exists to ask, and it is fair. The published checkpoint
+was trained at exactly this budget with exactly these hyperparameters on exactly this layer
+and this vector treatment (§3.1), so arm B at full budget against it is an equal-compute,
+equal-hyperparameter comparison — and its published `best_val_loss` of 1.3662 is on the same
+topic-held-out val split. **B below 1.3662 is the headline result**, obtained without ever
+training arm A.
+
+Two honest caveats on rung 2, neither of which is a reason to skip it:
+
+- The comparison crosses trainers. Ours is not theirs, so a small gap either way could be
+  implementation drift rather than method. §6 step 2's check bounds this: scoring the
+  *published* adapter through our loss path should reproduce ~1.3662 on the val split. If
+  it does, the trainers agree on the thing being measured; if it does not, no phase-0
+  number means anything and that is worth knowing for ~0 GPU-hours.
+- It does not test arm C, so a win is attributed to "the pangram prompt", not to
+  per-position training specifically. That attribution is what phase 1 buys.
+
+**Run each rung as a complete run, not a truncated long one.** The cosine schedule must be
+laid out over the rung's own step count, with its own 10 warmup steps. Stopping a
+2,951-step cosine at step 369 leaves the learning rate near its peak and would understate
+what the short budget can do — a real and easy mistake, since the natural implementation is
+"same config, fewer steps". It is also why rung 1's checkpoint cannot simply be continued
+into rung 2.
 
 **Do not shrink the topic corpus to save extraction.** It is tempting, and it is a false
 economy: extracting all 49,637 topics costs ~0.16 GPU-h on an A100, so subsampling saves
@@ -515,16 +627,20 @@ Both reference projection types, with rank as a **config field, never a literal 
 
 To keep the run count sane, the questions are separated, and the cheap one comes first:
 
-| phase | question | runs | budget each |
+| phase | question | new runs | budget each |
 |---|---|---|---|
-| 0 | does arm B learn anything at all? | B × `scalar_affine` = 1 | 104,950 (1/8) |
-| 1 | does the pangram prompt help? | A, B, C × `scalar_affine` = 3 | 839,602 |
-| 2 | does capacity help the winner? | winning arm × {r=16, r=64} = 2 | 839,602 |
+| 0, rung 1 | is the pipeline working? | B × `scalar_affine` = 1 | 94,424 (1/8) |
+| 0, rung 2 | does the pangram prompt beat published arm A? | B × `scalar_affine` = 1 | 755,391 |
+| 1 | is the win from the prompt or from per-position training? | A, C × `scalar_affine` = 2 | 755,391 |
+| 2 | does capacity help the winner? | winning arm × {r=16, r=64} = 2 | 755,391 |
 
-Phase 0 is a go/no-go gate (§5.4.1) and its number is not comparable with phases 1-2, which
-are five runs at one equal budget. Note that phase 1 re-runs arm B at full budget rather
-than reusing phase 0's checkpoint: the two differ in learning-rate schedule as well as
-budget, so phase 0's run is not a prefix of phase 1's and cannot simply be continued.
+**Phase 1 reuses rung 2's arm-B run rather than repeating it.** It is trained by the same
+trainer, at the same budget, with the same seed and the same `scalar_affine` config, so it
+*is* phase 1's arm-B run; only A and C remain to be trained. That is why the totals in §4.6
+say five full-budget runs and not six.
+
+Phase 0 is a gate (§5.4.1). Rung 1's number is comparable only with the untrained floor;
+rung 2's is comparable with the published checkpoint, and later with A and C.
 
 ### 5.6 Measuring
 
@@ -544,11 +660,11 @@ budget, so phase 0's run is not a prefix of phase 1's and cannot simply be conti
 
 **Step 0 — probe.** On the real 8B: greedy-generate for a few hundred topics with the
 pangram prompt; classify every non-compliant output into the categories in §5.1 and report
-the distribution; benchmark examples/second on the chosen card across the four
-configurations that §4.2.1 and §4.2 put in play — {reference batching, length-bucketed} ×
-{checkpointed, uncheckpointed with gradient accumulation} — and confirm the prefix-cache
-path reproduces the uncached loss on a fixed batch. Output is a short findings note plus
-the settings the real runs use. Throwaway `.tmp.py`.
+the distribution; benchmark examples/second and peak memory on the chosen card across the
+configurations §4.2 puts in play — reference batching, then bucketing, then checkpointing
+off at micro-batch 32/64/128, then the prefix cache — and confirm the prefix-cache path
+reproduces the uncached loss on a fixed batch. Output is a short findings note plus the
+settings the real runs use. Throwaway `.tmp.py`.
 
 The token-length measurements this step used to carry are already done and are baked into
 §4.2: template 26 tokens, injection slots at 11 and 22, target `label + '"' + eot` mean
@@ -565,26 +681,32 @@ Llama-3.2-1B for shapes, filter logic, split inheritance, and per-position cente
 `selfie_adapters.projection.create_projection_module`, writing the same checkpoint dict the
 reference does (`projection_state`, `model_dim`, `checkpoint_format_version`, `config`),
 which `selfie_adapters.load_adapter` reads directly — so `interpret.py` keeps working
-unchanged. Budget expressed in examples seen; projection type and rank from config, and the
-learning-rate schedule laid out over *the configured budget* rather than over a fixed step
-count (§5.4.1). Length-bucketed batching from the start; shared-prefix cache behind a flag,
-enabled once step 0 shows it matches the uncached loss. Must also be able to *evaluate* a
-checkpoint it did not train — the phase-0 comparators of §5.4.1 are the published upstream
-adapter and an untrained projection.
+unchanged. Budget expressed in examples seen; projection type and rank from config;
+`normalize_input: true` to match the published run (§3.1); and the learning-rate schedule
+laid out over *the configured budget* rather than over a fixed step count (§5.4.1).
+Length-bucketed batching and logit slicing from the start; shared-prefix cache behind a
+flag, enabled once step 0 shows it matches the uncached loss, and mutually exclusive with
+gradient checkpointing (§4.2.1). Must also be able to *evaluate* a checkpoint it did not
+train — the phase-0 comparators of §5.4.1 are the published upstream adapter and an
+untrained projection.
 
-The risk is drifting from the reference's optimizer/loss details. Mitigation: arm A is the
-replication, and its validation loss is checked against upstream before arms B and C are
-trusted. Phase 0 gets an earlier, weaker version of the same check for free — scoring the
-published upstream adapter through our loss path should put it well below the untrained
-floor; if it does not, the loss path is wrong and nothing else that phase says is worth
-reading.
+The risk is drifting from the reference's optimizer/loss details. **The check is cheap,
+quantitative, and available before any training run**: score the published upstream
+checkpoint through our loss path on the val split and compare against its recorded
+`best_val_loss` of 1.3662 (§3.1). If we reproduce it, our data pipeline, template, target
+construction, and loss indexing all agree with upstream. If we do not, nothing downstream
+means anything, and we know that for ~0 GPU-hours instead of after a full arm-A run.
+Arm A's own run in phase 1 remains the stronger replication, but it is no longer the first
+line of defence.
 
 **Step 3 — phase 0.** Extract the pangram vectors for all topics and the baseline vectors
-for the val topics, then the single 1/8-budget arm-B run and the two forward-only
-comparators of §5.4.1. Stop here and report; the gate decides whether step 4 happens.
+for the val topics, then rung 1 (the 1/8-budget arm-B run) and, if it clears the floor,
+rung 2 (arm B at full budget), each scored against the two forward-only comparators of
+§5.4.1. Stop here and report; the gate decides whether step 4 happens.
 
 **Step 4 — phases 1 and 2.** Extract the baseline vectors for the remaining topics, then
-the five runs of §5.5, on the machine the user nominates at execution time (**[D5]**).
+the four remaining runs of §5.5 — arm A, arm C, and the two capacity runs; rung 2 already
+supplied phase 1's arm B — on the machine the user nominates at execution time (**[D5]**).
 Checkpoints and vectors to `outputs/`.
 
 **Step 5 — report.** Loss-vs-budget curves per arm, generation accuracy, the per-position
@@ -598,22 +720,33 @@ exploration, the step-0 failure taxonomy, and measured timings.
   upstream does.
 - **[D3]** Write a small trainer (option b), not a vendored copy of the reference's. It
   must support one-run-per-GPU and, optionally, DDP (§4.3).
-- **[D4]** Budget for phases 1-2 is 839,602 examples seen per run — the paper's single
-  Wikipedia epoch, 3,280 steps at batch 256 — held equal across all arms.
-- **[D7]** A **phase 0** runs arm B alone at **1/8 budget** (104,950 examples, 410 steps)
-  as a go/no-go gate before any full-budget run (§5.4.1). Its learning-rate schedule is laid
-  out over its own 410 steps, not truncated from the long one. Its comparators are
-  forward-only: the untrained projection, and the published upstream adapter
-  (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct`, `wikipedia-scalar-affine.safetensors`)
-  scored on baseline val vectors — so phase 0 trains one adapter, not two.
-- **[D8]** The trainer uses **length-bucketed batching** unconditionally and a
-  **shared-prefix KV cache** for template positions 0-10 behind a flag (§4.2.1). Both are
-  exact; together they are 1.85× and they apply to every phase. Logits are computed only
-  over label positions.
+- **[D4]** Full budget is **755,391 examples seen** per run — the paper's single Wikipedia
+  epoch over the train split, **2,951 steps** at batch 256, which is the `global_step` the
+  published checkpoint records (§3.1) — held equal across all full-budget runs. An earlier
+  version of this plan said 839,602 / 3,280, which is the whole dataset including its val
+  split and overshoots upstream by 11%.
+- **[D7]** A **phase 0** runs arm B alone, in two rungs (§5.4.1): rung 1 at **1/8 budget**
+  (94,424 examples, 369 steps) as a pipeline check against the untrained floor, then rung 2
+  at **full budget** as the real A-vs-B answer. Each rung's learning-rate schedule is laid
+  out over its own step count, not truncated from a longer one. Arm A is never trained in
+  phase 0: the comparators are the untrained projection and the published upstream adapter
+  (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct`, `wikipedia-scalar-affine.safetensors`),
+  both forward-only. Phase 1 then **reuses rung 2's checkpoint** as its arm B.
+- **[D8]** The trainer uses **length-bucketed batching** and **logit slicing**
+  unconditionally, and a **shared-prefix KV cache** for template positions 0-10 behind a
+  flag (§4.2.1). All are exact. The prefix cache **requires gradient checkpointing to be
+  off** — transformers silently nulls `past_key_values` under checkpointing — so the memory
+  budget is met by micro-batching with gradient accumulation instead. Together with dropping
+  checkpointing this is 2.8×, and it applies to every phase.
 - **[D9]** Phase 0 extracts the **full** topic corpus, not a subsample. Extraction is ~0.16
   A100-hours, so subsampling saves nothing worth a confound plus a re-extraction. For the
   same reason, the 10 pangram positions are never thinned to save cost: at a fixed
   examples-seen budget, pool size does not enter the cost.
+- **[D10]** The published checkpoint's recorded config is treated as authoritative over the
+  paper's table and the repo's YAML where they disagree (§3.1) — in particular
+  `normalize_input: true`, which this plan had not previously recorded. Its
+  `best_val_loss` of 1.3662 is the trainer-correctness target, checked before any training
+  run.
 - **[D5]** Runs on a machine the user nominates at execution time. Nothing in this plan
   assumes a particular card; §4.2 and §4.3 give the sizing needed to choose one. The local
   GPU is an 8 GB laptop card and cannot hold an 8B model.
