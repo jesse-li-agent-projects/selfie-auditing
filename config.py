@@ -140,8 +140,12 @@ class PipelineConfig:
     secret_prompt: str = SECRET_PROMPT
     # Generations per forward pass. Bounds peak memory, and nothing else --
     # but it does change how the sampler consumes the seeded RNG stream, so a
-    # replay of a cell needs the batch size it was produced with.
-    batch_size: int = 25
+    # replay of a cell needs the batch size it was produced with. 200 was
+    # measured as the throughput-optimal batch size for Llama-3.1-8B-Instruct
+    # bf16 on a single RTX 3090 (24GB): ~5.7x the old default's gens/sec with
+    # ~19GB peak, comfortably under OOM (400 saw diminishing returns near OOM;
+    # 800 OOM'd outright).
+    batch_size: int = 200
 
     sample_start: int = 0
     output_dir: Path = Path("results")
@@ -172,7 +176,7 @@ def sweep_config(
     sample_start: int = 0,
     output_dir: Path = Path("results"),
     device: str = "cuda",
-    batch_size: int = 25,
+    batch_size: int = 200,
 ) -> PipelineConfig:
     """A sweep's pipeline config. Defaults are the real 8B run's own values.
 
