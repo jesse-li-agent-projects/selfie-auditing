@@ -71,24 +71,35 @@ There is a second reason not to buy the 10×: the 10 positions of one topic are 
 prompt, the same label, and adjacent tokens of the same fixed sentence. They are heavily
 correlated. Effective sample size is far below 10× the topics, so returns diminish fast.
 
-Rough numbers for one RTX 3090 on the vast box (8B bf16, ~1550 tok/s forward, ~625 tok/s
-train, order-of-magnitude only — step 0 below measures the real figure):
+### Sizing this on whatever GPU you pick
 
-| | tokens | est. time |
+Stated as work, not wall clock, so it survives a change of card. For an 8B model at bf16,
+a forward pass is ~2N = **16 GFLOP/token**; a training step over a *frozen* model needs
+activation gradients but not weight gradients, so ~2.5× forward ≈ **40 GFLOP/token**.
+
+| | tokens | work |
 |---|---|---|
-| Extraction, 50k topics, pangram prompt (81 tok/topic) | 4.1M fwd | ~45 min |
-| Extraction, 50k topics, baseline prompt (41 tok/topic) | 2.1M fwd | ~22 min |
-| Training, 1250 steps × batch 80 | 4.2M train | ~1.9 h |
-| Training, 1 full epoch over 500k pairs (6250 steps) | 21M train | ~9.4 h |
+| Extraction, 50k topics, pangram prompt (81 tok/topic) | 4.1M fwd | ~65 PFLOP |
+| Extraction, 50k topics, baseline prompt (41 tok/topic) | 2.1M fwd | ~33 PFLOP |
+| Training, 1250 steps × batch 80 (~42 tok/example) | 4.2M train | ~170 PFLOP |
+| Training, 1 full epoch over 500k pairs (6250 steps) | 21M train | ~840 PFLOP |
+
+Divide by (peak bf16 TFLOP/s × ~0.35 achieved). That puts the 1250-step run at roughly
+2 hours on a 24 GB Ampere-class card, well under an hour on a modern datacentre card. The
+step-0 probe below replaces this arithmetic with a measurement on the card actually used.
+
+**Memory:** 8B bf16 weights are 16 GB, so 24 GB is the practical floor and leaves little
+room — expect to drop the batch below the reference's 80. At 40 GB or more you can keep
+batch 80 and turn gradient checkpointing off. More than one GPU is useful here for running
+arms side by side, not for sharding: one arm per card beats splitting one arm across two.
 
 ### Levers to cut exploration time, best first
 
-1. **Budget by `max_steps`, not epochs.** Removes the 10× entirely. ~1.9 h/arm.
-2. **Run the two arms concurrently**, one per 3090 (the box has two). 8B bf16 = 16 GB, so
-   one arm per card, batch tuned down if needed.
-3. **Disable gradient checkpointing.** The reference config turns it on for 80-example
-   batches, but our sequences are ~42 tokens and the model is frozen; recomputation buys
-   memory we probably do not need and costs ~25-30% throughput. Verify memory first.
+1. **Budget by `max_steps`, not epochs.** Removes the 10× entirely.
+2. **Run the arms concurrently**, one per GPU, if more than one card is available.
+3. **Disable gradient checkpointing** if memory allows. The reference config turns it on
+   for 80-example batches, but our sequences are ~42 tokens and the model is frozen;
+   recomputation buys memory we probably do not need and costs ~25-30% throughput.
 4. **Extract once, train many times.** Extraction is the one-off; vectors on disk make
    every subsequent config change nearly free. Extract *all* 10 positions even if the
    first run subsamples them — positions are free within a forward pass that already ran.
@@ -96,8 +107,8 @@ train, order-of-magnitude only — step 0 below measures the real figure):
    Note this only cuts *extraction* time once you are budgeting by steps.
 6. **Keep `scalar_affine`** (4097 params) for every arm here. Low-rank is a separate axis;
    do not vary two things at once.
-7. **Smoke the whole path on Llama-3.2-1B locally** before spending remote GPU. The 1B is
-   already in the local HF cache and the repo already has smoke scaffolding
+7. **Smoke the whole path on Llama-3.2-1B locally** before spending any GPU-hours. The 1B
+   is already in the local HF cache and the repo already has smoke scaffolding
    (`smoke/small_llama_config.py`).
 
 ## 4. Design
@@ -183,10 +194,10 @@ changing `interpret.py`'s extraction prompt to match, plus whatever `[D2]` decid
 
 ## 5. Implementation steps
 
-**Step 0 — probe (local 1B, then remote 8B, ~30 min).** Generate greedily for ~200 topics
-with the pangram prompt on the real 8B. Record what the model actually emits, settle the
-canonical target string and the filter, measure the reject rate, and time one forward pass
-to replace the estimates in §3. Throwaway `.tmp.py`.
+**Step 0 — probe (~30 min of GPU time).** Generate greedily for ~200 topics with the
+pangram prompt on the real 8B. Record what the model actually emits, settle the canonical
+target string and the filter, measure the reject rate, and time one forward pass to
+replace the arithmetic in §3 with a measurement. Throwaway `.tmp.py`.
 
 **Step 1 — extraction script.** New `adapter_training/extract_topic_vectors.py`: CLI with
 `--prompt-style {baseline,pangram}`, `--layer`, `--topics`, `--limit`, writes the `.pt` +
@@ -196,21 +207,22 @@ split-by-topic.
 
 **Step 2 — training path [D3].** Two options:
 - *(a) Vendor* `resources/selfie-adapters/training/` into a tracked path. Zero
-  compatibility risk, but `resources/` is untracked and does not sync to the remote, so
+  compatibility risk, but `resources/` is untracked, so it does not travel with the repo —
   this means committing ~2500 lines of wandb/mlflow/dataset-mixing we will not use.
 - *(b) Write a small trainer* (~150 lines) that reuses the already-installed
-  `selfie_adapters.projection.create_projection_module` (present in both the local and
-  remote venvs) and writes the same checkpoint dict the reference does
-  (`projection_state`, `model_dim`, `checkpoint_format_version`, `config`) — which
-  `selfie_adapters.load_adapter` reads directly, so `interpret.py` keeps working unchanged.
+  `selfie_adapters.projection.create_projection_module` and writes the same checkpoint
+  dict the reference does (`projection_state`, `model_dim`, `checkpoint_format_version`,
+  `config`) — which `selfie_adapters.load_adapter` reads directly, so `interpret.py` keeps
+  working unchanged.
 
 Recommendation: **(b)**, per the repo's "removing features should not lengthen the
 codebase" rule. The risk is drifting from the reference's exact optimizer/loss details;
 mitigate by reproducing arm A and checking its validation loss against the reference
 config's reported behaviour before trusting arms B and C.
 
-**Step 3 — run.** Extract on the remote (`vai`, 2× RTX 3090, 8B already cached, offline).
-Train arms A and B concurrently, one per GPU; C afterwards. Checkpoints to `outputs/`.
+**Step 3 — run.** Extract once for each prompt style, then train the arms — concurrently
+one-per-GPU if the chosen machine has more than one card, otherwise in sequence.
+Checkpoints to `outputs/`. See **[D5]** for where this runs.
 
 **Step 4 — report.** Val CE per arm, generation accuracy, per-position breakdown, filter
 reject rate, measured timings.
@@ -222,5 +234,6 @@ reject rate, measured timings.
 - **[D3]** Vendor the reference trainer, or write a small one.
 - **[D4]** Topic subset size for the first pass (10k proposed) and step budget (1250
   proposed, matching the reference).
-- **[D5]** Confirm the vast box is the intended place to run this (CLAUDE.local.md says to
-  ask). The local GPU is an 8 GB laptop card and cannot hold an 8B model.
+- **[D5]** Where this runs. The local GPU is an 8 GB laptop card, which cannot hold an 8B
+  model, so steps 0/3 need a machine the user nominates; §3 gives the sizing to pick one
+  (24 GB floor, 40 GB+ comfortable). Nothing in this plan assumes a particular card.
