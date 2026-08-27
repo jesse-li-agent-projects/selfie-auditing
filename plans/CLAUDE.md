@@ -17,7 +17,8 @@ This directory contains plans for agents.
       model to write a fixed pangram while thinking about a topic, reading
       activations from every response token instead of one. Covers the
       pangram-fidelity filter, the arms needed to attribute any win, and why
-      the 10x larger dataset need not cost 10x the training time.
+      budgeting by examples seen rather than by epochs stops the 10x larger
+      example pool from costing 10x the training time.
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
