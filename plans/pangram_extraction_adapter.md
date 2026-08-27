@@ -162,31 +162,46 @@ epochs of its larger pool; arm C, like A, as one full epoch.
 ### 4.2 Sizing on whatever GPU is chosen
 
 Stated as work, not wall clock, so it survives a change of card. For an 8B model at bf16, a
-forward pass is ~2N = **16 GFLOP/token**; a training step over a *frozen* model needs
-activation gradients but not weight gradients, so ~2.5× forward ≈ **40 GFLOP/token**.
+forward pass is ~2N = **16 GFLOP/token**. A training step over a *frozen* model needs
+activation gradients but not weight gradients, so backward is ~2N rather than the usual 4N:
+**32 GFLOP/token**, rising to **48 GFLOP/token** when gradient checkpointing adds a second
+forward pass.
 
 | | tokens | work |
 |---|---|---|
 | Extraction, 49,637 topics, pangram prompt (81 tok/topic) | 4.0M fwd | ~64 PFLOP |
 | Extraction, 49,637 topics, baseline prompt (~41 tok/topic) | 2.0M fwd | ~33 PFLOP |
-| One training run at the 839,602-example budget (~46 tok/example) | 39M train | ~1.5 EFLOP |
+| One training run, 839,602 examples (~46 tok/example), checkpointed | 39M train | ~1.9 EFLOP |
+| Same, uncheckpointed (needs ≥48 GB) | 39M train | ~1.2 EFLOP |
 
-Divide by (peak bf16 TFLOP/s × ~0.35 achieved). That gives **~4 hours on one A100**, which
-is a useful check on the model: the paper ran exactly this on a single A100 and reported
-180-220 GPU-hours across every training and evaluation run in the whole paper, so a ~4-hour
-figure for one run is the right order. On a 24 GB Ampere-class card the same run is ~17
-GPU-hours; divided across a 4-GPU rig (§4.4), ~4-5 hours wall clock.
+Divide by (peak bf16 TFLOP/s × ~0.35 achieved). That gives **~4.7 hours on one A100**,
+which is a useful check on the model: the paper ran exactly this configuration on a single
+A100, and reported 180-220 GPU-hours across every training and evaluation run in the whole
+paper, so a ~5-hour figure for one run is the right order.
 
-Extraction is ~4% of one training run either way — hence extract-once.
+Extraction is ~3% of one training run — hence extract-once.
 
-**Memory:** 8B bf16 weights are 16 GB, so 24 GB is the practical floor. At the paper's
-batch of 256 (~11.8k tokens/step), uncheckpointed activations are roughly 28 GB, so on
-anything below ~48 GB **gradient checkpointing is not a tuning choice but a requirement**
-— which is why the reference configs enable it. An earlier draft of this plan suggested
-turning it off; that was wrong at this batch size. The genuine choices are checkpointing
-on at full batch, versus off with gradient accumulation over smaller micro-batches, and
-which wins is card-dependent and cheap to measure. Step 0 measures both and the winner is
-used.
+**Memory** is the binding constraint below 48 GB, and the culprit is not what it looks
+like. 8B bf16 weights are 16 GB. At the paper's batch of 256 (~11.8k tokens/step),
+uncheckpointed activations are roughly 28 GB, so **gradient checkpointing is a requirement
+rather than a tuning choice** on anything smaller — which is why the reference configs
+enable it. An earlier draft of this plan suggested turning it off; that was wrong at this
+batch size.
+
+But even checkpointed, the **logits tensor** dominates: 11,776 tokens × 128,256 vocab ×
+2 bytes = 3.0 GB materialised, and cross-entropy backward wants roughly another copy. Add
+~3 GB of checkpointed layer boundaries and a 24 GB card is over budget at batch 256. Two
+responses, both of which the plan takes:
+
+- **Compute logits only over label positions.** The reference materialises them for the
+  whole sequence, but only the ~16 label tokens of each 46-token sequence contribute to the
+  loss. Slicing before the LM head cuts this tensor by ~65% at no cost in correctness. This
+  is available to us precisely because we are writing the trainer (§6, D3=b).
+- **Gradient accumulation** — micro-batch 64 or 128 accumulating to a global 256 — keeps
+  the optimizer step identical to the paper's while fitting a 24 GB card. Same FLOPs,
+  perhaps 5-10% worse utilisation.
+
+Step 0 measures which combination is fastest on the card actually used.
 
 ### 4.3 Using a multi-GPU rig
 
@@ -234,6 +249,44 @@ Two notes. Storing vectors as fp32 instead would double the 4.1 GB to 8.1 GB for
 benefit. And writing the labels in the *reference's* JSON format would duplicate every
 topic's ~17 label strings once per vector — ~480 MB of JSON for the pangram set, and slow
 to parse; §5.2 avoids that.
+
+### 4.5 Validation is not free, and can silently dominate
+
+The val split is 4,964 topics, which is ~84,000 val examples for a one-vector-per-topic arm
+and ~839,000 for arm B. Validating on the *full* split every 50 steps — the reference
+config's cadence — would run 65 full validations over a 3,280-step run. At forward-only
+cost that is still the equivalent of ~1.8M training examples, i.e. **more than twice the
+cost of the training it is monitoring**. The reference has a
+`_check_validation_compute_ratio` guard precisely because this trap is easy to fall into.
+
+Policy for this plan: validate on a **fixed random subsample of 5,000 val examples**, drawn
+once with a fixed seed and reused at every validation so the curve is comparable point to
+point, every 100 steps. That is 33 validations costing ~6% of the run. The full val split
+is used once, at the end, for the reported numbers.
+
+### 4.6 Total cost of the plan
+
+Five training runs (§5.5), each at the 839,602-example budget, plus one-off work. Per-card
+figures assume ~35% of peak bf16 and the checkpointing requirement from §4.2; they carry
+maybe ±40% until step 0 measures the real rate.
+
+| | 24 GB Ampere-class | A100 40 GB | A100/H100 80 GB class |
+|---|---|---|---|
+| checkpointing needed? | yes, + micro-batching | yes | no |
+| work per run | 1.9 EFLOP | 1.9 EFLOP | 1.2 EFLOP |
+| training, per run | ~22 h | ~4.7 h | ~3.1 h (A100) / ~1.0 h (H100) |
+| + validation and final eval (~8%) | ~24 h | ~5.1 h | ~3.4 h / ~1.1 h |
+| **5 runs** | **~120 GPU-h** | **~26 GPU-h** | **~17 / ~5.5 GPU-h** |
+| one-offs (step 0, both extractions, per-position breakdown) | ~2.5 GPU-h | ~0.5 | ~0.3 |
+| **total** | **~122 GPU-h** | **~26 GPU-h** | **~17 / ~6 GPU-h** |
+
+Wall clock is that divided by GPU count, since the five runs are independent (§4.3).
+
+The spread is ~20× in GPU-hours across card classes, which is much wider than the spread in
+rental rates — so on a per-dollar basis the classes land within roughly a factor of two of
+each other, while wall clock does not. Cheap 24 GB cards are cost-competitive and slow;
+80 GB cards additionally dodge the 33% checkpointing tax. Pick on how long you are willing
+to wait, and re-derive from step 0's measured rate rather than from this table.
 
 ## 5. Design
 
@@ -346,9 +399,10 @@ Five runs, each at the same examples-seen budget.
 
 ### 5.6 Measuring
 
-- **Validation loss vs examples seen**, per arm. Comparable across arms: same label set,
-  same soft-prompt template, same held-out topics. The curve, not just the endpoint —
-  it is what says whether the budget was adequate.
+- **Validation loss vs examples seen**, per arm, on the fixed 5,000-example subsample of
+  §4.5 during the run and the full val split once at the end. Comparable across arms: same
+  label set, same soft-prompt template, same held-out topics. The curve, not just the
+  endpoint — it is what says whether the budget was adequate.
 - **Generation accuracy** on held-out topics, reusing the reference's scoring
   (`evals/generation_scoring/`, and the embedding-retrieval eval which is designed for
   exactly this in-distribution case) rather than inventing a metric.
