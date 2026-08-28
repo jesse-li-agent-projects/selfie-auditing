@@ -277,7 +277,11 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                 # injects raw hidden states at every layer, including 19, so
                 # this sweep does too.
                 torch.manual_seed(cell_seed(arm.value, word, config.sample_start))
-                generations_by_cell = generate_interpretations_batch(
+                # The keys are the extraction's own, not config.positions: only
+                # the extraction knows what USER_PROMPT_SPAN expanded to. Each
+                # arrives as its last generation is drawn, so a group's cells
+                # reach disk during the group, not after it.
+                for (layer, position), generations in generate_interpretations_batch(
                     peft_model,
                     tokenizer,
                     adapter,
@@ -287,10 +291,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                     config.temperature,
                     config.device,
                     config.batch_size,
-                )
-                # Iterate the extraction's own keys, not config.positions: only
-                # the extraction knows what USER_PROMPT_SPAN expanded to.
-                for (layer, position), generations in generations_by_cell.items():
+                ):
                     key = (arm.value, word, layer, position_key(position))
                     cell = score_cell(generations, word)
                     append_cell(

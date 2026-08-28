@@ -13,6 +13,7 @@ never subtracting a mean at any layer.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Protocol, TypeVar
 
 import torch
@@ -59,7 +60,7 @@ def generate_interpretations_batch(
     temperature: float,
     device: str,
     batch_size: int = 200,
-) -> dict[CellKey, list[str]]:
+) -> Iterator[tuple[CellKey, list[str]]]:
     """Sample n_samples interpretations for each of several hidden states at once.
 
     A forward pass only depends on which soft token each row injects -- so
@@ -74,10 +75,18 @@ def generate_interpretations_batch(
     batch_size)` pair always produces the same batch boundaries -- required
     for the seeded RNG stream a caller sets up before this call to reproduce.
 
+    A cell is yielded as soon as its last row is decoded, rather than every
+    cell at the end: a whole pooled group is hours of generation, and a caller
+    that writes as it goes keeps what it has already paid for when a run is
+    interrupted. Only the one cell straddling a batch boundary is ever held.
+    Being a generator, this runs nothing until iterated -- a caller seeding the
+    RNG stream must still do so before iteration starts, not merely before the
+    call.
+
     :param hidden_vectors: cells to interpret, keyed by anything hashable
     :param n_samples: generations per cell
     :param batch_size: rows per forward pass, pooled across cells
-    :return: each key's `n_samples` generations, in the order they were drawn
+    :return: each key and its `n_samples` generations, in the order drawn
     """
     template_tokens = tokenizer(
         SELFIE_TEMPLATE, return_tensors="pt", add_special_tokens=False
@@ -101,7 +110,7 @@ def generate_interpretations_batch(
     }
 
     row_keys = [key for key in hidden_vectors for _ in range(n_samples)]
-    descriptions: dict[CellKey, list[str]] = {key: [] for key in hidden_vectors}
+    partial: dict[CellKey, list[str]] = {}
     for start in range(0, len(row_keys), batch_size):
         chunk = row_keys[start : start + batch_size]
         embeddings = template_embeds.repeat(len(chunk), 1, 1)
@@ -125,9 +134,12 @@ def generate_interpretations_batch(
         )
         for key, output in zip(chunk, outputs):
             text = tokenizer.decode(output, skip_special_tokens=True).strip()
-            descriptions[key].append(text.rsplit('"', 1)[0] if '"' in text else text)
-
-    return descriptions
+            partial.setdefault(key, []).append(
+                text.rsplit('"', 1)[0] if '"' in text else text
+            )
+        for key in list(partial):
+            if len(partial[key]) == n_samples:
+                yield key, partial.pop(key)
 
 
 def generate_interpretations(
@@ -142,14 +154,16 @@ def generate_interpretations(
     batch_size: int = 25,
 ) -> list[str]:
     """Single-cell convenience wrapper over `generate_interpretations_batch`."""
-    return generate_interpretations_batch(
-        model,
-        tokenizer,
-        adapter,
-        {0: hidden_vector},
-        n_samples,
-        max_new_tokens,
-        temperature,
-        device,
-        batch_size,
+    return dict(
+        generate_interpretations_batch(
+            model,
+            tokenizer,
+            adapter,
+            {0: hidden_vector},
+            n_samples,
+            max_new_tokens,
+            temperature,
+            device,
+            batch_size,
+        )
     )[0]
