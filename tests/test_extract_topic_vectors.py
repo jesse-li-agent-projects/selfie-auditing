@@ -25,6 +25,7 @@ from adapter_training.extract_topic_vectors import (
     mismatch_histogram,
     position_ids_from_mask,
     response_token_ids,
+    response_variants,
 )
 from config import DUMMY_BASE_MODEL
 
@@ -64,6 +65,17 @@ class FakeTokenizer:
 
     def decode(self, ids, **kwargs):
         return " ".join(self._tokens.get(int(i), "?") for i in ids)
+
+
+class FakeTokenizerSplitsPunctuation(FakeTokenizer):
+    """Like `FakeTokenizer`, but a trailing full stop is its own token --
+    what a real BPE tokenizer does, and what `response_variants` needs to
+    find a genuine token-level prefix relationship between the two
+    candidates."""
+
+    def __call__(self, text, add_special_tokens=False, **kwargs):
+        parts = text.replace(".", " .").split()
+        return SimpleNamespace(input_ids=[self._id(t) for t in parts])
 
 
 class FakeModel:
@@ -107,6 +119,55 @@ class FakeModel:
                 # a mismatch index that is neither the first nor the last.
                 if fails and kept == 2:
                     next_id = (next_id + 1) % VOCAB
+                logits[row, kept, next_id] = 10.0
+        return SimpleNamespace(hidden_states=hidden_states, logits=logits)
+
+
+class NoStopModel(FakeModel):
+    """Complies fully with the shorter (no full-stop) forced variant for
+    `no_stop_titles`, but diverges from the longer variant exactly at the
+    full-stop position -- what the step-0 probe found ~27% of real topics do.
+    Otherwise behaves like `FakeModel`.
+
+    Distinguishing the two forced-sequence passes by `logits_to_keep` (12 for
+    the 10-sentence-token + eot + lookback candidate, 11 for the
+    9-token one) rather than by decoding the input keeps this independent of
+    prompt length.
+    """
+
+    def __init__(self, tokenizer, no_stop_titles=(), fail_titles=(), n_layers=4):
+        super().__init__(tokenizer, fail_titles=fail_titles, n_layers=n_layers)
+        self.no_stop_titles = set(no_stop_titles)
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        output_hidden_states,
+        logits_to_keep,
+    ):
+        self.seen_position_ids.append(position_ids.clone())
+        batch, seq = input_ids.shape
+        base = input_ids.unsqueeze(-1).float().expand(batch, seq, HIDDEN)
+        hidden_states = tuple(base + layer for layer in range(self.n_layers + 1))
+
+        logits = torch.zeros(batch, logits_to_keep, VOCAB)
+        for row in range(batch):
+            text = self.tokenizer.decode(input_ids[row].tolist())
+            fails = any(title in text for title in self.fail_titles)
+            is_no_stop = any(title in text for title in self.no_stop_titles)
+            for kept in range(logits_to_keep):
+                position = seq - logits_to_keep + kept
+                if position + 1 >= seq:
+                    continue
+                next_id = int(input_ids[row, position + 1])
+                if fails and kept == 2:
+                    next_id = (next_id + 1) % VOCAB
+                elif is_no_stop and logits_to_keep == 12 and kept == 9:
+                    # The with-stop pass: refuse the "." token, as if the
+                    # model preferred to stop the sentence one token earlier.
+                    next_id = self.tokenizer.eot_id
                 logits[row, kept, next_id] = 10.0
         return SimpleNamespace(hidden_states=hidden_states, logits=logits)
 
@@ -242,6 +303,76 @@ def test_filter_drops_topics_that_would_not_reproduce_the_sentence():
         0,
         result.records[0].count,
     ]
+
+
+def test_response_variants_derives_the_no_stop_candidate():
+    tokenizer = FakeTokenizerSplitsPunctuation()
+
+    variants = response_variants(tokenizer, DEFAULT_RESPONSE)
+
+    assert len(variants) == 2
+    with_stop_text, with_stop_ids, with_stop_forced = variants[0]
+    no_stop_text, no_stop_ids, no_stop_forced = variants[1]
+    assert with_stop_text == DEFAULT_RESPONSE
+    assert no_stop_text == PANGRAM
+    assert len(with_stop_ids) == len(no_stop_ids) + 1
+    # The no-stop candidate's tokens are a genuine prefix of the with-stop
+    # one's -- both point at the same position for the shared words.
+    assert no_stop_ids == with_stop_ids[: len(no_stop_ids)]
+    assert len(with_stop_forced) == len(with_stop_ids) + 1  # + eot
+    assert len(no_stop_forced) == len(no_stop_ids) + 1
+
+
+def test_response_variants_falls_back_to_one_candidate_without_a_genuine_prefix():
+    # FakeTokenizer fuses "dog." into one token, so stripping the string's
+    # trailing "." does not recover a prefix of the original ids -- the
+    # derivation must not offer a bogus second candidate in that case.
+    tokenizer = FakeTokenizer()
+
+    variants = response_variants(tokenizer, DEFAULT_RESPONSE)
+
+    assert len(variants) == 1
+    assert variants[0][0] == DEFAULT_RESPONSE
+
+
+def test_pangram_extraction_accepts_the_no_stop_variant():
+    tokenizer = FakeTokenizerSplitsPunctuation()
+    model = NoStopModel(tokenizer, no_stop_titles={"Bravo"}, fail_titles={"Charlie"})
+    topics = [topic("Alpha"), topic("Bravo"), topic("Charlie")]
+    sentence_ids, _ = response_token_ids(tokenizer, DEFAULT_RESPONSE)
+    no_stop_ids, _ = response_token_ids(tokenizer, PANGRAM)
+
+    result = extract_topics(
+        model, tokenizer, topics, style=PromptStyle.PANGRAM, layer=1, device="cpu"
+    )
+
+    assert [r.title for r in result.records] == ["Alpha", "Bravo"]
+    alpha, bravo = result.records
+    assert alpha.count == len(sentence_ids)  # matched the with-stop variant
+    assert alpha.variant == DEFAULT_RESPONSE
+    assert bravo.count == len(no_stop_ids)  # one fewer: no full-stop vector
+    assert bravo.variant == PANGRAM
+    assert bravo.start == alpha.start + alpha.count  # still contiguous
+    assert [f["title"] for f in result.failures] == ["Charlie"]
+
+
+def test_position_means_only_average_positions_that_were_actually_kept():
+    tokenizer = FakeTokenizerSplitsPunctuation()
+    model = NoStopModel(tokenizer, no_stop_titles={"Bravo"})
+    topics = [topic("Alpha"), topic("Bravo")]
+    sentence_ids, _ = response_token_ids(tokenizer, DEFAULT_RESPONSE)
+    last_position = len(sentence_ids) - 1  # the full-stop token
+
+    result = extract_topics(
+        model, tokenizer, topics, style=PromptStyle.PANGRAM, layer=1, device="cpu"
+    )
+
+    # Alpha (with-stop) occupies vectors[0:10]; Bravo (no-stop) only
+    # contributes positions 0-8. The final position's mean must therefore
+    # equal Alpha's vector at that position exactly, not an average diluted
+    # by a Bravo contribution that does not exist.
+    alpha_last = result.vectors[last_position].float()
+    assert torch.allclose(result.position_means[last_position], alpha_last, atol=1e-4)
 
 
 def test_records_inherit_the_topics_split_for_every_position(fake):

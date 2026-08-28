@@ -17,6 +17,13 @@ that holds everywhere, greedy decoding from the prompt would have produced
 exactly the sentence and then stopped. So the filter verdict and the vectors
 cost one forward pass together, and no decode loop is needed.
 
+Real generation on the 8B (plan S6 step 0 probe) shows two common compliant
+shapes -- the sentence with a trailing full stop (~68% of topics) and without
+one (~27%) -- so the filter tries both forced sequences per topic and keeps
+whichever one matches (`response_variants`), at the cost of a second forward
+pass per batch. A topic that matches the shorter (no-stop) variant
+contributes one fewer vector than one that matches the longer one.
+
 Vectors are written raw. The per-position means are written beside them and are
 subtracted by the trainer, not here, so the centering choice can be revisited
 without re-extracting (plan S5.3).
@@ -36,11 +43,13 @@ from config import BASE_MODEL_8B
 DEFAULT_DATASET = "keenanpepper/fifty-thousand-things"
 DEFAULT_DATASET_FILE = "wikipedia_vital_articles_level5_dataset.jsonl"
 
-# The sentence the model is asked to write, and the response the filter demands
-# back. The response carries a full stop that the instruction's quoted sentence
-# does not; it is what the tokenizer's 10 pangram tokens (plan S4.2b) count, and
-# `--response-text` exists so step 0 can measure the alternative without a code
-# edit.
+# The sentence the model is asked to write, and the primary response the
+# filter demands back. The response carries a full stop that the
+# instruction's quoted sentence does not; it is what the tokenizer's 10
+# pangram tokens (plan S4.2b) count. The step-0 probe found real greedy
+# decoding splits roughly 68/27 between this and the same sentence with no
+# stop, so `response_variants` derives and accepts the no-stop shape too --
+# `--response-text` still exists to override the primary candidate.
 PANGRAM = "The quick brown fox jumps over the lazy dog"
 DEFAULT_RESPONSE = PANGRAM + "."
 
@@ -136,7 +145,11 @@ class TopicRecord:
     """A surviving topic as written to `topics.json`.
 
     `start` and `count` address the topic's own vectors in `vectors.pt`, so
-    labels are stored once per topic rather than once per vector.
+    labels are stored once per topic rather than once per vector. `count` is
+    not the same for every topic under the pangram style: a topic that ends
+    the sentence without the trailing full stop (plan S6 step 0 probe: ~27%
+    of topics on the real 8B) contributes one fewer vector than one that
+    writes it (~68%), because there is no period token to read a vector from.
     """
 
     title: str
@@ -145,6 +158,7 @@ class TopicRecord:
     split: str
     start: int
     count: int
+    variant: str | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +259,46 @@ def response_token_ids(tokenizer, response_text: str) -> tuple[list[int], list[i
     return sentence_ids, [*sentence_ids, eot_id]
 
 
+def response_variants(
+    tokenizer, response_text: str
+) -> list[tuple[str, list[int], list[int]]]:
+    """The forced-sequence candidates the filter accepts for one topic.
+
+    Real greedy generation on the 8B model (plan S6 step 0 probe) shows the
+    pangram has two common compliant shapes: with the trailing full stop
+    (~68% of topics) and without it (~27%) -- the model simply stops one
+    token earlier. A filter that only forces one of these structurally caps
+    the keep rate near whichever fraction it picked, rejecting a large
+    genuinely-compliant population. So both are tried, in this order (the
+    longer one first, since it is the more common shape), and a topic is kept
+    on the first one it matches.
+
+    Only derived when `response_text` ends in a full stop -- an explicit
+    `--response-text` override without one gets a single candidate, and the
+    two are merged only if stripping the stop leaves a genuine token-level
+    prefix of the first (guards against a tokenizer merging the stop into the
+    preceding word, which would make the two sequences unrelated rather than
+    one a prefix of the other).
+
+    :param tokenizer: the model's tokenizer
+    :param response_text: the primary (preferred) response text
+    :return: one or two `(text, sentence_ids, forced_ids)` candidates
+    """
+    sentence_ids, forced_ids = response_token_ids(tokenizer, response_text)
+    variants = [(response_text, sentence_ids, forced_ids)]
+    if response_text.endswith("."):
+        no_stop_text = response_text[:-1]
+        no_stop_sentence_ids, no_stop_forced_ids = response_token_ids(
+            tokenizer, no_stop_text
+        )
+        if (
+            no_stop_sentence_ids
+            and no_stop_sentence_ids == sentence_ids[: len(no_stop_sentence_ids)]
+        ):
+            variants.append((no_stop_text, no_stop_sentence_ids, no_stop_forced_ids))
+    return variants
+
+
 def check_forced_greedy(
     logits: Float[Tensor, "n_forced vocab"], forced_ids: list[int], tokenizer
 ) -> Compliance:
@@ -313,6 +367,45 @@ def position_ids_from_mask(
     return (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
 
 
+def _forced_pass(
+    model,
+    tokenizer,
+    batch: list[Topic],
+    style: PromptStyle,
+    layer: int,
+    forced_ids: list[int],
+    device: str,
+    pangram: str,
+):
+    """One forward pass over a batch, teacher-forcing `forced_ids` after each
+    topic's prompt. Returns the logits (for the compliance check) and the
+    layer's hidden states, both still batched.
+    """
+    sequences = [
+        tokenizer(
+            build_prompt(tokenizer, build_user_prompt(style, topic, pangram), None),
+            add_special_tokens=False,
+        ).input_ids
+        + forced_ids
+        for topic in batch
+    ]
+    input_ids, attention_mask = left_pad(sequences, tokenizer.pad_token_id)
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device)
+
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids_from_mask(attention_mask),
+        output_hidden_states=True,
+        # The forced tokens sit at the last len(forced_ids) positions, and
+        # each is predicted by the logits one position earlier -- so one
+        # extra kept position covers the whole check.
+        logits_to_keep=len(forced_ids) + 1,
+    )
+    return outputs.logits, outputs.hidden_states[layer + 1]
+
+
 @torch.no_grad()
 def extract_topics(
     model,
@@ -328,15 +421,20 @@ def extract_topics(
 ) -> ExtractionResult:
     """Run the forward passes and harvest every kept vector.
 
-    One vector per topic for the baseline style, one per response token for the
-    pangram style. `hidden_states[L + 1]` is the output of transformer layer L.
+    One vector per topic for the baseline style. For the pangram style, one
+    vector per response token of whichever forced variant (plan S6 step 0
+    probe: with or without the trailing full stop) the topic's greedy
+    decoding actually matches -- each variant gets its own forward pass per
+    batch, tried in order, first match wins (`response_variants`). A topic
+    that matches neither is rejected. `hidden_states[L + 1]` is the output of
+    transformer layer L.
 
     :param model: the base model to read activations from
     :param tokenizer: its tokenizer, configured for left padding
     :param topics: topics to extract, in the order they will be written
     :param style: which extraction prompt to use
     :param layer: transformer layer to read the residual stream at
-    :param response_text: the response the pangram filter demands
+    :param response_text: the primary response the pangram filter demands
     :param batch_size: topics per forward pass
     :param device: device to run on
     :param pangram: the sentence named in the pangram prompt
@@ -345,10 +443,10 @@ def extract_topics(
     """
     hidden_size = model.config.hidden_size
     if style is PromptStyle.PANGRAM:
-        sentence_ids, forced_ids = response_token_ids(tokenizer, response_text)
-        position_tokens = [tokenizer.decode([i]) for i in sentence_ids]
+        variants = response_variants(tokenizer, response_text)
+        position_tokens = [tokenizer.decode([i]) for i in variants[0][1]]
     else:
-        sentence_ids, forced_ids = [], []
+        variants = []
         position_tokens = ["last_prompt_token"]
     n_positions = len(position_tokens)
 
@@ -356,8 +454,11 @@ def extract_topics(
         len(topics) * n_positions, hidden_size, dtype=torch.bfloat16, device="cpu"
     )
     # Accumulated in float64 as the run goes rather than by casting the whole
-    # 4 GB vector table at the end.
+    # 4 GB vector table at the end. Counted per position, not just divided by
+    # len(records), because a shorter (no-stop) variant leaves the last
+    # position's count below the others.
     sums = torch.zeros(n_positions, hidden_size, dtype=torch.float64)
+    position_counts = torch.zeros(n_positions, dtype=torch.float64)
     records: list[TopicRecord] = []
     failures: list[dict] = []
     written = 0
@@ -370,49 +471,72 @@ def extract_topics(
 
     for start in batches:
         batch = topics[start : start + batch_size]
-        sequences = [
-            tokenizer(
-                build_prompt(tokenizer, build_user_prompt(style, topic, pangram), None),
-                add_special_tokens=False,
-            ).input_ids
-            + forced_ids
-            for topic in batch
-        ]
-        input_ids, attention_mask = left_pad(sequences, tokenizer.pad_token_id)
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
 
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids_from_mask(attention_mask),
-            output_hidden_states=True,
-            # The forced tokens sit at the last len(forced_ids) positions, and
-            # each is predicted by the logits one position earlier -- so one
-            # extra kept position covers the whole check. The baseline style
-            # needs no logits at all, but 0 would mean "keep everything".
-            logits_to_keep=len(forced_ids) + 1 if forced_ids else 1,
-        )
-        hidden = outputs.hidden_states[layer + 1]
+        if style is PromptStyle.PANGRAM:
+            passes = [
+                (text, sentence_ids, forced_ids)
+                + _forced_pass(
+                    model, tokenizer, batch, style, layer, forced_ids, device, pangram
+                )
+                for text, sentence_ids, forced_ids in variants
+            ]
+        else:
+            logits, hidden = _forced_pass(
+                model, tokenizer, batch, style, layer, [], device, pangram
+            )
+            passes = [("", [], [], logits, hidden)]
 
         for row, topic in enumerate(batch):
-            if style is PromptStyle.PANGRAM:
-                compliance = check_forced_greedy(
-                    outputs.logits[row, :-1, :].float(), forced_ids, tokenizer
-                )
-                if not compliance.ok:
-                    failures.append({"title": topic.title, **asdict(compliance)})
-                    continue
-                # The forced block ends with <|eot_id|>, which is a response
-                # token but carries no topic content, so it is checked and then
-                # dropped.
-                kept = hidden[row, -len(forced_ids) : -1, :]
+            if style is not PromptStyle.PANGRAM:
+                kept = passes[0][4][row, -1:, :]
+                variant_text = None
             else:
-                kept = hidden[row, -1:, :]
+                chosen = None
+                worst_failure: tuple[str, Compliance] | None = None
+                for text, sentence_ids, forced_ids, logits, hidden in passes:
+                    compliance = check_forced_greedy(
+                        logits[row, :-1, :].float(), forced_ids, tokenizer
+                    )
+                    if compliance.ok:
+                        chosen = (text, sentence_ids, forced_ids, hidden)
+                        break
+                    # Keep whichever variant's greedy decoding got furthest,
+                    # so a rejection points at the real divergence rather
+                    # than an artefact of variant order. `or -1` would be
+                    # wrong here: a genuine mismatch_index of 0 is falsy too.
+                    this_index = (
+                        compliance.mismatch_index
+                        if compliance.mismatch_index is not None
+                        else -1
+                    )
+                    prior_index = (
+                        worst_failure[1].mismatch_index
+                        if worst_failure is not None
+                        and worst_failure[1].mismatch_index is not None
+                        else -1
+                    )
+                    if worst_failure is None or this_index > prior_index:
+                        worst_failure = (text, compliance)
 
+                if chosen is None:
+                    assert worst_failure is not None
+                    text, compliance = worst_failure
+                    failures.append(
+                        {"title": topic.title, "variant": text, **asdict(compliance)}
+                    )
+                    continue
+
+                variant_text, sentence_ids, forced_ids, hidden = chosen
+                # The forced block ends with <|eot_id|>, which is a response
+                # token but carries no topic content, so it is checked and
+                # then dropped.
+                kept = hidden[row, -len(forced_ids) : -1, :]
+
+            n_kept = kept.shape[0]
             kept = kept.to(dtype=torch.bfloat16, device="cpu")
-            vectors[written : written + n_positions] = kept
-            sums += kept.double()
+            vectors[written : written + n_kept] = kept
+            sums[:n_kept] += kept.double()
+            position_counts[:n_kept] += 1
             records.append(
                 TopicRecord(
                     title=topic.title,
@@ -420,12 +544,13 @@ def extract_topics(
                     labels=list(topic.labels),
                     split=topic.split,
                     start=written,
-                    count=n_positions,
+                    count=n_kept,
+                    variant=variant_text,
                 )
             )
-            written += n_positions
+            written += n_kept
 
-    means = (sums / len(records)).float() if records else sums.float()
+    means = (sums / position_counts.clamp(min=1).unsqueeze(-1)).float()
     return ExtractionResult(
         vectors=vectors[:written],
         records=records,
@@ -484,6 +609,10 @@ def write_outputs(
         )
 
     kept = len(result.records)
+    variant_counts: dict[str, int] = {}
+    for record in result.records:
+        key = record.variant if record.variant is not None else "n/a"
+        variant_counts[key] = variant_counts.get(key, 0) + 1
     with open(output_dir / "filter_report.json", "w") as handle:
         json.dump(
             {
@@ -494,6 +623,11 @@ def write_outputs(
                 "labels_kept": n_labels,
                 "train_topics": sum(r.split == "train" for r in result.records),
                 "val_topics": sum(r.split == "val" for r in result.records),
+                # Which forced variant each kept topic matched (plan S6 step 0
+                # probe: with/without the trailing full stop), not just a
+                # pass/fail count -- a variant distribution skewed differently
+                # from the probe's ~68/27 would mean this sample is unusual.
+                "variant_counts": variant_counts,
                 "first_mismatch_histogram": mismatch_histogram(result.failures),
                 "failures": result.failures,
             },
