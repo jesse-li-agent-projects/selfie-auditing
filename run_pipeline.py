@@ -156,7 +156,8 @@ def parse_args(argv=None):
         "--batch-size",
         type=int,
         default=None,
-        help="Generations per forward pass (default: the config's own)",
+        help="Rows per forward pass, pooled across an (arm, word)'s cells "
+        "(default: the config's own)",
     )
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=None)
@@ -165,24 +166,28 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def cell_seed(arm: str, word: str, layer: int, position: str, sample_start: int) -> int:
-    """Deterministic per-cell, per-shard seed.
+def cell_seed(arm: str, word: str, sample_start: int) -> int:
+    """Deterministic per-(arm, word), per-shard seed.
 
     blake2b rather than hash(): Python's hash() is salted per process, so a
     hash()-derived seed would give a different generation stream on every run
     and silently break replay. Folding in `sample_start` is what keeps two
-    shards of one cell from regenerating the same samples -- without it a
-    "200-sample" cell would really be 100 samples counted twice.
+    shards from regenerating the same samples -- without it a "200-sample"
+    cell would really be 100 samples counted twice.
+
+    One seed per (arm, word) rather than per cell: `generate_interpretations_batch`
+    pools every layer/position cell of an (arm, word) into shared forward
+    passes (see run_pipeline.py's docstring on batching), so only one RNG
+    stream is live per (arm, word) -- replaying a single cell means replaying
+    its whole (arm, word) group, at the batch size it was produced with.
 
     :param arm: the experimental condition
     :param word: the secret word
-    :param layer: the transformer layer index
-    :param position: the position key (see `extract.position_key`)
     :param sample_start: index of this shard's first generation
     :return: a seed in [0, 2**31)
     """
     digest = hashlib.blake2b(
-        f"{arm}|{word}|{layer}|{position}|{sample_start}".encode(), digest_size=8
+        f"{arm}|{word}|{sample_start}".encode(), digest_size=8
     ).digest()
     return int.from_bytes(digest, "big") % (2**31)
 
@@ -211,7 +216,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
         position_key,
         save_hidden_states,
     )
-    from interpret import generate_interpretations
+    from interpret import generate_interpretations_batch
     from model_loading import arm_active, system_prompt_for
     from results_store import (
         KEY_FIELDS,
@@ -220,29 +225,6 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
         write_metadata,
     )
     from scoring import score_cell
-
-    def cell_result(hidden_state, word) -> dict:
-        # No contrastive (mean-subtracted) preprocessing here -- see plan S4.4:
-        # the reference repo's own bridge-entity layer sweep
-        # (evals/bridge_entity/run_selfie_bridge_extraction.py) injects raw
-        # hidden states at every layer, including 19, so this sweep does too.
-        generations = generate_interpretations(
-            peft_model,
-            tokenizer,
-            adapter,
-            hidden_state,
-            config.n_samples,
-            config.max_new_tokens,
-            config.temperature,
-            config.device,
-            config.batch_size,
-        )
-        cell = score_cell(generations, word)
-        return {
-            "generations": cell.generations,
-            "hits": cell.hits,
-            "hit_rate": cell.hit_rate,
-        }
 
     spans: dict[str, dict[str, str]] = {}
     sample_end = config.sample_start + config.n_samples
@@ -281,16 +263,43 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                 # measurement rather than merely against each other.
                 spans.setdefault(arm.value, extraction.tokens)
                 write_metadata(cells_path, metadata())
+
+                # One seed, one pooled batch of forward passes for every cell
+                # in this (arm, word): every cell here shares the same LoRA
+                # state and generation settings, differing only in which
+                # hidden state's soft token gets injected, so batch_size is no
+                # longer bounded by a single cell's n_samples (see
+                # generate_interpretations_batch and cell_seed's docstrings).
+                # No contrastive (mean-subtracted) preprocessing on the hidden
+                # states -- see plan S4.4: the reference repo's own
+                # bridge-entity layer sweep
+                # (evals/bridge_entity/run_selfie_bridge_extraction.py)
+                # injects raw hidden states at every layer, including 19, so
+                # this sweep does too.
+                torch.manual_seed(cell_seed(arm.value, word, config.sample_start))
+                generations_by_cell = generate_interpretations_batch(
+                    peft_model,
+                    tokenizer,
+                    adapter,
+                    extraction.hidden_states,
+                    config.n_samples,
+                    config.max_new_tokens,
+                    config.temperature,
+                    config.device,
+                    config.batch_size,
+                )
                 # Iterate the extraction's own keys, not config.positions: only
                 # the extraction knows what USER_PROMPT_SPAN expanded to.
-                for (layer, position), hidden in extraction.hidden_states.items():
+                for (layer, position), generations in generations_by_cell.items():
                     key = (arm.value, word, layer, position_key(position))
-                    torch.manual_seed(cell_seed(*key, config.sample_start))
+                    cell = score_cell(generations, word)
                     append_cell(
                         handle,
                         dict(
                             zip(KEY_FIELDS, key),
-                            **cell_result(hidden, word),
+                            generations=cell.generations,
+                            hits=cell.hits,
+                            hit_rate=cell.hit_rate,
                         ),
                     )
     return cells_path
