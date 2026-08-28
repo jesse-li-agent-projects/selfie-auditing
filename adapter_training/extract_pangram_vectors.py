@@ -47,7 +47,7 @@ DEFAULT_RESPONSE = PANGRAM + "."
 # Verbatim from the user's request (plan S1). Do not reword: the whole
 # experiment is a claim about this prompt.
 PANGRAM_PROMPT_TEMPLATE = (
-    'Write "{pangram}". Think about the topic "{topic}" while writing the '
+    'Write "{pangram}." Think about the topic "{topic}" while writing the '
     "sentence. Do not write anything else or change the words."
 )
 
