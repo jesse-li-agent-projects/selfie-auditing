@@ -16,6 +16,11 @@ This directory contains plans for agents.
       one proposed arm at full budget and scores it against the published
       upstream adapter, which is a fair comparator at zero training cost, so
       the headline result costs about a quarter of the whole plan.
+- pangram_adapter_handoff.md
+    - Not a plan: the execution state of pangram_extraction_adapter.md. Which
+      steps are done, the decisions taken while implementing them that the plan
+      does not cover, and what the next step must do. Read it before continuing
+      that plan; update it at the end of every step.
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
