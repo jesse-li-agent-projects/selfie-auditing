@@ -163,9 +163,7 @@ def response_token_ids(tokenizer, response_text: str) -> tuple[list[int], list[i
     return sentence_ids, [*sentence_ids, eot_id]
 
 
-def response_variants(
-    tokenizer, response_text: str
-) -> list[tuple[str, list[int], list[int]]]:
+def response_variants(tokenizer) -> list[tuple[str, list[int], list[int]]]:
     """The forced-sequence candidates the filter accepts for one topic.
 
     Real greedy generation on the 8B model (plan S6 step 0 probe) shows the
@@ -177,28 +175,19 @@ def response_variants(
     longer one first, since it is the more common shape), and a topic is kept
     on the first one it matches.
 
-    Only derived when `response_text` ends in a full stop, and the two are
-    merged only if stripping the stop leaves a genuine token-level prefix of
-    the first (guards against a tokenizer merging the stop into the preceding
-    word, which would make the two sequences unrelated rather than one a
-    prefix of the other).
+    The no-stop candidate is included only if stripping the stop leaves a
+    genuine token-level prefix of the with-stop one (guards against a
+    tokenizer merging the stop into the preceding word, which would make the
+    two sequences unrelated rather than one a prefix of the other).
 
     :param tokenizer: the model's tokenizer
-    :param response_text: the primary (preferred) response text
     :return: one or two `(text, sentence_ids, forced_ids)` candidates
     """
-    sentence_ids, forced_ids = response_token_ids(tokenizer, response_text)
-    variants = [(response_text, sentence_ids, forced_ids)]
-    if response_text.endswith("."):
-        no_stop_text = response_text[:-1]
-        no_stop_sentence_ids, no_stop_forced_ids = response_token_ids(
-            tokenizer, no_stop_text
-        )
-        if (
-            no_stop_sentence_ids
-            and no_stop_sentence_ids == sentence_ids[: len(no_stop_sentence_ids)]
-        ):
-            variants.append((no_stop_text, no_stop_sentence_ids, no_stop_forced_ids))
+    sentence_ids, forced_ids = response_token_ids(tokenizer, DEFAULT_RESPONSE)
+    no_stop_ids, no_stop_forced_ids = response_token_ids(tokenizer, PANGRAM)
+    variants = [(DEFAULT_RESPONSE, sentence_ids, forced_ids)]
+    if no_stop_ids and no_stop_ids == sentence_ids[: len(no_stop_ids)]:
+        variants.append((PANGRAM, no_stop_ids, no_stop_forced_ids))
     return variants
 
 
@@ -298,7 +287,6 @@ def extract_pangram_vectors(
     tokenizer,
     topics: list[Topic],
     layer: int,
-    response_text: str = DEFAULT_RESPONSE,
     batch_size: int = 32,
     device: str = "cuda",
     pangram: str = PANGRAM,
@@ -317,7 +305,6 @@ def extract_pangram_vectors(
     :param tokenizer: its tokenizer, configured for left padding
     :param topics: topics to extract, in the order they will be written
     :param layer: transformer layer to read the residual stream at
-    :param response_text: the primary response the filter demands
     :param batch_size: topics per forward pass
     :param device: device to run on
     :param pangram: the sentence named in the pangram prompt
@@ -325,7 +312,7 @@ def extract_pangram_vectors(
     :return: vectors, the surviving topics, the per-position means and the filter failures
     """
     hidden_size = model.config.hidden_size
-    variants = response_variants(tokenizer, response_text)
+    variants = response_variants(tokenizer)
     position_tokens = [tokenizer.decode([i]) for i in variants[0][1]]
     n_positions = len(position_tokens)
 
@@ -415,7 +402,6 @@ def write_outputs(
     result: ExtractionResult,
     layer: int,
     model_name: str,
-    response_text: str,
 ) -> None:
     """Write the five artefacts a pangram run produces (plan S5.2).
 
@@ -427,7 +413,6 @@ def write_outputs(
     :param result: what `extract_pangram_vectors` returned
     :param layer: the layer read
     :param model_name: the model read from, recorded for provenance
-    :param response_text: the response the filter demanded
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.save(result.vectors, output_dir / "vectors.pt")
@@ -443,7 +428,7 @@ def write_outputs(
                 "prompt_style": "pangram",
                 "layer": layer,
                 "model": model_name,
-                "response_text": response_text,
+                "response_text": DEFAULT_RESPONSE,
                 "n_positions": len(result.position_tokens),
                 "position_tokens": result.position_tokens,
                 "n_topics": len(result.records),
@@ -500,7 +485,7 @@ def main(args) -> Path:
         device=args.device,
         progress=True,
     )
-    write_outputs(args.output_dir, result, args.layer, args.model, DEFAULT_RESPONSE)
+    write_outputs(args.output_dir, result, args.layer, args.model)
     print(
         f"Kept {len(result.records)}/{result.n_seen} topics, "
         f"{result.vectors.shape[0]} vectors"

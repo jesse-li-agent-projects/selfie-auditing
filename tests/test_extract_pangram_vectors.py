@@ -109,7 +109,7 @@ def test_filter_drops_topics_that_would_not_reproduce_the_sentence():
 def test_response_variants_derives_the_no_stop_candidate():
     tokenizer = FakeTokenizerSplitsPunctuation()
 
-    variants = response_variants(tokenizer, DEFAULT_RESPONSE)
+    variants = response_variants(tokenizer)
 
     assert len(variants) == 2
     with_stop_text, with_stop_ids, with_stop_forced = variants[0]
@@ -130,7 +130,7 @@ def test_response_variants_falls_back_to_one_candidate_without_a_genuine_prefix(
     # derivation must not offer a bogus second candidate in that case.
     tokenizer = FakeTokenizer()
 
-    variants = response_variants(tokenizer, DEFAULT_RESPONSE)
+    variants = response_variants(tokenizer)
 
     assert len(variants) == 1
     assert variants[0][0] == DEFAULT_RESPONSE
