@@ -15,8 +15,8 @@ that correctly reproduce the phrase.
 
 | step | state |
 |---|---|
-| 0 probe | not started |
-| 1 extraction script | **done** -- `adapter_training/extract_topic_vectors.py`, branch `worktree-pangram-extract-step1` |
+| 0 probe | **partial** -- items 1-2 done (real 8B, 500-topic sample); items 3-5 (benchmarking, prefix-cache check, debug run) not started, and need the step-2 trainer |
+| 1 extraction script | **done**, and revised after the step-0 probe -- `adapter_training/extract_topic_vectors.py`, branch `worktree-pangram-extract-step1` |
 | 2 trainer | not started |
 | 3 phase 0 (extract + arm B run) | not started |
 | 4 phases 1-2 | not started |
@@ -79,7 +79,82 @@ These are new; the plan does not cover them.
   network egress and the `hf-fetch.sock` daemon serves models only, so a remote extraction
   run needs the JSONL transferred by hand -- only `*.py` files sync automatically.
 
-## Finding from the step-1 smoke run: the full stop is the main filter hazard
+## Step-0 probe, items 1-2: real 8B measurement, and the extractor now handles it
+
+Ran `probe_step0_compliance.tmp.py` (real greedy generation, not teacher-forcing) on the
+**real 8B model**, 500 topics sampled (`seed=42`) from the full 49,637-topic dataset, on the
+vastai remote. Full results: `probe_step0_results.json` on the remote, in `/home/agent/`
+(not synced back -- copy it locally if you need the raw file again).
+
+**The full-stop question splits, it does not resolve to one answer:**
+
+| outcome | rate |
+|---|---|
+| exact `"...lazy dog."` (with stop) | 68.0% |
+| exact `"...lazy dog"` (no stop) | 27.4% |
+| genuine non-compliance | 4.6% |
+
+So **95.4%** of topics produce one of the two literal strings verbatim, and forcing only one
+of them structurally caps the keep rate near whichever fraction was picked. **This is now
+fixed in the extractor** (see below), not left as an open risk.
+
+**The failure taxonomy has a category the plan didn't name.** Zero quoting, zero preamble,
+zero refusals in 500 samples -- D1's "revisit if quoted exceeds 5-10%" trigger does not fire.
+But the dominant real failure mode (~4%) is **the model substituting topic words into the
+pangram itself** -- e.g. topic "Monarchism" -> `"The quick brown **monarch** jumps over the
+lazy dog."`, topic "24 (TV series)" -> `"The quick **CTU agent** jumps over the lazy
+**villain**."`. This is caught by the existing filter (it's a genuine mismatch against either
+forced variant) but is worth knowing about as a class: still well under 5%, so not a reason
+to revisit D1, but it is evidence the per-position "which word this is" assumption behind
+S5.3's mean-centering is not perfectly stable across topics for the rare topic where the
+model gets creative.
+
+**Extractor change: `response_variants` (accept either forced sequence).** Discussed with
+the user, who chose this over eating the ~27-32% loss of a single fixed target.
+`extract_topic_vectors.py` now:
+
+- Derives a second, shorter forced candidate (the sentence without the trailing stop) from
+  `response_text` whenever it ends in `.`, guarded by a real token-level prefix check against
+  the tokenizer (so a tokenizer that fuses the stop into the last word -- as the fake test
+  tokenizer does -- correctly falls back to one candidate, not two unrelated ones).
+- Teacher-forces **both** candidates per batch (one extra forward pass when there are two;
+  extraction is cheap enough -- §4.2's ~0.16 A100h -- that doubling it is not worth avoiding),
+  and keeps a topic on the first one it matches, longer (with-stop) tried first.
+- `TopicRecord` gained a `variant` field (which candidate text matched, or `None` for the
+  baseline style) and `count` is now genuinely per-topic: 10 for a with-stop match, 9 for a
+  no-stop match. **This needed no change to the vectors.pt / topics.json index scheme** --
+  `start`/`count` were already per-topic.
+- Per-position means are now accumulated with a per-position count, not `sum / len(records)`,
+  because the last (full-stop) position only has data from with-stop topics.
+- `filter_report.json` gained `variant_counts`, so a run's actual with/no-stop split is
+  visible without re-deriving it from `topics.json`.
+
+Tests added in `tests/test_extract_topic_vectors.py`: `response_variants` derives the second
+candidate when the tokenizer supports it and falls back to one when it can't; extraction
+keeps a topic on the shorter variant with the right count/variant/contiguous-start; the
+final position's mean excludes topics that never reached it. 17/17 fast tests pass; the
+`hf_cache` tests (padding/shape pins against the real 1B) are unaffected by this change
+(they use the `baseline` style) and were re-run to confirm.
+
+The dataset sample used for the probe was transferred as a base64 blob inside a throwaway
+`.tmp.py` (`adapter_training/_dataset_sample_payload.tmp.py`, decoded to
+`/home/agent/sample500.jsonl` on the remote) because the vastai sync only carries `*.py`
+files automatically, and the fixed sync source it watches
+(`/home/jesse/ml_secret/vast_setups/selfie_taboo`, symlinked at `.../vast`) is outside a
+worktree-isolated session's sandbox. **Note for whoever runs phase 0's real extraction**:
+that trick does not scale to the full 55 MB dataset file -- ask the user how they want the
+full JSONL placed for that step, don't rebuild a bigger version of this hack blind.
+
+Also worth knowing: the vastai sync mirrors the *whole* repo including `.claude/worktrees/`,
+so a worktree session's files land at `<remote-root>/.claude/worktrees/<name>/...`, not at
+the remote's top level -- point `remote_exec`'s `cwd` there. The synced tree is read-only for
+the `agent` account (`root:agent`, `r-x` group perm); write outputs to `/home/agent/` or
+similar instead.
+
+## Finding from the step-1 smoke run: the full stop is the main filter hazard (superseded)
+
+**Resolved above** by the real-8B step-0 measurement and the `response_variants` fix. Kept
+for the reasoning trail, not as an open risk.
 
 20 topics through Llama-3.2-1B-Instruct (the smoke model, not the 8B -- read this as a
 signal about the *shape* of the failure, not as a keep-rate estimate) kept 6, and the
@@ -103,31 +178,26 @@ divergence at position 3 are the other two modes seen, at lower rates.
 
 ## Tests
 
-`pytest tests/test_extract_topic_vectors.py` -- 13 fast tests with a fake model and
+`pytest tests/test_extract_topic_vectors.py` -- 17 fast tests with a fake model and
 tokenizer (prompt wording, padding, filter verdicts, split inheritance, contiguous index
-ranges, per-position means, batch invariance). Three more are marked `hf_cache` and pin what
-only real weights answer: the pangram is 10 tokens with the pinned decodings, batched
-extraction matches unbatched, and the written artefacts have the right shapes. Run those
-under the `claude` user (`gpu-exec`), because the HF cache is only readable there.
+ranges, per-position means, batch invariance, and -- new -- the `response_variants`
+derivation and fallback, the no-stop-variant extraction path, and per-position mean counts).
+Three more are marked `hf_cache` and pin what only real weights answer: the pangram is 10
+tokens with the pinned decodings, batched extraction matches unbatched, and the written
+artefacts have the right shapes. Run those under the `claude` user (`gpu-exec`), because the
+HF cache is only readable there.
 
-## Next: step 0, the probe
+## Next: step 0, items 3-5 (benchmarking, prefix-cache check, debug run)
 
-The plan (S6 step 0) wants it before any real run, and it now has one extra job:
+Items 1-2 are done (above). What's left needs the vastai remote (24 GB 3090 was used for the
+probe; the local GPU is 8 GB and cannot hold the 8B) and, for items 4-5, the step-2 trainer:
 
-1. **Does the model write the full stop?** Greedy-generate a few hundred topics with the
-   pangram prompt and compare against both candidate responses. This decides
-   `--response-text` for every later run.
-2. Classify every non-compliant output into the S5.1 categories (quoted / preamble /
-   trailing commentary / altered wording / refusal / other) and report the distribution.
-   `filter_report.json`'s `first_mismatch_histogram` is a cheap proxy -- divergence at
-   position 0 means the model never started the sentence, divergence at the last position
-   means it started but did not stop -- but it is not a substitute for reading real
-   generations.
 3. Benchmark examples/second and peak memory across the S4.2 configurations.
 4. Confirm the prefix-cache path reproduces the uncached loss (needs the step-2 trainer).
-5. A ~50-step throwaway debug run of the arm-B config.
+5. A ~50-step throwaway debug run of the arm-B config (needs the step-2 trainer).
 
-Throwaway `.tmp.py` scripts, per the project convention.
+Given the circularity (4-5 need step 2), the practical order is probably: write step 2, then
+come back and finish step 0 items 3-5 against it, rather than blocking step 2 on them.
 
 ## Then: step 2, the trainer
 
@@ -149,8 +219,15 @@ Everything in plan S6 step 2 and D8 still stands. Points that step 1 changed or 
 
 ## Known risks not yet retired
 
-- The full stop question above. It is the single cheapest way for phase 0 to be wasted.
+- **Retired**: the full-stop question (resolved above, `response_variants`).
 - Reproducing 1.3662 crosses trainers *and* now crosses extractors (the `position_ids`
-  difference, and any batching difference against upstream's). If the check lands close but
-  not exact, suspect extraction before suspecting the trainer.
-- Extraction on the vast remote needs the topic JSONL moved by hand.
+  difference, any batching difference against upstream's, and now the two-variant filter --
+  upstream's own extractor only ever forced one target). If the check lands close but not
+  exact, suspect extraction before suspecting the trainer.
+- Extraction on the vast remote needs the topic JSONL moved by hand -- **the base64-in-`.tmp.py`
+  trick used for the 500-topic probe sample does not scale to the full 55 MB file**; ask the
+  user how they want to place it before phase 0's real extraction runs.
+- The word-substitution failure mode (probe finding above) is evidence the per-position
+  mean-centering (S5.3) assumption -- "position *p* means the same word across topics" -- is
+  not perfectly stable. Currently well under the 5% D1 threshold, not blocking, but worth
+  re-checking at full-corpus scale rather than assuming the 500-topic sample generalises.
