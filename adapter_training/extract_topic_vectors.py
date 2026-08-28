@@ -1,7 +1,7 @@
 """Topic-vector extraction for the adapter experiment (plan S5.1, S5.2, step 1).
 
     python -m adapter_training.extract_topic_vectors --prompt-style pangram \
-        --layer 19 --output-dir outputs/vectors/pangram_l19
+        --layer 19 --output-dir vectors/pangram_l19
 
 Two prompt styles share one code path:
 
@@ -72,7 +72,12 @@ def parse_args():
         required=True,
     )
     parser.add_argument("--layer", type=int, default=19)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=lambda value: Path("outputs") / value,
+        required=True,
+        help="written under outputs/, which is implicitly prepended",
+    )
     parser.add_argument("--model", default=BASE_MODEL_8B)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16")
