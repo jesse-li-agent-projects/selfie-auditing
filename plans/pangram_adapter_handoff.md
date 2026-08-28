@@ -13,32 +13,40 @@ that correctly reproduce the phrase.
 
 ## Status
 
-| step | state |
-|---|---|
-| 0 probe | **partial** -- items 1-2 done (real 8B, 500-topic sample); items 3-5 (benchmarking, prefix-cache check, debug run) not started, and need the step-2 trainer |
-| 1 extraction script | **done**, and revised after the step-0 probe -- `adapter_training/extract_topic_vectors.py`, branch `worktree-pangram-extract-step1` |
-| 2 trainer | not started |
-| 3 phase 0 (extract + arm B run) | not started |
-| 4 phases 1-2 | not started |
-| 5 report | not started |
+The parent plan's steps are now expanded into six self-contained execution plans, one per
+row below. Read the row's plan before working on that step; each restates the context it
+needs, so you do not have to hold the whole parent plan in your head.
+
+| step | plan | state |
+|---|---|---|
+| 0 probe | `pangram_step0_benchmarks.md` | **partial** -- items 1-2 done (real 8B, 500-topic sample); items 3-5 (the 1.3662 gate, benchmarking, debug run) not started, and need the step-2 trainer |
+| 1 extraction script | -- | **done**, revised after the step-0 probe, then split into three modules (below) |
+| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md`, optionally `pangram_step2c_prefix_cache.md` | not started |
+| 3 phase 0 (extract + arm B run) | `pangram_phase0_run.md` | not started |
+| 4 phases 1-2 | `pangram_phases12_and_report.md` | not started |
+| 5 report | `pangram_phases12_and_report.md` | not started |
 
 ## What step 1 built
 
-`adapter_training/extract_topic_vectors.py`, tested by `tests/test_extract_topic_vectors.py`.
+Originally one `extract_topic_vectors.py` with a `--prompt-style` flag; since split into
+`extract_pangram_vectors.py`, `extract_baseline_vectors.py` and the shared
+`extract_common.py`, tested by `tests/test_extract_pangram_vectors.py`,
+`tests/test_extract_baseline_vectors.py` and `tests/test_extract_common.py`.
 
-    python -m adapter_training.extract_topic_vectors --prompt-style pangram \
-        --layer 19 --output-dir outputs/vectors/pangram_l19
+    python -m adapter_training.extract_pangram_vectors --layer 19 \
+        --output-dir vectors/pangram_l19        # outputs/ is prepended implicitly
 
-Both prompt styles go through one code path. `baseline` renders each topic's own dataset
-prompt and keeps one vector at the last prompt token; `pangram` renders the prompt above,
-teacher-forces the sentence plus `<|eot_id|>`, and keeps one vector per sentence token.
+`extract_baseline_vectors` renders each topic's own dataset prompt and keeps one vector at
+the last prompt token; `extract_pangram_vectors` renders the pangram prompt,
+teacher-forces the sentence plus `<|eot_id|>`, keeps one vector per sentence token, and
+filters. Both write the same file names.
 
 Outputs, per style, in `--output-dir`:
 
 | file | contents |
 |---|---|
 | `vectors.pt` | `[n_vectors, hidden]` bf16, **raw** (uncentred), topic-major, positions contiguous |
-| `topics.json` | per surviving topic: title, prompt, labels (once), split, `start`, `count` |
+| `topics.json` | per surviving topic: title, prompt, labels (once), split, `start`, `count`; pangram adds `variant` |
 | `positions.json` | run metadata: style, layer, model, the decoded position tokens, counts |
 | `position_means.pt` | `[n_positions, hidden]` fp32, the per-position means the trainer subtracts |
 | `filter_report.json` | keep rate, train/val topic counts, and every rejection with its first divergence |
@@ -49,10 +57,10 @@ These are new; the plan does not cover them.
 
 - **The forced response carries a full stop.** The instruction quotes the sentence without
   one, but the plan's 10-token count (S4.2b) includes `.`, so `DEFAULT_RESPONSE` is
-  `The quick brown fox jumps over the lazy dog.` and there are 10 positions.
-  `--response-text` overrides it, so **step 0 must measure whether the model actually emits
-  the full stop** before the real extraction runs. See the finding below -- this is the
-  live risk, not a hypothetical one.
+  `The quick brown fox jumps over the lazy dog.` and there are 10 positions. Step 0 has
+  since measured what the model actually emits, and the answer split -- see the probe
+  finding below and `response_variants`, which is why the `--response-text` override no
+  longer exists.
 - **Padding-aware `position_ids`.** A plain forward pass numbers RoPE positions with
   `arange(seq_len)`, so under left padding a topic's vectors would depend on which batch it
   landed in. The extractor derives positions from the attention mask instead. The reference
@@ -72,7 +80,9 @@ These are new; the plan does not cover them.
 - **The baseline style filters nothing**, so its `topics.json` holds all 49,637 topics while
   the pangram one holds only the compliant ones. **Whoever compares arms A/C against B must
   decide whether to intersect the topic sets.** Recommended: intersect, so an arm difference
-  cannot be a topic-population difference. This is not yet implemented anywhere.
+  cannot be a topic-population difference. Not implemented yet; assigned to
+  `pangram_step2a_loss_and_eval.md` (`restrict_to_titles`) and decided in
+  `pangram_phases12_and_report.md`.
 - **`--dataset-file`** reads the topics from a local JSONL copy of
   `keenanpepper/fifty-thousand-things` (the single file
   `wikipedia_vital_articles_level5_dataset.jsonl`). The vast remote's agent account has no
@@ -111,7 +121,7 @@ model gets creative.
 
 **Extractor change: `response_variants` (accept either forced sequence).** Discussed with
 the user, who chose this over eating the ~27-32% loss of a single fixed target.
-`extract_topic_vectors.py` now:
+`extract_pangram_vectors.py` now:
 
 - Derives a second, shorter forced candidate (the sentence without the trailing stop) from
   `response_text` whenever it ends in `.`, guarded by a real token-level prefix check against
@@ -129,7 +139,7 @@ the user, who chose this over eating the ~27-32% loss of a single fixed target.
 - `filter_report.json` gained `variant_counts`, so a run's actual with/no-stop split is
   visible without re-deriving it from `topics.json`.
 
-Tests added in `tests/test_extract_topic_vectors.py`: `response_variants` derives the second
+Tests added in `tests/test_extract_pangram_vectors.py`: `response_variants` derives the second
 candidate when the tokenizer supports it and falls back to one when it can't; extraction
 keeps a topic on the shorter variant with the right count/variant/contiguous-start; the
 final position's mean excludes topics that never reached it. 17/17 fast tests pass; the
@@ -178,7 +188,7 @@ divergence at position 3 are the other two modes seen, at lower rates.
 
 ## Tests
 
-`pytest tests/test_extract_topic_vectors.py` -- 17 fast tests with a fake model and
+`pytest tests/test_extract_pangram_vectors.py` -- 17 fast tests with a fake model and
 tokenizer (prompt wording, padding, filter verdicts, split inheritance, contiguous index
 ranges, per-position means, batch invariance, and -- new -- the `response_variants`
 derivation and fallback, the no-stop-variant extraction path, and per-position mean counts).
@@ -187,21 +197,21 @@ tokens with the pinned decodings, batched extraction matches unbatched, and the 
 artefacts have the right shapes. Run those under the `claude` user (`gpu-exec`), because the
 HF cache is only readable there.
 
-## Next: step 0, items 3-5 (benchmarking, prefix-cache check, debug run)
+## Next: step 2, the trainer
 
-Items 1-2 are done (above). What's left needs the vastai remote (24 GB 3090 was used for the
-probe; the local GPU is 8 GB and cannot hold the 8B) and, for items 4-5, the step-2 trainer:
+Step 0's remaining items (3-5) need the trainer, so the order is: build step 2, then finish
+step 0 against it, rather than blocking step 2 on them. The execution order is therefore
 
-3. Benchmark examples/second and peak memory across the S4.2 configurations.
-4. Confirm the prefix-cache path reproduces the uncached loss (needs the step-2 trainer).
-5. A ~50-step throwaway debug run of the arm-B config (needs the step-2 trainer).
+1. `pangram_step2a_loss_and_eval.md` -- dataset, loss path, `evaluate_adapter` (no GPU)
+2. `pangram_step2b_training_loop.md` -- the trainer (no GPU)
+3. `pangram_step0_benchmarks.md` -- the 1.3662 gate, benchmarks, 50-step debug run (GPU)
+4. `pangram_phase0_run.md` -- extraction + arm B at full budget; also a gate
+5. `pangram_phases12_and_report.md` -- arms A and C, capacity, generation eval, report
 
-Given the circularity (4-5 need step 2), the practical order is probably: write step 2, then
-come back and finish step 0 items 3-5 against it, rather than blocking step 2 on them.
+with `pangram_step2c_prefix_cache.md` optional and deliberately deferred until after a real
+run shows the 1.39x is worth a day's work.
 
-## Then: step 2, the trainer
-
-Everything in plan S6 step 2 and D8 still stands. Points that step 1 changed or sharpened:
+Points that step 1 changed or sharpened, which those plans carry:
 
 - Read `topics.json` + `vectors.pt` + `position_means.pt`; subtract the mean of a vector's
   own position; flatten each vector against every label of its topic; split by the topic's
