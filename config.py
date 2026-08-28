@@ -138,13 +138,16 @@ class PipelineConfig:
     temperature: float
     max_new_tokens: int
     secret_prompt: str = SECRET_PROMPT
-    # Generations per forward pass. Bounds peak memory, and nothing else --
-    # but it does change how the sampler consumes the seeded RNG stream, so a
-    # replay of a cell needs the batch size it was produced with. 200 was
-    # measured as the throughput-optimal batch size for Llama-3.1-8B-Instruct
-    # bf16 on a single RTX 3090 (24GB): ~5.7x the old default's gens/sec with
-    # ~19GB peak, comfortably under OOM (400 saw diminishing returns near OOM;
-    # 800 OOM'd outright).
+    # Rows per forward pass, pooled across every layer/position cell of one
+    # (arm, word) -- not capped at one cell's n_samples (see
+    # interpret.generate_interpretations_batch). Bounds peak memory, and
+    # nothing else -- but it does change how the sampler consumes the seeded
+    # RNG stream, so a replay of an (arm, word) group needs the batch size it
+    # was produced with. 200 was measured as the throughput-optimal batch
+    # size for Llama-3.1-8B-Instruct bf16 on a single RTX 3090 (24GB): ~5.7x
+    # the old default's gens/sec with ~19GB peak, comfortably under OOM (400
+    # saw diminishing returns near OOM; 800 OOM'd outright) -- other GPUs may
+    # have a higher optimal batch size, now unbounded by n_samples.
     batch_size: int = 200
 
     sample_start: int = 0
