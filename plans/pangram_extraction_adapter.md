@@ -1,12 +1,13 @@
 # Pangram-prompt SelfIE adapter (layer 19, Wikipedia topics)
 
-Status: plan, not implemented; all design decisions taken (§7).
+Status: plan, partly implemented (§9); all design decisions taken (§7).
 
-Bought in two instalments (§4.6). **Phase 0** trains arm B alone at full budget and scores
-it against the published upstream adapter, which is a fair comparator at zero training cost
-— the headline result, all one-off work included, for **~2.8 A100-hours**. **Phases 1-2**
-add arm C, arm A's own replication, and the capacity sweep, bringing the whole plan to
-~11 A100-hours.
+Bought in two instalments (§4.6). **Phase 0** trains arm B alone at full budget and asks
+whether the adapter can recover a topic the model never says out loud — measured by
+embedding-based retrieval against an untrained floor on the same vectors (§5.4.1, D11).
+That is the headline result, all one-off work included, for **~3.0 A100-hours**.
+**Phases 1-2** add arm C, arm A's own replication, and the capacity sweep, bringing the
+whole plan to ~11 A100-hours.
 
 ## 1. The question
 
@@ -112,9 +113,10 @@ labels are the val split. An earlier version of this plan budgeted the *whole* d
 That arithmetic also settles a question that would otherwise make `best_val_loss` useless:
 the 10% held out is the dataset's own **topic-level** split, not a random 10% of examples,
 so there is no train/val topic leakage in it. **1.3662 is therefore a topic-held-out
-validation loss on the same 84,211 val examples this plan will use, and is directly
-comparable to ours** — subject only to our trainer matching theirs, which is what §6 step 2
-checks.
+validation loss on the same 84,211 baseline val examples, and is directly comparable to our
+own arm A** — subject only to our trainer matching theirs, which is what §6 step 2 checks.
+It is *not* comparable to arms B and C, which read a different extraction prompt and so
+measure a different task (§5.4).
 
 ### 3.2 Two properties of the upstream design this plan relies on
 
@@ -418,31 +420,37 @@ extraction at all and the marginal cost of the baseline set is 0.08 A100-hours.
 | Extraction, baseline prompt, all 49,637 topics | 33 PFLOP | ~0.08 |
 | Training, arm B, 755,391 examples at 2,951 steps | 693 PFLOP | ~1.76 |
 | In-run validation, 29 × 5,000 examples (§4.5) | 67 PFLOP | ~0.17 |
-| Final full-val pass, arm B | 39 PFLOP | ~0.10 |
-| Final full-val pass, published upstream adapter | 39 PFLOP | ~0.10 |
-| Final full-val pass, untrained floor | 39 PFLOP | ~0.10 |
-| Generation-accuracy eval (§5.6), decode-bound | — | ~0.1 |
-| **phase 0 total** | **~0.97 EFLOP** | **~2.8** |
+| Val loss, arm B, on the 84,211-example val subsample | 39 PFLOP | ~0.10 |
+| Val loss, untrained floor, same pangram subsample | 39 PFLOP | ~0.10 |
+| Val loss, published upstream adapter, baseline val (the D10 check) | 39 PFLOP | ~0.10 |
+| Retrieval eval (§5.6, D11): index build, then arm B at 10 positions, the floor, and the upstream reference | — | ~0.4 |
+| **phase 0 total** | **~0.97 EFLOP** | **~3.0** |
+
+**Arm B's val split is scored on a subsample, and that is deliberate.** Arm B has 10 val
+vectors per topic, so its full val split is ~842,110 examples against the baseline's 84,211
+— a full pass would cost ~1.0 A100-hours, and its untrained floor another ~1.0. Score both
+on a **fixed, seeded 84,211-example subsample** instead: same size as the baseline's full
+pass, drawn once, reused everywhere. State that it is a subsample, and never change what
+"val" means between two numbers being compared.
 
 | | 24 GB Ampere | A100 | H100 |
 |---|---|---|---|
 | effective bf16 throughput assumed | ~24 TFLOP/s | ~109 | ~346 |
-| **Phase 0** — arm B at full budget, all-in | **~13 GPU-h** | **~2.8 GPU-h** | **~0.9 GPU-h** |
+| **Phase 0** — arm B at full budget, all-in | **~14 GPU-h** | **~3.0 GPU-h** | **~0.9 GPU-h** |
 | **Phases 1-2** — four more full-budget runs (§5.5) | ~39 GPU-h | ~8.6 GPU-h | ~2.8 GPU-h |
-| **total if the whole plan runs** | **~51 GPU-h** | **~11 GPU-h** | **~3.6 GPU-h** |
+| **total if the whole plan runs** | **~53 GPU-h** | **~11.6 GPU-h** | **~3.7 GPU-h** |
 | micro-batching needed to drop checkpointing? | yes, 32-64 | at 40 GB, yes | no |
 
 Phases 1-2 cost less per run than phase 0 because they inherit its extraction and its probe:
 each is ~0.80 EFLOP — training, in-run validation, one full-val pass, one generation eval —
 or ~2.1 A100-hours.
 
-**Why phase 0 is worth its own instalment.** The published upstream checkpoint was trained
-at *exactly* this budget — 2,951 steps, batch 256, same optimizer, same schedule, same
-layer, same contrastive vectors (§3.1) — and publishes its validation loss. So training arm
-B at full budget yields an equal-budget, equal-hyperparameter comparison against arm A
-**without training arm A**. For ~25% of the full plan's cost you get the headline result.
-What phases 1-2 add is arm C, the capacity sweep, and a replication of arm A under our own
-trainer — all real, none of them the headline.
+**Why phase 0 is worth its own instalment.** Arm B at full budget, scored by retrieval
+against an untrained projection on the same pangram vectors, is a complete answer to the
+question the plan exists to ask: can the adapter recover a topic the response never states?
+Both of its comparators are forward-only, so for ~27% of the full plan's cost you get the
+headline result. What phases 1-2 add is arm C, the capacity sweep, and a replication of arm
+A under our own trainer — all real, none of them the headline.
 
 Wall clock for phases 1-2 is their cost divided by GPU count, since the four runs are
 independent (§4.3). Phase 0 is a single run and cannot be parallelised, so ~1.8 hours of it
@@ -488,13 +496,22 @@ they are, which is a different problem from a cosmetic quoting habit.
 
 ### 5.2 What gets written
 
-Per prompt style, three files:
+Per prompt style, into `outputs/<output-dir>/`:
 
-- `vectors.pt` — `[n_vectors, 4096]` bf16, in topic order, positions contiguous per topic.
+- `vectors.pt` — `[n_vectors, 4096]` bf16, **raw (uncentred)**, in topic order, positions
+  contiguous per topic.
 - `topics.json` — one entry per surviving topic: its labels (once, not duplicated), its
-  split as given by the upstream dataset, and its vector index range.
-- `positions.json` — small sidecar mapping vector index → (topic index, position index),
-  plus the per-position mean vectors.
+  split as given by the upstream dataset, and its vector index range as `start` and `count`.
+  The pangram style adds `variant` (§9.2).
+- `positions.json` — run metadata only: prompt style, layer, model, the decoded position
+  tokens, and the counts.
+- `position_means.pt` — `[n_positions, 4096]` fp32, the per-position means of §5.3.
+- `filter_report.json` — pangram style only: keep rate, `variant_counts`,
+  `first_mismatch_histogram`, and every rejection with its first divergence.
+
+No per-vector index map is stored: a vector's position is `i - start`, from `topics.json`.
+The means are written rather than applied, so the centering choice (D2) stays revisitable
+without re-extracting — which means **the trainer must subtract them itself** (§9.2).
 
 This is a lean re-shaping of the reference's `{index, labels, split}` format, kept possible
 by writing our own trainer (§6, D3=b). It avoids the ~10× duplication of label text.
@@ -517,18 +534,45 @@ deliberate train/interpret mismatch inherited from upstream, on the reasoning th
 on contrastive vectors should generalise better out of distribution. The 10 mean vectors are
 saved next to the checkpoint so the choice can be revisited without re-extracting.
 
-This is a different thing from *validating* the trainer against the published checkpoint's
-recorded `best_val_loss` of 1.3662 (§6 step 2, §7 D10): that number came from upstream's own
-`validate()`, which draws from the same mean-subtracted vectors as training, so reproducing
-it needs centred vectors too (`plans/pangram_step0_benchmarks.md`'s gate).
+Two other things are **centred**, and neither is a deviation from upstream:
+
+- *Validating* the trainer against the published checkpoint's recorded `best_val_loss` of
+  1.3662 (§6 step 2, §7 D10). That number came from upstream's own `validate()`, which draws
+  from the same mean-subtracted vectors as training, so reproducing it needs centred vectors
+  too (`plans/pangram_step0_benchmarks.md`'s gate).
+- The **embedding-retrieval eval** (§5.6, D11). The paper's 94% recall@1 is explicitly "for
+  contrastive vectors", and its Figure 1 shows the eval path extracting *h* and subtracting
+  the mean over all topics. Raw injection belongs to the bridge-entity/TwoHopFact sweep, not
+  to topic identification.
+
+So "raw at eval time" is never the general rule — it is specific to downstream
+interpretation and to the out-of-distribution bridge-entity case. Anything scored against an
+upstream number uses the centring that upstream number was computed with. Arm B is also
+scored raw as a secondary condition, because raw is what the taboo pipeline will actually
+feed it (D6); report the two separately and never merge them into one number.
 
 ### 5.4 Arms
 
 All arms share: layer 19, the same 49,637 topics, the same upstream splits, the same
 per-position centering, and — within phases 1-2 — the same examples-seen budget. Because
 the budget is equal, **every arm costs the same to train**: the cost of an arm is exactly
-"one more run". Phase 0 (§5.4.1) runs arm B alone at a smaller budget and is scored against
-free comparators rather than against trained arms.
+"one more run". Phase 0 (§5.4.1) runs arm B alone at the full budget and scores it against
+forward-only comparators rather than against trained arms.
+
+**What is and is not comparable between arms.** Arm A reads its activation from a prompt
+that *names the topic out loud*, one token after the model has read the name. Arms B and C
+read activations from a response whose surface text is identical for every topic, so the
+topic is present only as an unverbalised influence. Those are different tasks, and their
+cross-entropies are not on a common scale — a lower loss for A says nothing about whether
+the pangram prompt works. Concretely:
+
+| comparison | valid? | why |
+|---|---|---|
+| B vs C | **yes** | same vectors, same task, differ only in where pooling happens |
+| B or C vs an untrained projection on the *same* vectors | **yes** | same task, same population; this is the floor that matters |
+| B or C vs arm A's loss, or vs 1.3662 | **no** | different task, different example population (~842k vs 84k), different topic set |
+| our arm A vs 1.3662 | **yes** | same task, same vectors, same budget — a replication check (D10) |
+| B or C vs arm A by **recall@k** | **as a labelled reference point only** | recall@k shares a scale and a random floor (1/49,637) across arms, so the number is readable — but the task still differs, so it is never a target or a gate |
 
 Pool sizes below are the **train split** (44,673 topics); the val split adds 84,211 and
 842,110 respectively and is never trained on.
@@ -553,8 +597,8 @@ pooling happens*.
 The comparison is informative either way it lands. If C ≈ B, position-specific detail was
 not load-bearing and C is the better deal — same result from a pool 10× smaller, so the
 same budget covers 10× more passes over it. If B > C, averaging destroys something and
-per-position training earns its pool. If both beat A, the gain came from the prompt rather
-than from either pooling scheme.
+per-position training earns its pool. Either way the comparison is internal to the pangram
+prompt, which is what makes it valid; arm A does not enter it.
 
 **Arm A is run once, with `scalar_affine` only.** Its purpose is a replication check that
 gives confidence in the upstream numbers, so it does not need to be repeated across adapter
@@ -564,34 +608,45 @@ architectures.
 
 The plan as first written produced no signal at all until three full-budget runs had
 finished. That is the wrong shape. Phase 0 is **arm B alone at the full budget** — 755,391
-examples, 2,951 steps — with every one-off the whole experiment needs, for ~2.8 A100-hours
-(§4.6). It is not a probe or a preliminary: it is a complete, fair answer to the question
-the plan exists to ask.
+examples, 2,951 steps — with every one-off the whole experiment needs, for ~3.0 A100-hours
+(§4.6). It is not a probe or a preliminary: it is a complete answer to the question the plan
+exists to ask.
 
-**Arm A comes free, and the comparison is fair.** Upstream publishes the trained baseline
-adapter this repo already loads — `keenanpepper/selfie-adapters-llama-3.1-8b-instruct`,
-`wikipedia-scalar-affine.safetensors` (see `config.py`) — and §3.1 reads its training config
-out of the file. It was trained at *exactly* this budget with exactly these hyperparameters
-on exactly this layer and this vector treatment, and its `best_val_loss` of 1.3662 is on the
-same topic-held-out val split. So phase 0 does **not** train arm A. It scores three things
-through one loss path, on one val split:
+**The headline is retrieval accuracy against an untrained floor on the same vectors.** The
+question is whether a frozen model, handed one activation from a response that never names
+the topic, can be made to say what the topic was. That is a question about generated text,
+so it is measured on generated text: decode a description per held-out vector and score it
+by embedding retrieval against the 49,637-topic index (§5.6, D11). The floor is an untrained
+projection on **pangram** vectors — same task, same topics, same index — and the paper's own
+1% untrained baseline says what that floor should look like.
 
-| | cost | what it gives |
-|---|---|---|
-| untrained projection (`identity_baseline`) | ~0.10 A100-h | the floor |
-| published upstream adapter, on baseline val vectors | ~0.10 A100-h | arm A, converged, for free |
-| arm B at full budget | ~2.0 A100-h | the question |
+Phase 0 therefore produces:
 
-**B below 1.3662 is the headline result**, obtained without ever training arm A.
+| | vectors | cost | what it gives |
+|---|---|---|---|
+| **arm B, retrieval** | pangram val | ~0.2 A100-h | **the headline** |
+| **untrained floor, retrieval** | pangram val | ~0.1 A100-h | **what the headline is measured against** |
+| published upstream adapter, retrieval | baseline val | ~0.05 A100-h | a labelled reference point (§5.4) |
+| arm B, val loss | pangram val subsample | ~0.10 A100-h | the training curve's endpoint |
+| untrained floor, val loss | same subsample | ~0.10 A100-h | that endpoint's floor |
+| published upstream adapter, val loss | baseline val | ~0.10 A100-h | the D10 trainer check, not an arm comparison |
+| arm B at full budget | — | ~1.76 A100-h | the run itself |
+
+Every comparator is forward-only, so none of them costs a training run.
+
+**Arm B's loss is reported, not compared to arm A's.** Put it beside the published losses
+from the SelfIE paper as orientation for a reader who knows those numbers, and say plainly
+that the tasks differ. The only loss comparison phase 0 makes is arm B against its own
+untrained floor on the same vectors.
 
 Two honest caveats, neither a reason to skip it:
 
-- The comparison crosses trainers. Ours is not theirs, so a small gap either way could be
-  implementation drift rather than method. §6 step 2's check bounds this: scoring the
-  *published* adapter through our loss path should reproduce ~1.3662. If it does, the
-  trainers agree on the thing being measured; if it does not, no phase-0 number means
-  anything, and that is worth knowing for ~0.1 GPU-hours before the training run starts.
-- It does not test arm C, so a win is attributed to "the pangram prompt", not to
+- Retrieval accuracy crosses trainers only in the reference-point row, which is labelled as
+  such. What it does depend on is our loss path being right at all; §6 step 2's check bounds
+  that by scoring the *published* adapter through our loss path against its recorded 1.3662
+  on baseline vectors. If that fails, no phase-0 number means anything, and it is worth
+  knowing for ~0.1 GPU-hours before the training run starts.
+- It does not test arm C, so a result is attributable to "the pangram prompt", not to
   per-position training specifically. That attribution is what phase 1 buys.
 
 **Before the real run, a throwaway debug run of ~50 steps.** Not an experiment and not a
@@ -625,31 +680,46 @@ To keep the run count sane, the questions are separated, and the cheap one comes
 
 | phase | question | new runs | budget each |
 |---|---|---|---|
-| 0 | does the pangram prompt beat published arm A? | B × `scalar_affine` = 1 | 755,391 |
-| 1 | is the win from the prompt or from per-position training? | A, C × `scalar_affine` = 2 | 755,391 |
+| 0 | can the adapter recover a topic the response never states? | B × `scalar_affine` = 1 | 755,391 |
+| 1 | is the result from the prompt or from per-position training? | A, C × `scalar_affine` = 2 | 755,391 |
 | 2 | does capacity help the winner? | winning arm × {r=16, r=64} = 2 | 755,391 |
 
 Five full-budget runs in total, at one equal budget, and **phase 1 reuses phase 0's arm-B
 run rather than repeating it**: same trainer, same budget, same seed, same `scalar_affine`
 config, so it *is* phase 1's arm B. Only A and C remain to be trained.
 
-Phase 0 is a gate as well as a result (§5.4.1) — if arm B cannot beat the published
-checkpoint, the interesting question becomes *why*, and arm C is not automatically the next
-thing to buy.
+Phase 0 is a gate as well as a result (§5.4.1). The gate is **whether arm B clears its own
+untrained floor by a margin worth attributing** — on retrieval accuracy first, and on val
+loss as support. If it does not, the pangram activations did not carry recoverable topic
+signal that this adapter could learn, the interesting question becomes *why*, and arm C is
+not automatically the next thing to buy. If it does, phase 1 asks where the signal came
+from. The gate is never "did arm B beat 1.3662" (§5.4).
 
 ### 5.6 Measuring
 
+- **Retrieval accuracy — the headline (D11).** Decode one description per held-out vector
+  and score it by embedding retrieval against a GTE-large index of all 49,637 topics
+  (title plus all labels), reporting recall@{1,5,10}. This is the paper's own metric for
+  contrastive vectors, so its published 94% recall@1 against a 1% untrained baseline gives
+  the scale to read our numbers on. Reuse the reference's
+  `evals/embedding_retrieval/topic_retrieval_eval.py` rather than inventing a metric; the
+  build is `plans/pangram_step2d_retrieval_eval.md`.
+
+  Unlike cross-entropy, recall@k has a common scale and a common random floor (1/49,637)
+  across every arm, so it is the one number that can be *shown* beside arm A's without
+  being *compared* to it (§5.4). Every arm must share the index, the query topics, the
+  decoding settings and the seed, or nothing in the table means anything.
 - **Validation loss vs examples seen**, per arm, on the fixed subsample of §4.5 during the
-  run and the full val split once at the end. Comparable across arms: same
-  label set, same soft-prompt template, same held-out topics. The curve, not just the
-  endpoint — it is what says whether the budget was adequate.
-- **Generation accuracy** on held-out topics, reusing the reference's scoring
-  (`evals/generation_scoring/`, and the embedding-retrieval eval which is designed for
-  exactly this in-distribution case) rather than inventing a metric.
-- **Per-position breakdown for arm B** — train pooled, then evaluate positions 0..9
-  separately. **Exploratory only: it does not feed the A/B/C conclusion.** Its value is in
-  shaping the next iteration — if late positions (`lazy`, `dog`, `.`) carry most of the
-  topic signal, a follow-up could read only those and shrink the pool.
+  run and on a fixed seeded val subsample at the end (§4.6). Comparable **within** a prompt
+  style — same label set, same template, same held-out topics — and not across styles
+  (§5.4). The curve, not just the endpoint: it is what says whether the budget was adequate.
+- **Per-position breakdown for arm B** — evaluate positions 0..9 separately. This falls out
+  of the retrieval eval at no extra design cost, since arm B is scored at every position
+  anyway and its primary number is the mean over them. **Exploratory: it does not feed the
+  B/C conclusion.** Its value is in shaping the next iteration — if late positions (`lazy`,
+  `dog`, `.`) carry most of the topic signal, a follow-up could read only those and shrink
+  the pool. Remember position 9 exists only for the ~68% of topics that wrote the full stop
+  (§9.3).
 
 ## 6. Implementation steps
 
@@ -667,11 +737,11 @@ The token-length measurements this step used to carry are already done and are b
 13.3 tokens over 135,096 real targets (p90 18, max 40), reference batching 53.0
 tokens/example at batch 256.
 
-**Step 1 — extraction script.** New `adapter_training/extract_topic_vectors.py`: CLI with
-`--prompt-style {baseline,pangram}`, `--layer`, `--limit`, reading
-`keenanpepper/fifty-thousand-things` and writing the three files of §5.2 plus a filter
-report. Light-imports-first per the project CLI convention. Unit-tested against
-Llama-3.2-1B for shapes, filter logic, split inheritance, and per-position centering.
+**Step 1 — extraction scripts. Done; see §9.1 for what was built and §9.2 for what building
+it settled.** Two CLIs over a shared module, each writing the files of §5.2 for its own
+prompt style, reading `keenanpepper/fifty-thousand-things` from the Hub or a local JSONL
+copy. Light-imports-first per the project CLI convention. Unit-tested against Llama-3.2-1B
+for shapes, filter logic, split inheritance, and per-position centering.
 
 **Step 2 — trainer.** Decided (D3=b): a small trainer reusing the already-installed
 `selfie_adapters.projection.create_projection_module`, writing the same checkpoint dict the
@@ -695,9 +765,15 @@ means anything, and we know that for ~0 GPU-hours instead of after a full arm-A 
 Arm A's own run in phase 1 remains the stronger replication, but it is no longer the first
 line of defence.
 
+**Step 2d — the retrieval eval (D11).** The generation path and the GTE-large retrieval
+scoring that produce the headline number, built on step 2a's loaders and needing no trainer.
+Reuses the reference's `evals/embedding_retrieval/topic_retrieval_eval.py` for the index and
+recall@k, and `interpret.generate_interpretations_batch` for injection, so no second
+soft-token path exists. No GPU to build; see `plans/pangram_step2d_retrieval_eval.md`.
+
 **Step 3 — phase 0.** Extract both prompt styles over all topics, then the single
-full-budget arm-B run, scored against the two forward-only comparators of §5.4.1. Stop here
-and report; the gate decides whether step 4 happens.
+full-budget arm-B run, scored by retrieval against an untrained floor on the same pangram
+vectors (§5.4.1). Stop here and report; the gate decides whether step 4 happens.
 
 **Step 4 — phases 1 and 2.** The four remaining runs of §5.5 — arm A, arm C, and the two
 capacity runs; phase 0 already supplied phase 1's arm B — on the machine the user nominates
@@ -724,13 +800,15 @@ exploration, the step-0 failure taxonomy, and measured timings.
   split and overshoots upstream by 11%.
 - **[D7]** **Phase 0 is arm B alone at the full budget** (§5.4.1), including every one-off
   the whole experiment needs: both extractions over the whole corpus, the step-0 probe, and
-  the final evaluations. ~2.8 A100-hours, ~25% of the plan. Arm A is never trained in phase
-  0: the comparators are the untrained projection and the published upstream adapter
-  (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct`, `wikipedia-scalar-affine.safetensors`),
-  both forward-only, and the latter is a *fair* comparator because it was trained at this
-  exact budget and configuration (§3.1). Phase 1 then **reuses phase 0's checkpoint** as its
-  arm B. Pipeline mistakes are caught by a ~50-step throwaway debug run inside step 0, not
-  by a scaled-down experiment.
+  the final evaluations. ~3.0 A100-hours, ~27% of the plan. Arm A is never trained in phase
+  0, because phase 0 does not need it: arm B's comparator is an **untrained projection on
+  the same pangram vectors**, which is forward-only and is the only floor on arm B's own
+  task. The published upstream adapter
+  (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct`, `wikipedia-scalar-affine.safetensors`)
+  is scored too, but as a **labelled reference point and as the D10 trainer check** — never
+  as arm B's target or gate, because it measures a different task (§5.4). Phase 1 then
+  **reuses phase 0's checkpoint** as its arm B. Pipeline mistakes are caught by a ~50-step
+  throwaway debug run inside step 0, not by a scaled-down experiment.
 - **[D8]** The trainer uses **length-bucketed batching** and **logit slicing**
   unconditionally, and a **shared-prefix KV cache** for template positions 0-10 behind a
   flag (§4.2.1). All are exact. The prefix cache **requires gradient checkpointing to be
@@ -741,6 +819,17 @@ exploration, the step-0 failure taxonomy, and measured timings.
   A100-hours, so subsampling saves nothing worth a confound plus a re-extraction. For the
   same reason, the 10 pangram positions are never thinned to save cost: at a fixed
   examples-seen budget, pool size does not enter the cost.
+- **[D11]** **The headline metric is embedding-based retrieval, not validation loss.** Decode
+  a description per held-out vector and report recall@{1,5,10} against a GTE-large
+  (`thenlper/gte-large`) index of all 49,637 topics, documents formed as title plus all
+  labels — the paper's own metric for contrastive vectors, whose published 94% recall@1
+  against a 1% untrained baseline sets the scale. Chosen over cross-entropy because losses
+  from two different extraction prompts measure two different tasks and are not on a common
+  scale (§5.4), whereas recall@k shares a scale and a random floor across arms; and because
+  the standing project question is about what the adapter can be made to *say*, not how well
+  it fits labels. Scored on **centred** vectors to match the paper, with raw as a labelled
+  secondary condition (§5.3). Built in `plans/pangram_step2d_retrieval_eval.md`; it costs
+  ~0.4 A100-hours in phase 0 against 1.76 for the training run.
 - **[D10]** The published checkpoint's recorded config is treated as authoritative over the
   paper's table and the repo's YAML where they disagree (§3.1) — in particular
   `normalize_input: true`, which this plan had not previously recorded. Its
@@ -763,6 +852,132 @@ exploration, the step-0 failure taxonomy, and measured timings.
 
 ## 8. Still open
 
-- Nothing blocking. Phase 2 — whether the taboo elicitation should *also* use the pangram
-  prompt — is a genuine experiment rather than a fix for a defect, and belongs in its own
-  plan once phase 1 has a result.
+- Nothing blocking. Whether the taboo elicitation should *also* use the pangram prompt is a
+  genuine experiment rather than a fix for a defect, and belongs in its own plan once phase 1
+  has a result. It is **not** part of this plan's phase numbering — §5.5's phase 2 is the
+  capacity sweep.
+
+## 9. Execution state
+
+What is already built, what step 0 has already measured, and the facts those two produced
+that the design sections above depend on. Steps are executed through the seven step plans
+listed in `plans/CLAUDE.md`; each writes its own findings note under `plans/notes/`.
+
+| step | plan | state |
+|---|---|---|
+| 0 probe | `pangram_step0_benchmarks.md` | **items 1-2 done** (§9.3); items 3-5 need the step-2 trainer |
+| 1 extraction | — | **done** (§9.1) |
+| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md` | not started |
+| 2c prefix cache | `pangram_step2c_prefix_cache.md` | **opt-in**; skip unless the user asks for it by name |
+| 2d retrieval eval | `pangram_step2d_retrieval_eval.md` | not started |
+| 3 phase 0 | `pangram_phase0_run.md` | not started |
+| 4-5 phases 1-2, report | `pangram_phases12_and_report.md` | not started |
+
+### 9.1 What step 1 built
+
+`adapter_training/` holds three extraction modules and their tests:
+
+| file | role |
+|---|---|
+| `extract_common.py` | `Topic`, `load_topics`, `left_pad`, `position_ids_from_mask`, `run_forward`, `formatted_prompt` |
+| `extract_pangram_vectors.py` | the pangram style: teacher-forces the sentence plus `<|eot_id|>`, keeps one vector per sentence token, filters |
+| `extract_baseline_vectors.py` | upstream's own style: renders each topic's own dataset prompt, keeps one vector at the last prompt token |
+
+    python -m adapter_training.extract_pangram_vectors --layer 19 \
+        --output-dir vectors/pangram_l19 --dataset-file <jsonl>
+
+`outputs/` is prepended to `--output-dir` implicitly. `--dataset-file` reads a local JSONL
+copy of `keenanpepper/fifty-thousand-things` (the single file
+`wikipedia_vital_articles_level5_dataset.jsonl`) instead of the Hub.
+
+Tests: `tests/test_extract_pangram_vectors.py` (17 fast tests against a fake model and
+tokenizer — prompt wording, padding, filter verdicts, split inheritance, contiguous index
+ranges, per-position means and their counts, batch invariance, the two-variant derivation
+and its fallback), plus `tests/test_extract_baseline_vectors.py` and
+`tests/test_extract_common.py`. Tests needing real weights are marked `hf_cache` and pin what
+only a real tokenizer answers: the pangram is 10 tokens with the pinned decodings, batched
+extraction matches unbatched, and the written artefacts have the right shapes. Run those
+under the `claude` user (`gpu-exec`) — the HF cache is only readable there.
+
+### 9.2 What building step 1 settled
+
+- **The forced response carries a full stop, and there are two compliant variants.** The
+  instruction quotes the sentence without one, but §4.2's 10-token count includes `.`. Step 0
+  then measured that the model splits between the two forms (§9.3), so the extractor derives
+  a second, shorter candidate from the canonical response whenever it ends in `.`, guarded by
+  a token-level prefix check against the tokenizer (a tokenizer that fuses the stop into the
+  last word correctly falls back to one candidate). It teacher-forces both per batch and
+  keeps a topic on the first match, with-stop first.
+- **`count` is genuinely per-topic**: 10 for a with-stop match, 9 for a no-stop match. This
+  needed no change to the index scheme — `start`/`count` were already per-topic. Anything
+  reading these directories must address a topic as `vectors[start : start + count]` and
+  treat its position index as `i - start`, never assume 10.
+- **Per-position means carry a per-position count**, not `sum / len(records)`, because the
+  last position only has data from with-stop topics.
+- **Padding-aware `position_ids`.** A plain forward pass numbers RoPE positions with
+  `arange(seq_len)`, so under left padding a topic's vectors would depend on which batch it
+  landed in. The extractor derives positions from the attention mask instead. The reference
+  implementation does not, which is one reason our baseline vectors may differ slightly from
+  upstream's.
+- **Means are written, not applied.** Vectors on disk are raw, so **the trainer subtracts
+  `position_means.pt` itself** (D2). If it forgets, arm B trains on uncentred vectors and
+  nothing on disk says so; no code path should load vectors except through the module
+  `pangram_step2a_loss_and_eval.md` builds.
+- **Means are over all surviving topics, train and val**, which is what upstream's extractor
+  does. Do not "fix" this to train-only without also accepting that the 1.3662 comparison
+  (D10) gets weaker.
+- **The baseline style filters nothing**, so its `topics.json` holds all 49,637 topics while
+  the pangram one holds only the compliant ones. Whoever compares arms must intersect the
+  topic sets, or an arm difference could be a topic-population difference. Implemented as
+  `restrict_to_titles` (step 2a) and decided in `pangram_phases12_and_report.md`.
+
+### 9.3 What step 0's probe measured
+
+Real greedy generation (not teacher-forcing) on the **real 8B**, 500 topics sampled with
+`seed=42` from the full 49,637.
+
+| outcome | rate |
+|---|---|
+| exact `"...lazy dog."` (with stop) | 68.0% |
+| exact `"...lazy dog"` (no stop) | 27.4% |
+| genuine non-compliance | 4.6% |
+
+So **95.4%** of topics produce one of the two literal strings verbatim, and forcing only one
+of them would structurally cap the keep rate near whichever fraction was picked — hence the
+two-variant extractor of §9.2.
+
+**The failure taxonomy has a category §5.1 did not name.** Zero quoting, zero preamble, zero
+refusals in 500 samples, so D1's "revisit if quoted exceeds 5-10%" trigger does not fire. The
+dominant real failure mode (~4%) is instead the model **substituting topic words into the
+pangram**: topic "Monarchism" → `"The quick brown **monarch** jumps over the lazy dog."`,
+topic "24 (TV series)" → `"The quick **CTU agent** jumps over the lazy **villain**."` The
+filter catches these as genuine mismatches, but see §9.4.
+
+### 9.4 Risks not retired
+
+- **Reproducing 1.3662 (D10) crosses trainers *and* extractors.** Ours derives padding-aware
+  `position_ids` where upstream uses `arange`; batching differs; upstream's extractor only
+  ever forced one target. If the check lands close but not exact, suspect extraction before
+  suspecting the trainer.
+- **The word-substitution mode is evidence against the centering assumption.** §5.3's
+  per-position mean assumes position *p* is the same pangram word across topics. For the
+  rare topic where the model gets creative, it is not. Well under D1's 5% threshold on 500
+  topics, so not blocking — but re-check it at full-corpus scale from `filter_report.json`
+  rather than extrapolating from the sample.
+
+### 9.5 Running on the vast remote
+
+- The `agent` account has **no network egress**. Models come from the `hf-fetch.sock` daemon
+  (write `<repo id>\n`, read one line back), which serves **models only** and only from
+  `/etc/hf-model-allowlist.txt`. Already on it:
+  `meta-llama/Llama-3.1-8B-Instruct`, `keenanpepper/selfie-adapters-llama-3.1-8b-instruct`
+  (the published checkpoint, D10), and `thenlper/gte-large` (the retrieval eval, D11). Start
+  the 8B fetch as one of the first things you do — it is slow and can run while you set up.
+- **Datasets are not served by that daemon.** Place
+  `wikipedia_vital_articles_level5_dataset.jsonl` (~55 MB) by copying it into the local
+  worktree directory, which the sync carries; only `*.py` files sync from the main repo.
+- The synced tree lands at `<remote-root>/.claude/worktrees/<name>/...`, because the sync
+  mirrors the whole repo including worktrees, and is read-only for the `agent` account. Point
+  `remote_exec`'s `cwd` there and write outputs to `/home/agent/`.
+- `sentence_transformers` is assumed present for D11 and cannot be installed there; check the
+  import before spending GPU time.
