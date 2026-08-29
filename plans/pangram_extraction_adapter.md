@@ -819,6 +819,11 @@ exploration, the step-0 failure taxonomy, and measured timings.
   A100-hours, so subsampling saves nothing worth a confound plus a re-extraction. For the
   same reason, the 10 pangram positions are never thinned to save cost: at a fixed
   examples-seen budget, pool size does not enter the cost.
+- **[D10]** The published checkpoint's recorded config is treated as authoritative over the
+  paper's table and the repo's YAML where they disagree (§3.1) — in particular
+  `normalize_input: true`, which this plan had not previously recorded. Its
+  `best_val_loss` of 1.3662 is the trainer-correctness target, checked before any training
+  run.
 - **[D11]** **The headline metric is embedding-based retrieval, not validation loss.** Decode
   a description per held-out vector and report recall@{1,5,10} against a GTE-large
   (`thenlper/gte-large`) index of all 49,637 topics, documents formed as title plus all
@@ -830,11 +835,6 @@ exploration, the step-0 failure taxonomy, and measured timings.
   it fits labels. Scored on **centred** vectors to match the paper, with raw as a labelled
   secondary condition (§5.3). Built in `plans/pangram_step2d_retrieval_eval.md`; it costs
   ~0.4 A100-hours in phase 0 against 1.76 for the training run.
-- **[D10]** The published checkpoint's recorded config is treated as authoritative over the
-  paper's table and the repo's YAML where they disagree (§3.1) — in particular
-  `normalize_input: true`, which this plan had not previously recorded. Its
-  `best_val_loss` of 1.3662 is the trainer-correctness target, checked before any training
-  run.
 - **[D5]** Runs on a machine the user nominates at execution time. Nothing in this plan
   assumes a particular card; §4.2 and §4.3 give the sizing needed to choose one. The local
   GPU is an 8 GB laptop card and cannot hold an 8B model.
