@@ -11,7 +11,6 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from adapter_training.dataset import TopicRecord
-from extract import build_prompt
 
 
 def left_pad(
@@ -87,11 +86,6 @@ def run_forward(
         logits_to_keep=len(forced_ids) + 1,
     )
     return outputs.logits, outputs.hidden_states[layer + 1]
-
-
-def formatted_prompt(tokenizer, user_prompt: str) -> str:
-    """Render a user turn with the chat template, no system prompt."""
-    return build_prompt(tokenizer, user_prompt, None)
 
 
 @dataclass
