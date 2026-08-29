@@ -867,7 +867,7 @@ listed in `plans/CLAUDE.md`; each writes its own findings note under `plans/note
 |---|---|---|
 | 0 probe | `pangram_step0_benchmarks.md` | **items 1-2 done** (§9.3); items 3-5 need the step-2 trainer |
 | 1 extraction | — | **done** (§9.1) |
-| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md` | not started |
+| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md` | **step 2a done** (`plans/notes/step2a_findings.md`); step 2b not started |
 | 2c prefix cache | `pangram_step2c_prefix_cache.md` | **opt-in**; skip unless the user asks for it by name |
 | 2d retrieval eval | `pangram_step2d_retrieval_eval.md` | not started |
 | 3 phase 0 | `pangram_phase0_run.md` | not started |
