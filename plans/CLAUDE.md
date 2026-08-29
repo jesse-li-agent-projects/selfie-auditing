@@ -16,6 +16,31 @@ This directory contains plans for agents.
       one proposed arm at full budget and scores it against the published
       upstream adapter, which is a fair comparator at zero training cost, so
       the headline result costs about a quarter of the whole plan.
+- pangram_step2a_loss_and_eval.md
+    - Execution part 1/6 of pangram_extraction_adapter.md. The example
+      pipeline, the soft-prompt loss path, and an `evaluate_adapter` CLI that
+      scores any checkpoint -- everything the "does the published adapter
+      reproduce its own 1.3662?" check needs, and nothing else.
+- pangram_step2b_training_loop.md
+    - Execution part 2/6. The trainer: budget in examples seen, cosine over
+      its own horizon, length-bucketed batching, gradient accumulation,
+      subsampled validation, checkpoints the reference loader reads.
+- pangram_step2c_prefix_cache.md
+    - Execution part 3/6, optional and gated. The shared-prefix KV cache worth
+      ~1.39x, behind a flag, with the equivalence test that justifies it --
+      and explicit permission to abandon it if that test is awkward.
+- pangram_step0_benchmarks.md
+    - Execution part 4/6, first GPU step. The trainer-correctness gate (score
+      the published adapter through our loss path against its recorded
+      1.3662), throughput and memory benchmarks, and a 50-step debug run.
+- pangram_phase0_run.md
+    - Execution part 5/6, the headline result. Full extraction of both prompt
+      styles, then arm B at full budget scored against the published upstream
+      adapter and an untrained floor. Also a gate on whether phases 1-2 happen.
+- pangram_phases12_and_report.md
+    - Execution part 6/6. Arms A and C, the capacity sweep, generation
+      accuracy via the reference's embedding-retrieval eval, the per-position
+      exploration, and the final report.
 - pangram_adapter_handoff.md
     - Not a plan: the execution state of pangram_extraction_adapter.md. Which
       steps are done, the decisions taken while implementing them that the plan
