@@ -1,7 +1,7 @@
-"""Scores any projection checkpoint on a val (or train) split (plan step 2a
-S4). This is what the parent plan's cheapest safety check (S6 step 2, D10)
-runs: score the *published* upstream adapter through this loss path and
-compare the measured loss to its recorded `best_val_loss` of 1.3662.
+"""Scores any projection checkpoint on a val (or train) split. This is the
+cheapest safety check for a newly-trained adapter: score the *published*
+upstream adapter through this loss path and compare the measured loss to its
+recorded `best_val_loss` of 1.3662.
 
     python -m adapter_training.evaluate_adapter \\
         --vectors vectors/baseline_l19 \\
@@ -13,7 +13,6 @@ compare the measured loss to its recorded `best_val_loss` of 1.3662.
 
 import argparse
 import json
-import random
 from pathlib import Path
 
 # Light import: config.py pulls in no heavy dependencies, so --help stays fast.
@@ -88,32 +87,14 @@ def parse_args():
 # Parsed before the heavy imports below, so `--help` costs no torch import.
 args = parse_args() if __name__ == "__main__" else None
 
-import torch
-
 from adapter_training.checkpoints import load_projection, untrained_projection
 from adapter_training.dataset import (
-    Example,
     examples_from_records,
-    load_topic_records,
+    load_records,
     load_vector_store,
     pooled_vector_store,
-    restrict_to_titles,
 )
-from adapter_training.loss import LossConfig, SoftPromptLoss
-
-
-def subsample(examples: list[Example], n: int, seed: int) -> list[Example]:
-    """A fixed, seeded random subsample -- the same mechanism step 2b's
-    in-run validation uses for its 5,000-example subsample (parent plan S4.5).
-
-    :param examples: population to draw from
-    :param n: subsample size; the whole population unchanged if `n` exceeds it
-    :param seed: RNG seed, so repeated calls with the same inputs agree
-    :return: `n` examples, in a fixed order determined by `seed`
-    """
-    if n >= len(examples):
-        return list(examples)
-    return random.Random(seed).sample(examples, n)
+from adapter_training.loss import LossConfig, SoftPromptLoss, evaluate, subsample
 
 
 def load_eval_set(
@@ -134,44 +115,11 @@ def load_eval_set(
     :param pooled: arm C -- pool each topic's vectors into one
     :param restrict_to: intersect topics with this directory's own topic set
     """
-    records = load_topic_records(vectors_dir)
-    if restrict_to is not None:
-        other_titles = {record.title for record in load_topic_records(restrict_to)}
-        records = restrict_to_titles(records, other_titles)
-
+    records = load_records(vectors_dir, restrict_to)
     if pooled:
         return pooled_vector_store(vectors_dir, records=records, split=split)
     store = load_vector_store(vectors_dir, center=center)
     return store, examples_from_records(records, split)
-
-
-@torch.no_grad()
-def evaluate(
-    store, examples: list[Example], scorer: SoftPromptLoss, batch_size: int
-) -> dict:
-    """Score `examples` in fixed-size batches and average per-batch losses.
-
-    Matches upstream's own `validate()`, which averages per-batch losses over
-    batches (equal to averaging per-example except for the last partial
-    batch -- a <0.1% discrepancy at 84k examples).
-
-    :return: measured loss, example count, batch count
-    """
-    total_loss = 0.0
-    n_batches = 0
-    for start in range(0, len(examples), batch_size):
-        batch = examples[start : start + batch_size]
-        vectors = store.vectors[[example.vector_index for example in batch]]
-        labels = [example.label for example in batch]
-        loss, _ = scorer(vectors, labels)
-        total_loss += loss.item()
-        n_batches += 1
-    measured_loss = total_loss / n_batches if n_batches else float("nan")
-    return {
-        "measured_loss": measured_loss,
-        "n_examples": len(examples),
-        "n_batches": n_batches,
-    }
 
 
 def main(args) -> dict:

@@ -1,8 +1,7 @@
-"""Trains one projection to a budget expressed in examples seen (plan step 2b),
-validates on a fixed subsample, and writes checkpoints
-`selfie_adapters.load_adapter` can read -- so `interpret.py` and every other
-downstream consumer keep working unchanged regardless of who trained the
-file.
+"""Trains one projection to a budget expressed in examples seen, validates on
+a fixed subsample, and writes checkpoints `selfie_adapters.load_adapter` can
+read -- so `interpret.py` and every other downstream consumer keep working
+unchanged regardless of who trained the file.
 
     python -m adapter_training.train_adapter \\
         --vectors vectors/pangram_l19 \\
@@ -14,16 +13,16 @@ file.
         --val-subsample 5000 --validate-every 100 \\
         --pool-positions            # arm C: mean the 10 positions before the adapter
 
-**Budget is examples seen, never epochs** (parent plan S4.1, D4): the cosine
-schedule is laid out over `ceil(budget_examples / batch_size)` steps, and
-`--max-steps` only stops the loop early -- it never changes that horizon, so
-a debug run exercises the same schedule code the real run does.
+**Budget is examples seen, never epochs**: the cosine schedule is laid out
+over `ceil(budget_examples / batch_size)` steps, and `--max-steps` only stops
+the loop early -- it never changes that horizon, so a debug run exercises the
+same schedule code the real run does.
 
-**This trainer always uses centred vectors** (parent plan S3.2, S5.3): that
-is what upstream's own `validate()` scored, and what the 1.3662 reproduction
-check (`evaluate_adapter.py --center`) needs to be comparable to. Raw
-vectors are a downstream-interpretation-time concern (`interpret.py`),
-never a training one.
+**This trainer always uses centred vectors**: that is what upstream's own
+`validate()` scored, and what the 1.3662 reproduction check
+(`evaluate_adapter.py --center`) needs to be comparable to. Raw vectors are a
+downstream-interpretation-time concern (`interpret.py`), never a training
+one.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ def parse_args():
         "--budget-examples",
         type=int,
         required=True,
-        help="examples seen, not epochs (parent plan S4.1, D4)",
+        help="examples seen, not epochs",
     )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument(
@@ -71,7 +70,7 @@ def parse_args():
         type=int,
         default=None,
         help="rank for scalar_affine_plus_low_rank / low_rank_only -- a config "
-        "field, never a literal in code (parent plan S5.5)",
+        "field, never a literal in code",
     )
     parser.add_argument("--low-rank-init-factor", type=float, default=0.01)
     parser.add_argument("--lr", type=float, default=0.01)
@@ -114,7 +113,7 @@ def parse_args():
         "--buffer-batches",
         type=int,
         default=50,
-        help="length-bucketing shuffle buffer, in batches (parent plan S4.2.1)",
+        help="length-bucketing shuffle buffer, in batches",
     )
     parser.add_argument("--model", default=BASE_MODEL_8B)
     parser.add_argument("--device", default="cuda")
@@ -123,15 +122,15 @@ def parse_args():
         "--gradient-checkpointing",
         action="store_true",
         default=False,
-        help="off by default (parent plan D8): a ~1.5x tax that also nulls "
-        "past_key_values, which blocks the prefix cache of step 2c",
+        help="off by default: a ~1.5x tax that also nulls past_key_values, "
+        "which blocks the prefix cache",
     )
     parser.add_argument(
         "--ddp",
         action="store_true",
         default=False,
-        help="not implemented -- the default multi-GPU path is one run per GPU "
-        "(parent plan S4.3); use --device to pick which GPU this run uses",
+        help="not implemented -- the default multi-GPU path is one run per GPU; "
+        "use --device to pick which GPU this run uses",
     )
     return parser.parse_args()
 
@@ -152,13 +151,17 @@ from adapter_training.checkpoints import save_checkpoint
 from adapter_training.dataset import (
     Example,
     examples_from_records,
-    load_topic_records,
+    load_records,
     load_vector_store,
     pooled_vector_store,
-    restrict_to_titles,
 )
-from adapter_training.evaluate_adapter import evaluate, subsample
-from adapter_training.loss import LossConfig, SoftPromptLoss, target_text
+from adapter_training.loss import (
+    LossConfig,
+    SoftPromptLoss,
+    evaluate,
+    subsample,
+    target_text,
+)
 from selfie_adapters.projection import create_projection_module
 
 
@@ -215,7 +218,7 @@ class TrainConfig:
 
 
 def seed_everything(seed: int) -> None:
-    """Seed Python, NumPy and torch (parent plan S6 step 2, "seed everything").
+    """Seed Python, NumPy and torch.
 
     :param seed: the seed to use everywhere
     """
@@ -230,7 +233,7 @@ def compute_total_steps(budget_examples: int, batch_size: int) -> int:
     """`ceil(budget_examples / batch_size)` -- the cosine schedule's horizon.
 
     755,391 examples at batch 256 gives 2,951, the published checkpoint's
-    recorded `global_step` (parent plan S3.1).
+    recorded `global_step`.
     """
     return math.ceil(budget_examples / batch_size)
 
@@ -271,8 +274,7 @@ def lr_at_step(
 def compute_target_lengths(
     examples: list[Example], tokenizer, loss_config: LossConfig
 ) -> dict[str, int]:
-    """Tokenize every distinct label's target text once and cache it (parent
-    plan S4.2.1: "Label lengths are tokenized once at startup"), for the
+    """Tokenize every distinct label's target text once and cache it, for the
     length-bucketed batcher to sort by.
 
     :param examples: the pool `bucketed_batches` will draw from
@@ -292,7 +294,7 @@ def compute_target_lengths(
 
 def example_stream(examples: list[Example], seed: int):
     """An infinite generator over `examples`: a seeded shuffle, reshuffled
-    into a fresh permutation whenever exhausted (parent plan S4.4).
+    into a fresh permutation whenever exhausted.
 
     One pass is one full, non-repeating draw of every example in a fixed
     random order -- never a resample. Arms A and C spend exactly one budget
@@ -316,9 +318,9 @@ def example_stream(examples: list[Example], seed: int):
 def bucketed_batches(
     stream, batch_size: int, buffer_batches: int, length_of: dict, seed: int
 ):
-    """Length-bucketed batching (parent plan S4.2.1, D8): fill a shuffle
-    buffer of `buffer_batches` batches from `stream`, sort the buffer by
-    target length, cut it into batches, shuffle the batch order, and emit.
+    """Length-bucketed batching: fill a shuffle buffer of `buffer_batches`
+    batches from `stream`, sort the buffer by target length, cut it into
+    batches, shuffle the batch order, and emit.
 
     This is exact: it only changes which examples share a batch, never which
     examples are drawn or how many times -- `stream`'s own multiset is
@@ -354,8 +356,8 @@ def check_validation_compute_ratio(
     validate_every: int,
     steps_to_check: int,
 ) -> float:
-    """Port of upstream's `_check_validation_compute_ratio` (parent plan S4.5,
-    `resources/selfie-adapters/training/trainer.py`): refuse to start if
+    """Port of upstream's `_check_validation_compute_ratio`
+    (`resources/selfie-adapters/training/trainer.py`): refuse to start if
     validation would cost more than half of training's forward passes.
 
     Both sides are counted in forward-pass units (micro-batches), since that
@@ -428,9 +430,9 @@ def optimizer_step(
 
     Each micro-batch's loss is scaled by `micro_len / batch_len` rather than
     averaged, so the accumulated gradient stays equivalent to a single batch
-    of `len(batch)` regardless of how it was chunked (parent plan S4.2.1,
-    item 6) -- micro-batches from a bucketed batch happen to have equal
-    length here, but this does not rely on that.
+    of `len(batch)` regardless of how it was chunked -- micro-batches from a
+    bucketed batch happen to have equal length here, but this does not rely
+    on that.
 
     :param batch: one global batch, in the order to micro-batch it
     :param store: the `VectorStore` `batch`'s vector indices address
@@ -504,8 +506,8 @@ def train(
     device,
 ) -> dict:
     """The training loop: seeding, schedule, sampling, micro-batching,
-    validation and checkpointing (parent plan S6 step 2). Callable directly
-    (as tests do, with a fake model and a hand-built store) or via `main`.
+    validation and checkpointing. Callable directly (as tests do, with a
+    fake model and a hand-built store) or via `main`.
 
     :param model: a frozen HF-style CausalLM (`.model`, `.lm_head`,
         `.get_input_embeddings()`) -- the caller freezes it
@@ -658,8 +660,7 @@ def _git_commit() -> str | None:
 def write_run_config(run_dir: Path, args, *, total_steps: int) -> None:
     """`run_config.json`: every CLI arg, the resolved step count, and enough
     provenance (the vectors dir, its `position_means.pt`, the git commit) to
-    trace a checkpoint back to the centring it was trained under (parent plan
-    S6 step 2, item 9).
+    trace a checkpoint back to the centring it was trained under.
     """
     config = {
         key: (str(value) if isinstance(value, Path) else value)
@@ -679,17 +680,14 @@ def load_train_and_val(
     """Build `(train_store, train_examples, val_store, val_examples)`,
     loading `vectors.pt` exactly once regardless of `pool_positions`
     (`load_vector_store`/`pooled_vector_store` are otherwise each called once
-    per split, which would load the -- potentially multi-GB, parent plan
-    S4.4 -- raw vector table twice for no reason).
+    per split, which would load the -- potentially multi-GB -- raw vector
+    table twice for no reason).
 
     :param vectors_dir: an extraction output directory
     :param pool_positions: arm C -- pool each topic's vectors into one
     :param restrict_to: intersect topics with this directory's own topic set
     """
-    records = load_topic_records(vectors_dir)
-    if restrict_to is not None:
-        other_titles = {record.title for record in load_topic_records(restrict_to)}
-        records = restrict_to_titles(records, other_titles)
+    records = load_records(vectors_dir, restrict_to)
 
     if pool_positions:
         store, examples = pooled_vector_store(vectors_dir, records=records, split=None)
@@ -711,7 +709,7 @@ def main(args) -> dict:
     if args.ddp:
         raise NotImplementedError(
             "DDP is not implemented. The default multi-GPU path is one run per "
-            "GPU (parent plan S4.3): launch one process per card with --device."
+            "GPU: launch one process per card with --device."
         )
 
     from model_loading import load_base_model, load_tokenizer

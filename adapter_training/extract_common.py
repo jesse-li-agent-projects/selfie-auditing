@@ -1,73 +1,17 @@
-"""Shared dataset loading and batched-forward-pass utilities for topic-vector
-extraction (plan S5.1, S5.2, step 1). Used by both `extract_pangram_vectors`
-and `extract_baseline_vectors`.
+"""Forward-pass primitives shared by `extract_baseline_vectors` and
+`extract_pangram_vectors`, plus the output format both write.
 """
 
 import json
-from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, cast
 
 import torch
-from jaxtyping import Int
+from jaxtyping import Float, Int
 from torch import Tensor
 
+from adapter_training.dataset import TopicRecord
 from extract import build_prompt
-
-DEFAULT_DATASET = "keenanpepper/fifty-thousand-things"
-DEFAULT_DATASET_FILE = "wikipedia_vital_articles_level5_dataset.jsonl"
-
-
-@dataclass(frozen=True)
-class Topic:
-    """One upstream dataset entry.
-
-    `labels` are the natural-language descriptions the adapter is trained to
-    emit; `split` is the dataset's own topic-level train/val assignment, which
-    every vector of the topic inherits (plan S5.2).
-    """
-
-    title: str
-    prompt: str
-    labels: tuple[str, ...]
-    split: str
-
-
-def load_topics(
-    dataset: str, dataset_file: Path | None = None, limit: int | None = None
-) -> list[Topic]:
-    """Read the upstream topic dataset, from the Hub or a local JSONL copy.
-
-    :param dataset: Hugging Face dataset id, used when `dataset_file` is None
-    :param dataset_file: local JSONL to read instead, for a machine with no egress
-    :param limit: keep only the first N entries
-    :return: topics in dataset order
-    """
-    rows: Iterable[dict[str, Any]]
-    if dataset_file is not None:
-        with open(dataset_file) as handle:
-            rows = [json.loads(line) for line in handle if line.strip()]
-    else:
-        from datasets import load_dataset
-
-        # `Dataset.__iter__` is typed as a union wide enough to include lists,
-        # which it never yields for a JSONL-backed dataset.
-        rows = cast(Iterable[dict[str, Any]], load_dataset(dataset, split="train"))
-
-    topics = []
-    for row in rows:
-        topics.append(
-            Topic(
-                title=row["original_title"],
-                prompt=row["prompt"],
-                labels=tuple(row["labels"]),
-                split=row["split"],
-            )
-        )
-        if limit is not None and len(topics) == limit:
-            break
-    return topics
 
 
 def left_pad(
@@ -97,16 +41,9 @@ def left_pad(
 def position_ids_from_mask(
     attention_mask: Int[Tensor, "batch seq"],
 ) -> Int[Tensor, "batch seq"]:
-    """RoPE positions that ignore left padding.
-
-    A plain forward pass defaults to `arange(seq_len)`, which under left
-    padding shifts every real token's rotary position by that row's pad count
-    -- so an example's activations would depend on which batch it landed in.
-    Deriving positions from the mask keeps batched extraction bit-comparable
-    with unbatched.
-
-    :param attention_mask: 1 for real tokens, 0 for padding
-    :return: position ids, zero where padded
+    """RoPE positions that ignore left padding -- otherwise every real
+    token's rotary position shifts by that row's pad count, and an example's
+    activations would depend on which batch it landed in.
     """
     return (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
 
@@ -155,3 +92,35 @@ def run_forward(
 def formatted_prompt(tokenizer, user_prompt: str) -> str:
     """Render a user turn with the chat template, no system prompt."""
     return build_prompt(tokenizer, user_prompt, None)
+
+
+@dataclass
+class ExtractionResult:
+    """Everything one extraction run writes, held in memory until
+    `write_extraction_outputs` runs.
+
+    `means` is one mean vector for the baseline style (`[hidden]`) and one
+    per response position for the pangram style (`[n_positions, hidden]`);
+    `position_tokens`/`failures` are pangram-only (the baseline style never
+    filters, so there's nothing to report).
+    """
+
+    vectors: Float[Tensor, "n_vectors hidden"]
+    records: list[TopicRecord]
+    means: Tensor
+    n_seen: int = 0
+    position_tokens: list[str] | None = None
+    failures: list[dict] = field(default_factory=list)
+
+
+def write_extraction_outputs(output_dir: Path, result: ExtractionResult) -> None:
+    """Write the `vectors.pt`/`position_means.pt`/`topics.json` triple every
+    extraction style produces. The caller writes `positions.json` (and, for
+    the pangram style, `filter_report.json`) itself -- their content differs
+    per style.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(result.vectors, output_dir / "vectors.pt")
+    torch.save(result.means, output_dir / "position_means.pt")
+    with open(output_dir / "topics.json", "w") as handle:
+        json.dump([asdict(record) for record in result.records], handle)

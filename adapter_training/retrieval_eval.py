@@ -1,6 +1,6 @@
-"""Generation and GTE-large embedding-retrieval scoring (plan step 2d, D11) --
-the headline metric: can a description decoded from one activation be
-retrieved back to its topic, against an index of all 49,637 topics?
+"""Generation and GTE-large embedding-retrieval scoring -- the headline
+metric: can a description decoded from one activation be retrieved back to
+its topic, against an index of all 49,637 topics?
 
 No second soft-token injection path: generation reuses
 `interpret.generate_interpretations_batch`, the same one interpretation-time
@@ -8,10 +8,10 @@ use goes through. No reimplementation of recall@k or the index either --
 both come from the reference's own
 `resources/selfie-adapters/evals/embedding_retrieval/topic_retrieval_eval.py`
 (read-only; imported, not copied). The only thing built here is what does not
-fit as-is: an index built from this repo's own `extract_common.load_topics`
-instead of the reference's Hub-only `load_dataset` (the vast remote has no
-egress), and the query-vector selection for the pangram style's `count`-many
-positions per topic.
+fit as-is: an index built from this repo's own `dataset.load_topics` instead
+of the reference's Hub-only `load_dataset` (the vast remote has no egress),
+and the query-vector selection for the pangram style's `count`-many positions
+per topic.
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ from pathlib import Path
 
 import torch
 
-from adapter_training.dataset import TopicRecord
-from adapter_training.extract_common import Topic
+from adapter_training.dataset import Topic, TopicRecord
 from interpret import Adapter, generate_interpretations_batch
 
 # Reference code, not a pip package -- resources/ is gitignored (read-only
@@ -40,9 +39,9 @@ from evals.embedding_retrieval.topic_retrieval_eval import (  # noqa: E402
     evaluate_labels,
 )
 
-# The paper's own choice for contrastive-vector retrieval (parent plan S5.6,
-# D11); the reference's own default (TITLE_ONLY) is a different index and
-# would make our numbers incomparable to the published 94%/1%.
+# The paper's own choice for contrastive-vector retrieval; the reference's
+# own default (TITLE_ONLY) is a different index and would make our numbers
+# incomparable to the published 94%/1%.
 DEFAULT_INDEX_STRATEGY = IndexStrategy.TITLE_PLUS_ALL_LABELS
 DEFAULT_EMBEDDING_MODEL = "thenlper/gte-large"
 
@@ -88,8 +87,8 @@ def build_index(
     `if not self.titles`.
 
     :param topics: every topic the index should cover (the full corpus, not
-        just the query population -- parent plan S5.6: a bigger index is a
-        harder, fixed task, the same for every arm)
+        just the query population -- a bigger index is a harder, fixed task,
+        the same for every arm)
     :param strategy: what to embed per topic; record it beside any score
     :param embedding_model: passed straight to `SentenceTransformer`
     :param device: embedding device
@@ -143,9 +142,8 @@ def generate_descriptions(
     (`generate_interpretations_batch`'s own `batch_size`, not exposed here):
     `do_sample=True` draws from the process-global `torch` RNG stream, so a
     row's draws depend on how many other rows' steps were consumed before it
-    -- i.e. on chunk boundaries, not just on `config.seed` (plan step2d
-    findings note). Never vary that `batch_size` between two calls meant to
-    compare.
+    -- i.e. on chunk boundaries, not just on `config.seed`. Never vary that
+    `batch_size` between two calls meant to compare.
     """
     torch.manual_seed(config.seed)
     hidden_vectors = {i: vectors[i] for i in range(vectors.shape[0])}
@@ -241,10 +239,10 @@ def evaluate_positions(
 
     `"last"` scores one query set (each topic's own last vector). `"all"` or
     an explicit list scores each offset separately and reports both the
-    per-offset breakdown and the mean recall over offsets -- parent plan
-    S5.6: arm B trains on all 10 positions as equal examples, so the mean is
-    what its training objective corresponds to, and this also retires the
-    separate per-position exploration (one eval yields both).
+    per-offset breakdown and the mean recall over offsets -- arm B trains on
+    all 10 positions as equal examples, so the mean is what its training
+    objective corresponds to, and this also retires the separate
+    per-position exploration (one eval yields both).
 
     :param vectors: the full extraction directory's vectors (any centring
         the caller already applied)

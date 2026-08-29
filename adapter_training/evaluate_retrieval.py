@@ -1,6 +1,6 @@
 """Generate a description per held-out vector and score it by GTE-large
-embedding retrieval against a topic index (plan step 2d, D11) -- the
-experiment's headline number.
+embedding retrieval against a topic index -- the experiment's headline
+number.
 
     python -m adapter_training.evaluate_retrieval \\
         --vectors vectors/pangram_l19 --split val \\
@@ -110,11 +110,11 @@ from adapter_training.checkpoints import (
     untrained_projection,
 )  # noqa: E402
 from adapter_training.dataset import (  # noqa: E402
-    load_topic_records,
+    DEFAULT_DATASET,
+    load_records,
+    load_topics,
     load_vector_store,
-    restrict_to_titles,
 )
-from adapter_training.extract_common import DEFAULT_DATASET, load_topics  # noqa: E402
 from adapter_training.retrieval_eval import (  # noqa: E402
     DEFAULT_INDEX_STRATEGY,
     GenerationConfig,
@@ -136,10 +136,7 @@ def load_query_records(
     """The topics to query: `--vectors`' own `split`, optionally intersected
     with another directory's topic set and/or subsampled.
     """
-    records = load_topic_records(vectors_dir)
-    if restrict_to is not None:
-        other_titles = {record.title for record in load_topic_records(restrict_to)}
-        records = restrict_to_titles(records, other_titles)
+    records = load_records(vectors_dir, restrict_to)
     records = [record for record in records if record.split == split]
     if limit_topics is not None and limit_topics < len(records):
         records = random.Random(seed).sample(records, limit_topics)

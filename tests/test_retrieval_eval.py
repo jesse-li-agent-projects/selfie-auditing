@@ -154,7 +154,7 @@ def test_build_index_documents_match_load_topics_order_and_format(
     ]
     dataset_file.write_text("\n".join(json.dumps(row) for row in rows))
 
-    from adapter_training.extract_common import load_topics
+    from adapter_training.dataset import load_topics
 
     topics = load_topics("ignored", dataset_file)
     index = retrieval_eval.build_index(topics, device="cpu")

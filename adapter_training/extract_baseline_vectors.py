@@ -1,6 +1,6 @@
-"""Baseline topic-vector extraction for the adapter experiment (plan S5.1,
-S5.2, S5.4, step 1) -- upstream's own extraction, reproduced: each topic's
-own conversational prompt, one vector read at the last prompt token.
+"""Baseline topic-vector extraction: upstream's own extraction, reproduced --
+each topic's own conversational prompt, one vector read at the last prompt
+token.
 
     python -m adapter_training.extract_baseline_vectors \
         --layer 19 --output-dir vectors/baseline_l19
@@ -11,13 +11,12 @@ sentence instead and keeps one vector per response token.
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
 # Light import: config.py pulls in no heavy dependencies, so --help stays fast.
 from config import BASE_MODEL_8B
 
-from adapter_training.extract_common import DEFAULT_DATASET
+from adapter_training.dataset import DEFAULT_DATASET
 
 
 def parse_args():
@@ -57,41 +56,14 @@ def parse_args():
 args = parse_args() if __name__ == "__main__" else None
 
 import torch
-from jaxtyping import Float
-from torch import Tensor
 
+from adapter_training.dataset import Topic, TopicRecord, load_topics
 from adapter_training.extract_common import (
-    Topic,
-    load_topics,
-    run_forward,
+    ExtractionResult,
     formatted_prompt,
+    run_forward,
+    write_extraction_outputs,
 )
-
-
-@dataclass
-class TopicRecord:
-    """One topic as written to `topics.json`.
-
-    `start` addresses the topic's vector in `vectors.pt`; `count` is always 1
-    here since the baseline style keeps one vector per topic.
-    """
-
-    title: str
-    prompt: str
-    labels: list[str]
-    split: str
-    start: int
-    count: int
-
-
-@dataclass
-class ExtractionResult:
-    """Everything one run writes, held in memory until the writers run."""
-
-    vectors: Float[Tensor, "n_topics hidden"]
-    records: list[TopicRecord]
-    mean: Float[Tensor, "hidden"]
-    n_seen: int = 0
 
 
 @torch.no_grad()
@@ -119,7 +91,7 @@ def extract_baseline_vectors(
     :param batch_size: topics per forward pass
     :param device: device to run on
     :param progress: show a tqdm bar
-    :return: vectors, one record per topic, and their mean
+    :return: one record and one vector per topic, and their mean
     """
     hidden_size = model.config.hidden_size
     vectors = torch.empty(len(topics), hidden_size, dtype=torch.bfloat16, device="cpu")
@@ -147,7 +119,7 @@ def extract_baseline_vectors(
                 TopicRecord(
                     title=topic.title,
                     prompt=topic.prompt,
-                    labels=list(topic.labels),
+                    labels=tuple(topic.labels),
                     split=topic.split,
                     start=start + row,
                     count=1,
@@ -156,7 +128,7 @@ def extract_baseline_vectors(
 
     mean = (total / max(len(topics), 1)).float()
     return ExtractionResult(
-        vectors=vectors, records=records, mean=mean, n_seen=len(topics)
+        vectors=vectors, records=records, means=mean, n_seen=len(topics)
     )
 
 
@@ -166,22 +138,10 @@ def write_outputs(
     layer: int,
     model_name: str,
 ) -> None:
-    """Write the artefacts a baseline run produces: vectors, their mean, and
-    per-topic metadata. There is no filter_report.json -- the baseline style
-    never filters, so there's nothing to report.
-
-    :param output_dir: directory to create and write into
-    :param result: what `extract_baseline_vectors` returned
-    :param layer: the layer read
-    :param model_name: the model read from, recorded for provenance
+    """`write_extraction_outputs` plus `positions.json`. There is no
+    `filter_report.json` -- the baseline style never filters.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(result.vectors, output_dir / "vectors.pt")
-    torch.save(result.mean, output_dir / "position_means.pt")
-
-    with open(output_dir / "topics.json", "w") as handle:
-        json.dump([asdict(record) for record in result.records], handle)
-
+    write_extraction_outputs(output_dir, result)
     with open(output_dir / "positions.json", "w") as handle:
         json.dump(
             {

@@ -1,8 +1,8 @@
-"""Checkpoint IO for projection modules (plan step 2a S3): loading any
-projection -- a fresh untrained one, one this repo trained, or upstream's own
-Hub checkpoint -- and writing checkpoints in the exact format
-`selfie_adapters.load_adapter` reads, so `interpret.py` and every other
-downstream consumer stay unchanged regardless of who trained the file.
+"""Checkpoint IO for projection modules: loading any projection -- a fresh
+untrained one, one this repo trained, or upstream's own Hub checkpoint -- and
+writing checkpoints in the exact format `selfie_adapters.load_adapter` reads,
+so `interpret.py` and every other downstream consumer stay unchanged
+regardless of who trained the file.
 """
 
 from __future__ import annotations
@@ -32,11 +32,8 @@ def _resolve_checkpoint_path(source: str | Path) -> Path:
 
 
 def load_projection(source: str | Path, *, device, dim: int | None = None):
-    """Load a projection module and its recorded metadata.
-
-    Delegates to `selfie_adapters.load_adapter` so the metadata parsing
-    (`config_json`, `model_dim`, `global_step`, `best_val_loss`) is not
-    reimplemented.
+    """Load a projection module and its recorded metadata, via
+    `selfie_adapters.load_adapter`.
 
     :param source: a local `.pt`/`.safetensors` path, or a `repo_id:filename`
         pair naming a file on the Hub
@@ -58,7 +55,7 @@ def load_projection(source: str | Path, *, device, dim: int | None = None):
 
 
 def untrained_projection(dim: int, *, device):
-    """The parent plan's floor comparator: upstream's own `identity_baseline.yaml`
+    """The floor comparator: upstream's own `identity_baseline.yaml`
     (`resources/selfie-adapters/training/configs/identity_baseline.yaml`) --
     `scale_only`, `init_scale=1.0`, never trained.
 
