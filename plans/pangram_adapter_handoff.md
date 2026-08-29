@@ -220,12 +220,44 @@ Points that step 1 changed or sharpened, which those plans carry:
   over that budget.
 - Before any training run, score the published upstream checkpoint
   (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct`, `wikipedia-scalar-affine.safetensors`)
-  through our loss path on the baseline val vectors and check it reproduces its recorded
-  `best_val_loss` of 1.3662. If it does not, stop -- nothing downstream means anything. This
-  needs the *baseline* extraction to have run first, which is why step 3 extracts both
-  styles.
+  through our loss path on the baseline val vectors, **centred** (`--center`), and check it
+  reproduces its recorded `best_val_loss` of 1.3662. If it does not, stop -- nothing
+  downstream means anything. This needs the *baseline* extraction to have run first, which
+  is why step 3 extracts both styles.
 - `normalize_input: true`, `strip_labels: true`, target `label + '"' + <|eot_id|>`, batch
   256, lr 0.01, AdamW, cosine, 10 warmup steps, clip 0.5, init scale 5.0, seed 42.
+
+## Correction: the 1.3662 gate must use centred vectors, not raw
+
+Step 0 items 3-5 and step 2a's spec (before this fix) all had `evaluate_adapter` inject
+**raw** vectors for the 1.3662 reproduction check, reasoning "evaluation injects raw
+activations, matching upstream." That reasoning conflates two different upstream code
+paths:
+
+- The "raw at eval time" behavior belongs to `interpret.py` / upstream's bridge-entity eval
+  (`evals/bridge_entity/run_selfie_bridge_extraction.py`), which reads
+  `output_hidden_states` directly with no mean subtraction. That is a *downstream
+  interpretation* eval on a different task, and remains the correct, deliberate choice for
+  the adapter's own downstream use (§5.3, D2) -- unaffected by this correction.
+- 1.3662 itself comes from `training/trainer.py::validate()`, which draws from
+  `self.val_loader`. Per `training/data.py::create_dataloaders`, train and val loaders are
+  built from **one single `vectors_file`** (the contrastive, mean-subtracted `.pt` -- the
+  checkpoint's own recorded training dataset is `wikipedia-50k-topics-contrastive@l19`),
+  split by the `split` field. There is no separate raw-vector path for validation.
+
+So 1.3662 was computed on centred vectors, and scoring the published checkpoint on raw val
+vectors measures something else -- it will not reproduce 1.3662 regardless of whether
+everything else (template, loss reduction, target construction) is correct, and could sink
+the gate (or pass it for the wrong reason) independent of any real trainer bug. Checked and
+ruled out: `normalize_input: true` in the checkpoint header does not already correct for
+this -- it is L2-normalization inside `selfie_adapters/projection.py`, unrelated to
+mean-centering.
+
+Fixed in `pangram_step2a_loss_and_eval.md` (`evaluate_adapter` gained `--center`/
+`--no-center`, default `--no-center` for downstream-interpretation-style use, and the
+1.3662 check must pass `--center`), `pangram_step0_benchmarks.md`'s gate step, and
+`pangram_phase0_run.md`'s three-final-evaluations table. None of step 0's items 3-5 had
+been run yet, so nothing measured under the old spec needs to be redone.
 
 ## Known risks not yet retired
 

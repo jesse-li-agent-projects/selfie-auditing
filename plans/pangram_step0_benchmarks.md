@@ -63,15 +63,24 @@ try; if it is not on the allowlist, ask the user to add it.
    corpus (~0.08 A100-hours; the parent plan D9 says extract everything once rather than
    subsample). This is also phase 0's baseline extraction, so
    `plans/pangram_phase0_run.md` will not need to repeat it -- keep the output.
-2. **Score the published adapter** on the baseline **val** split, raw (uncentred) vectors:
+2. **Score the published adapter** on the baseline **val** split, **centred** vectors --
+   this is the reproduction check. 1.3662 was computed by upstream's own `validate()`,
+   which draws train and val from the same mean-subtracted `vectors_file`
+   (`training/data.py::create_dataloaders`); there is no raw path at val time upstream, so
+   this run must pass `--center` or it measures something else and cannot reproduce 1.3662:
 
        python -m adapter_training.evaluate_adapter \
-           --vectors vectors/baseline_l19 --split val \
+           --vectors vectors/baseline_l19 --split val --center \
            --checkpoint <repo>:wikipedia-scalar-affine.safetensors \
-           --report eval/upstream_published.json
+           --report eval/upstream_published_centred.json
 
-3. **Score the untrained floor** (`--checkpoint untrained`) on the same split, for the
-   parent plan §5.4.1 comparator table.
+   Optionally also score with `--no-center` (raw) as additional context -- e.g. as a sanity
+   check on how much the centring choice matters -- but do not present that number as the
+   1.3662 reproduction; only the centred score is.
+
+3. **Score the untrained floor** (`--checkpoint untrained`) on the same split, **centred**
+   vectors, for the parent plan §5.4.1 comparator table (must match the centring the
+   published-adapter score above used, or the table is not comparable).
 
 **Interpreting the result.** Exact agreement is not expected; the comparison crosses
 trainers *and* extractors. Known sources of drift, from the handoff: our extractor derives

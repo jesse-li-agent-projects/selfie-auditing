@@ -95,7 +95,11 @@ be found, ask the user rather than assuming it died.
 
 ### 3. The three final evaluations
 
-All on the **full** val split, raw (uncentred) vectors, through the same loss path:
+All on the **full** val split, **centred** vectors, through the same loss path -- this table
+is compared against 1.3662, which upstream's own `validate()` computed on centred vectors
+(see `plans/pangram_step0_benchmarks.md`'s 1.3662 gate); raw vectors would not be comparable
+to that number even though raw injection is the correct, deliberate choice for the adapter's
+own downstream interpretation-time use (§5.3, D2 -- unrelated to this table):
 
 | what | vectors | checkpoint |
 |---|---|---|
