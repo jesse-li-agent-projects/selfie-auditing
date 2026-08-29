@@ -1,9 +1,8 @@
-"""Soft-prompt forward pass and cross-entropy loss (plan step 2a S2),
-reproducing `SelfIEModel.compute_loss`
-(resources/selfie-adapters/training/model.py) exactly in what it *measures*
-while batching differently.
+"""Soft-prompt forward pass and cross-entropy loss, reproducing
+`SelfIEModel.compute_loss` (resources/selfie-adapters/training/model.py)
+exactly in what it *measures* while batching differently.
 
-Two departures from upstream, both exact (parent plan S4.2.1, D8):
+Two departures from upstream, both exact:
 
 - **Logit slicing.** Upstream materialises logits for the whole padded
   sequence via the ordinary CausalLM forward, then loops in Python over the
@@ -18,6 +17,7 @@ Two departures from upstream, both exact (parent plan S4.2.1, D8):
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
 import torch
@@ -25,6 +25,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
+from adapter_training.dataset import Example
 from interpret import RESERVED_TOKEN, SELFIE_TEMPLATE
 
 
@@ -78,7 +79,7 @@ class SoftPromptLoss:
         # at [11, 22], but the invariant this module depends on is just "two
         # slots exist" -- a template or tokenizer drift that broke the exact
         # offsets would still pass this and be caught by the hf_cache pin
-        # instead (tests/test_loss.py, plan step 2a test 9).
+        # instead (tests/test_loss.py).
         self.inject_positions = [
             i for i, token_id in enumerate(template_ids) if token_id == reserved_id
         ]
@@ -195,3 +196,46 @@ class SoftPromptLoss:
                 "max_soft_token_norm": soft_token_norms.max().item(),
             }
         return loss, stats
+
+
+def subsample(examples: list[Example], n: int, seed: int) -> list[Example]:
+    """A fixed, seeded random subsample -- the same mechanism the training
+    loop's in-run validation uses.
+
+    :param examples: population to draw from
+    :param n: subsample size; the whole population unchanged if `n` exceeds it
+    :param seed: RNG seed, so repeated calls with the same inputs agree
+    :return: `n` examples, in a fixed order determined by `seed`
+    """
+    if n >= len(examples):
+        return list(examples)
+    return random.Random(seed).sample(examples, n)
+
+
+@torch.no_grad()
+def evaluate(
+    store, examples: list[Example], scorer: SoftPromptLoss, batch_size: int
+) -> dict:
+    """Score `examples` in fixed-size batches and average per-batch losses.
+
+    Matches upstream's own `validate()`, which averages per-batch losses over
+    batches (equal to averaging per-example except for the last partial
+    batch -- a <0.1% discrepancy at 84k examples).
+
+    :return: measured loss, example count, batch count
+    """
+    total_loss = 0.0
+    n_batches = 0
+    for start in range(0, len(examples), batch_size):
+        batch = examples[start : start + batch_size]
+        vectors = store.vectors[[example.vector_index for example in batch]]
+        labels = [example.label for example in batch]
+        loss, _ = scorer(vectors, labels)
+        total_loss += loss.item()
+        n_batches += 1
+    measured_loss = total_loss / n_batches if n_batches else float("nan")
+    return {
+        "measured_loss": measured_loss,
+        "n_examples": len(examples),
+        "n_batches": n_batches,
+    }

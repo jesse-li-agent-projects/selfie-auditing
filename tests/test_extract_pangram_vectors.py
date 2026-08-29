@@ -169,7 +169,7 @@ def test_position_means_only_average_positions_that_were_actually_kept():
     # equal Alpha's vector at that position exactly, not an average diluted
     # by a Bravo contribution that does not exist.
     alpha_last = result.vectors[last_position].float()
-    assert torch.allclose(result.position_means[last_position], alpha_last, atol=1e-4)
+    assert torch.allclose(result.means[last_position], alpha_last, atol=1e-4)
 
 
 def test_records_inherit_the_topics_split_for_every_position(fake):
@@ -192,12 +192,10 @@ def test_position_means_are_per_position_not_global(fake):
     result = extract_pangram_vectors(model, tokenizer, topics, layer=1, device="cpu")
 
     stacked = result.vectors.view(len(topics), -1, 8).float()
-    assert torch.allclose(result.position_means, stacked.mean(dim=0), atol=1e-2)
+    assert torch.allclose(result.means, stacked.mean(dim=0), atol=1e-2)
     # The pangram tokens differ from each other, so a global mean would not
     # have cancelled "which word of the sentence this is".
-    assert not torch.allclose(
-        result.position_means, result.position_means.mean(dim=0, keepdim=True)
-    )
+    assert not torch.allclose(result.means, result.means.mean(dim=0, keepdim=True))
 
 
 def test_batching_does_not_change_which_positions_are_harvested(fake):

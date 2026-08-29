@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from adapter_training.extract_common import Topic
+from adapter_training.dataset import Topic
 
 HIDDEN = 8
 VOCAB = 4096

@@ -1,8 +1,9 @@
-"""Turns an extraction output directory (`extract_pangram_vectors.py` or
-`extract_baseline_vectors.py`) into training/eval examples (plan step 2a S1).
+"""Topic and vector data: reading the upstream topic dataset, reading an
+extraction run's output directory, and turning either into training/eval
+examples.
 
 Two things every caller must get right, because nothing on disk enforces
-them (parent plan S9.2, "Means are written, not applied"):
+them:
 
 - A topic's vectors are `vectors[start : start + count]`; its position index
   is `i - start`. `count` is not constant across topics in the pangram style.
@@ -17,15 +18,70 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
+DEFAULT_DATASET = "keenanpepper/fifty-thousand-things"
+DEFAULT_DATASET_FILE = "wikipedia_vital_articles_level5_dataset.jsonl"
+
+
+@dataclass(frozen=True)
+class Topic:
+    """One upstream dataset entry.
+
+    `labels` are the natural-language descriptions the adapter is trained to
+    emit; `split` is the dataset's own topic-level train/val assignment, which
+    every vector of the topic inherits.
+    """
+
+    title: str
+    prompt: str
+    labels: tuple[str, ...]
+    split: str
+
+
+def load_topics(
+    dataset: str, dataset_file: Path | None = None, limit: int | None = None
+) -> list[Topic]:
+    """Read the upstream topic dataset, from the Hub or a local JSONL copy.
+
+    :param dataset: Hugging Face dataset id, used when `dataset_file` is None
+    :param dataset_file: local JSONL to read instead, for a machine with no egress
+    :param limit: keep only the first N entries
+    :return: topics in dataset order
+    """
+    rows: Iterable[dict[str, Any]]
+    if dataset_file is not None:
+        with open(dataset_file) as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+    else:
+        from datasets import load_dataset
+
+        # `Dataset.__iter__` is typed as a union wide enough to include lists,
+        # which it never yields for a JSONL-backed dataset.
+        rows = cast(Iterable[dict[str, Any]], load_dataset(dataset, split="train"))
+
+    topics = []
+    for row in rows:
+        topics.append(
+            Topic(
+                title=row["original_title"],
+                prompt=row["prompt"],
+                labels=tuple(row["labels"]),
+                split=row["split"],
+            )
+        )
+        if limit is not None and len(topics) == limit:
+            break
+    return topics
+
 
 @dataclass(frozen=True)
 class Example:
-    """One (vector, label) training item -- the parent plan's 'example'."""
+    """One (vector, label) training item."""
 
     vector_index: int
     label: str
@@ -41,11 +97,12 @@ class VectorStore:
 
 @dataclass(frozen=True)
 class TopicRecord:
-    """One `topics.json` entry, read back for training.
+    """One `topics.json` entry -- both extractors write this shape and every
+    reader (training, evaluation) reads it back.
 
-    Mirrors the extractors' own `TopicRecord` dataclasses but is decoupled
-    from either of them -- this module only reads the fields both styles
-    write (`prompt` and pangram's `variant` are ignored).
+    `prompt` and `variant` are extractor-specific (the baseline style's own
+    prompt; the pangram style's matched response variant) and unset when read
+    back here, where they're unused.
     """
 
     title: str
@@ -53,6 +110,8 @@ class TopicRecord:
     split: str
     start: int
     count: int
+    prompt: str | None = None
+    variant: str | None = None
 
 
 def load_topic_records(directory: Path) -> list[TopicRecord]:
@@ -70,9 +129,30 @@ def load_topic_records(directory: Path) -> list[TopicRecord]:
             split=entry["split"],
             start=entry["start"],
             count=entry["count"],
+            prompt=entry.get("prompt"),
+            variant=entry.get("variant"),
         )
         for entry in raw
     ]
+
+
+def load_records(
+    vectors_dir: Path, restrict_to: Path | None = None
+) -> list[TopicRecord]:
+    """`load_topic_records(vectors_dir)`, optionally intersected with another
+    directory's own titles -- so a downstream comparison (e.g. between the
+    baseline and pangram styles) isn't secretly also a topic-population
+    difference.
+
+    :param vectors_dir: an extraction output directory
+    :param restrict_to: another extraction output directory whose titles to
+        intersect with
+    """
+    records = load_topic_records(vectors_dir)
+    if restrict_to is not None:
+        other_titles = {record.title for record in load_topic_records(restrict_to)}
+        records = restrict_to_titles(records, other_titles)
+    return records
 
 
 def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
@@ -80,10 +160,9 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
 
     Centering subtracts each vector's own position mean: a vector at index
     `i` belonging to a topic with `start` gets `position_means[i - start]`
-    subtracted (parent plan S5.3). This is what the trainer and the 1.3662
-    reproduction check need (`center=True`, the default); `center=False`
-    returns raw vectors, which is what downstream interpretation-time
-    evaluation uses instead (parent plan S5.3: train centred, interpret raw).
+    subtracted. This is what the trainer and the 1.3662 reproduction check
+    need (`center=True`, the default); `center=False` returns raw vectors,
+    which is what downstream interpretation-time evaluation uses instead.
 
     :param directory: an extraction output directory
     :param center: subtract per-position means (see above)
@@ -134,17 +213,10 @@ def load_examples(directory: Path, split: str) -> list[Example]:
 def restrict_to_titles(
     records: list[TopicRecord], titles: set[str]
 ) -> list[TopicRecord]:
-    """Keep only records whose title is in `titles`.
+    """Keep only records whose title is in `titles`, in their original order.
 
-    The baseline style filters no topics (49,637) while the pangram style
-    keeps only compliant ones; comparing arms without this would risk an arm
-    difference that is really a topic-population difference (parent plan
-    S9.2). `start`/`count` are untouched, so the result still addresses the
-    right vectors in its own directory's `vectors.pt`.
-
-    :param records: topic records to filter
-    :param titles: titles to keep (typically another directory's own titles)
-    :return: the intersection, in `records`' original order
+    `start`/`count` are untouched, so the result still addresses the right
+    vectors in its own directory's `vectors.pt`.
     """
     return [record for record in records if record.title in titles]
 

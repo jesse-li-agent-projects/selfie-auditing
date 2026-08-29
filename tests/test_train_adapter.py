@@ -22,8 +22,7 @@ import torch.nn as nn
 
 from adapter_training.checkpoints import save_checkpoint
 from adapter_training.dataset import Example, TopicRecord, VectorStore
-from adapter_training.evaluate_adapter import evaluate, subsample
-from adapter_training.loss import LossConfig, SoftPromptLoss
+from adapter_training.loss import LossConfig, SoftPromptLoss, evaluate, subsample
 from adapter_training.train_adapter import (
     TrainConfig,
     build_optimizer,

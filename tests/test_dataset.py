@@ -1,4 +1,4 @@
-"""Tests for adapter_training.dataset (plan step 2a, tests 1-4)."""
+"""Tests for adapter_training.dataset."""
 
 import json
 
@@ -9,6 +9,7 @@ from adapter_training.dataset import (
     TopicRecord,
     examples_from_records,
     load_examples,
+    load_records,
     load_topic_records,
     load_vector_store,
     pooled_vector_store,
@@ -42,7 +43,7 @@ def write_extraction_dir(tmp_path, records, vectors, means):
 
 def two_topic_dir(tmp_path):
     """topic0: 10 vectors (train); topic1: 9 vectors (val) -- mirrors the
-    pangram style's two variant lengths (plan S9.2)."""
+    pangram style's two variant lengths."""
     records = [
         TopicRecord("Alpha", ("a label",), "train", start=0, count=10),
         TopicRecord("Bravo", ("b label",), "val", start=10, count=9),
@@ -67,7 +68,7 @@ def test_centering_subtracts_each_vectors_own_position_mean(tmp_path):
     assert torch.allclose(store.vectors[:10], torch.full((10, HIDDEN), 100.0))
     # The 9-vector topic's last vector is position 8, not 9: it must be
     # centred by means[8], not means[9] -- position 9 has no data for this
-    # topic (plan S9.2, "count is genuinely per-topic").
+    # topic (count is genuinely per-topic).
     assert torch.allclose(store.vectors[10:19], torch.full((9, HIDDEN), 200.0))
 
 
@@ -156,3 +157,25 @@ def test_load_topic_records_round_trips_topics_json(tmp_path):
     )
 
     assert load_topic_records(tmp_path) == records
+
+
+def test_load_records_without_restrict_to_is_unfiltered(tmp_path):
+    records = two_topic_dir(tmp_path)
+
+    assert load_records(tmp_path) == records
+
+
+def test_load_records_restrict_to_intersects_titles(tmp_path):
+    two_topic_dir(tmp_path)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    write_extraction_dir(
+        other_dir,
+        [TopicRecord("Alpha", ("x",), "train", start=0, count=1)],
+        torch.zeros(1, HIDDEN),
+        torch.zeros(1, HIDDEN),
+    )
+
+    restricted = load_records(tmp_path, restrict_to=other_dir)
+
+    assert [r.title for r in restricted] == ["Alpha"]
