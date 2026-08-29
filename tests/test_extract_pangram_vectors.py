@@ -38,7 +38,7 @@ def test_pangram_prompt_is_the_requested_wording():
     prompt = PANGRAM_PROMPT_TEMPLATE.format(pangram=PANGRAM, topic="Alpha")
 
     assert prompt == (
-        'Write "The quick brown fox jumps over the lazy dog". Think about the '
+        'Write "The quick brown fox jumps over the lazy dog." Think about the '
         'topic "Alpha" while writing the sentence. Do not write anything else '
         "or change the words."
     )
