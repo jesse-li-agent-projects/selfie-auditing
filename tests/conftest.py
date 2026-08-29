@@ -1,5 +1,6 @@
-"""Fakes shared by the pangram and baseline extraction tests."""
+"""Fakes shared across adapter_training's tests."""
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,50 @@ from adapter_training.extract_common import Topic
 
 HIDDEN = 8
 VOCAB = 4096
+
+
+class FakeCharTokenizer:
+    """Tokenizes `<|...|>`-style tags as one atomic token and everything else
+    character by character -- enough to isolate `SELFIE_TEMPLATE`'s two
+    `RESERVED_TOKEN` slots without a real BPE tokenizer, which a
+    whitespace-splitting fake (`FakeTokenizer`, below) cannot do: the
+    template embeds `RESERVED_TOKEN` directly against punctuation and other
+    tags with no surrounding whitespace.
+    """
+
+    TAG = re.compile(r"<\|[^|]*\|>")
+
+    def __init__(self):
+        self._ids: dict[str, int] = {}
+        self._tokens: dict[int, str] = {}
+
+    def _id(self, token: str) -> int:
+        if token not in self._ids:
+            new_id = len(self._ids)
+            self._ids[token] = new_id
+            self._tokens[new_id] = token
+        return self._ids[token]
+
+    def _pieces(self, text: str) -> list[str]:
+        pieces: list[str] = []
+        pos = 0
+        for match in self.TAG.finditer(text):
+            pieces.extend(text[pos : match.start()])
+            pieces.append(match.group())
+            pos = match.end()
+        pieces.extend(text[pos:])
+        return pieces
+
+    def __call__(self, text, add_special_tokens=False, **kwargs):
+        return SimpleNamespace(
+            input_ids=[self._id(piece) for piece in self._pieces(text)]
+        )
+
+    def convert_tokens_to_ids(self, token):
+        return self._id(token)
+
+    def decode(self, ids, **kwargs):
+        return "".join(self._tokens.get(int(i), "?") for i in ids)
 
 
 class FakeTokenizer:
