@@ -511,11 +511,16 @@ reference's `vector - mean`: with 10 positions the residual stream is dominated 
 word of the pangram this is*, and a single global mean would not cancel that; a
 per-position mean does, leaving the topic signal.
 
-Evaluation continues to inject **raw** activations, matching upstream (`interpret.py`
-docstring, and the reference's own bridge-entity sweep). This is a deliberate train/eval
-mismatch inherited from upstream, on the reasoning that training on contrastive vectors
-should generalise better out of distribution. The 10 mean vectors are saved next to the
-checkpoint so the choice can be revisited without re-extracting.
+Downstream interpretation-time use continues to inject **raw** activations, matching
+upstream (`interpret.py` docstring, and the reference's own bridge-entity sweep). This is a
+deliberate train/interpret mismatch inherited from upstream, on the reasoning that training
+on contrastive vectors should generalise better out of distribution. The 10 mean vectors are
+saved next to the checkpoint so the choice can be revisited without re-extracting.
+
+This is a different thing from *validating* the trainer against the published checkpoint's
+recorded `best_val_loss` of 1.3662 (§6 step 2, §7 D10): that number came from upstream's own
+`validate()`, which draws from the same mean-subtracted vectors as training, so reproducing
+it needs centred vectors too (`plans/pangram_step0_benchmarks.md`'s gate).
 
 ### 5.4 Arms
 
@@ -706,8 +711,10 @@ exploration, the step-0 failure taxonomy, and measured timings.
 
 - **[D1]** Canonical target is the **unquoted** sentence; the filter stays. Step 0
   classifies failures into categories; revisit if quoted output exceeds ~5-10%.
-- **[D2]** Per-position mean-centering for training; evaluation keeps raw activations, as
-  upstream does.
+- **[D2]** Per-position mean-centering for training; downstream interpretation-time use
+  keeps raw activations, as upstream does (§5.3). The 1.3662 trainer-correctness check
+  (D10) is a separate thing and needs centred vectors, since that is what upstream's own
+  `validate()` scored.
 - **[D3]** Write a small trainer (option b), not a vendored copy of the reference's. It
   must support one-run-per-GPU and, optionally, DDP (§4.3).
 - **[D4]** Full budget is **755,391 examples seen** per run — the paper's single Wikipedia
