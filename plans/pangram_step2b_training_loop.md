@@ -1,8 +1,7 @@
 # Step 2b: the training loop
 
-Part 2 of 6 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
-read its §4.1, §4.5, §5.4 and §6 step 2 before starting). Read
-`plans/pangram_adapter_handoff.md` for execution state.
+Part 2 of 7 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
+read its §4.1, §4.5, §5.4, §6 step 2 and §9 before starting).
 
 **Depends on** `plans/pangram_step2a_loss_and_eval.md` being merged: this plan uses
 `adapter_training/dataset.py`, `loss.py` and `checkpoints.py` and adds nothing to them
@@ -53,7 +52,7 @@ that as **authoritative over both the paper's table and the YAML in
 
 Re-read these from the file rather than trusting this table -- `evaluate_adapter` from step
 2a already surfaces the checkpoint metadata, and any disagreement with the table above is a
-finding worth recording in the handoff.
+finding worth recording in the step's findings note.
 
 **Budget is examples seen, never epochs** (parent plan §4.1, D4). The full budget is
 **755,391 examples = 2,951 steps at batch 256**, which is upstream's single epoch over the
@@ -184,8 +183,8 @@ directory completes, loss decreases, and the artefacts (`best.pt`, `last.pt`,
 - All of the above passes; `--help` costs no torch import.
 - A 20-step smoke run against 1B produces a checkpoint that `interpret.py`'s adapter loader
   accepts.
-- `plans/pangram_adapter_handoff.md` updated: step 2b done, the measured step count,
-  anything that disagreed with the published checkpoint's recorded config.
+- `plans/notes/step2b_findings.md` records the measured step count and anything that
+  disagreed with the published checkpoint's recorded config.
 - Committed on a worktree branch with an undrafted PR.
 
 ## Do not
@@ -195,5 +194,8 @@ directory completes, loss decreases, and the artefacts (`best.pt`, `last.pt`,
 - Do not train on val examples, and do not split per vector: splits are **topic-level** and
   inherited from the upstream dataset (parent plan §5.2). A per-vector split leaks, because
   a val vector would be a near-duplicate of a train vector with an identical label set.
-- Do not centre at evaluation time (step 2a covers why).
+- Do not confuse the two centring modes. **This trainer's in-run and final validation passes
+  use centred vectors**, the same as training -- that is what upstream's `validate()` scored
+  and what 1.3662 is (step 2a). Raw is for *downstream interpretation* only (parent plan
+  §5.3), and nothing in this plan runs that.
 - Do not reach for the prefix cache here. It is deliberately a separate, gated step.

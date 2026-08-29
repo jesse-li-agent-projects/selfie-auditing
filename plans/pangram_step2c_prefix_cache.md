@@ -1,8 +1,7 @@
 # Step 2c (opt-in): the shared-prefix KV cache
 
-Part 3 of 6 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
-read §4.2.1 and D8, which are the whole justification for this file). Read
-`plans/pangram_adapter_handoff.md` for execution state.
+Part 3 of 7 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
+read §4.2.1 and D8, which are the whole justification for this file).
 
 **Depends on** `plans/pangram_step2a_loss_and_eval.md` and
 `plans/pangram_step2b_training_loop.md`.
@@ -97,7 +96,7 @@ plus norm is what you fall back on when the tolerance is too loose to say anythi
 and in fp32 it is not.
 
 Keep a second, loose bf16 run (the ~1e-2 band, cosine + norm ratio) purely to confirm the
-model-dtype path is also plumbed. State both tolerances and why in the handoff.
+model-dtype path is also plumbed. State both tolerances and why in the findings note.
 
 ### Assert the cache is actually in use
 
@@ -175,12 +174,12 @@ It is nearly free -- the extraction is already on disk -- and it is the only che
 plan that exercises the cache on the real model, the real corpus and the real label
 distribution rather than a hand-built batch of eight. **Both runs must land in the same
 "agreement" band that step 0 defines**; a cached score that drifts out of it means the flag
-is wrong, whatever `tests/test_prefix_cache.py` says. Record both numbers in the handoff.
+is wrong, whatever `tests/test_prefix_cache.py` says. Record both numbers.
 
 ## Measuring the win
 
 Re-run the benchmark harness from `plans/pangram_step0_benchmarks.md` with the flag on and
-off, same card, same micro-batch. Record examples/second and peak memory in the handoff.
+off, same card, same micro-batch. Record examples/second and peak memory.
 The parent plan predicts ~1.39× and ~7.3k tokens per step (from ~10.2k bucketed). **If the
 measured win is under ~1.2×, say so and leave the flag off by default** -- a correct slow
 path beats a fast path nobody is confident in.
@@ -188,12 +187,12 @@ path beats a fast path nobody is confident in.
 ## Done when
 
 - The equivalence test passes in fp32, with the cache-in-use assertion holding and all
-  three mutants failing it -- or the attempt is abandoned with a written reason in the
-  handoff.
+  three mutants failing it -- or the attempt is abandoned with a written reason in
+  `plans/notes/step2c_findings.md`.
 - The state tests and the batch-shape cases pass.
 - The 1.3662 gate reproduces with the flag on, in the same band as with it off, and both
-  numbers are in the handoff.
-- The measured speedup and memory are recorded in the handoff next to the prediction.
+  numbers are recorded.
+- The measured speedup and memory are recorded next to the prediction.
 - The flag defaults to off and is never silently enabled.
 - Committed on a worktree branch with an undrafted PR.
 

@@ -1,8 +1,8 @@
 # Step 2a: the example pipeline, the loss path, and `evaluate_adapter`
 
-Part 1 of 6 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
+Part 1 of 7 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
 read its §1, §3 and §5.2 before starting; this file does not restate its reasoning, only
-what to build). Read `plans/pangram_adapter_handoff.md` for execution state.
+what to build).
 
 **Deliverable**: `adapter_training/` gains a dataset module, a loss module, and an
 `evaluate_adapter` CLI that scores *any* projection checkpoint on a val split. No training
@@ -57,7 +57,7 @@ Two consequences you must handle:
   with-stop variant (10 vectors), ~27% the no-stop variant (9 vectors). Address a topic's
   vectors as `vectors[start : start + count]`; its position index is `i - start`.
 - **Vectors on disk are raw.** The trainer subtracts `position_means.pt` itself (parent
-  plan D2, and the handoff's "Means are written, not applied"). If it forgets, arm B trains
+  plan D2 and §9.2, "Means are written, not applied"). If it forgets, arm B trains
   on uncentred vectors and nothing on disk says so. Make this hard to forget: no code path
   should load vectors without going through the module built here.
 
@@ -115,7 +115,7 @@ Requirements, each one a test:
   differ by a config field, not by a code path.
 - A **topic-set intersection** helper, `restrict_to_titles(records, titles)`, because the
   baseline style filters nothing (49,637 topics) while the pangram style keeps only
-  compliant ones. The handoff flags this as undecided and unimplemented; implement it here
+  compliant ones. Parent plan §9.2 flags this as undecided and unimplemented; implement it here
   and let step 2b expose it as `--restrict-topics-to <dir>`. Recommended default when
   comparing arms: intersect, so an arm difference cannot be a topic-population difference.
   Do not intersect for the 1.3662 check -- that must run on upstream's own population.
@@ -267,7 +267,7 @@ Fast:
   the `hf_cache` ones pass under `gpu-exec`.
 - `python -m adapter_training.evaluate_adapter --help` returns without importing torch.
 - The naive-vs-sliced equivalence test (10) exists and passes.
-- `plans/pangram_adapter_handoff.md` updated: step 2a done, what was decided, what 2b needs.
+- `plans/notes/step2a_findings.md` records what was decided and what 2b needs.
 - Committed on a worktree branch with a PR (undrafted), per the project workflow.
 
 ## Do not
