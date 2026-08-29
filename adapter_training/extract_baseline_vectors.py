@@ -60,10 +60,10 @@ import torch
 from adapter_training.dataset import Topic, TopicRecord, load_topics
 from adapter_training.extract_common import (
     ExtractionResult,
-    formatted_prompt,
     run_forward,
     write_extraction_outputs,
 )
+from extract import build_prompt
 
 
 @torch.no_grad()
@@ -108,7 +108,7 @@ def extract_baseline_vectors(
 
     for start in batches:
         batch = topics[start : start + batch_size]
-        prompts = [formatted_prompt(tokenizer, topic.prompt) for topic in batch]
+        prompts = [build_prompt(tokenizer, topic.prompt, None) for topic in batch]
         _, hidden = run_forward(model, tokenizer, prompts, [], layer, device)
 
         for row, topic in enumerate(batch):

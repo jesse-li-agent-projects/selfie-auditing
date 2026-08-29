@@ -81,10 +81,10 @@ from torch import Tensor
 from adapter_training.dataset import Topic, TopicRecord, load_topics
 from adapter_training.extract_common import (
     ExtractionResult,
-    formatted_prompt,
     run_forward,
     write_extraction_outputs,
 )
+from extract import build_prompt
 
 # The sentence the model is asked to write, and the response the filter
 # demands back. The response carries a full stop that the instruction's
@@ -305,9 +305,10 @@ def extract_pangram_vectors(
     for start in batches:
         batch = topics[start : start + batch_size]
         prompts = [
-            formatted_prompt(
+            build_prompt(
                 tokenizer,
                 PANGRAM_PROMPT_TEMPLATE.format(pangram=pangram, topic=topic.title),
+                None,
             )
             for topic in batch
         ]
