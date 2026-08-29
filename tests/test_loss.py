@@ -1,18 +1,18 @@
 """Tests for adapter_training.loss (plan step 2a, tests 5-7 and 9-11).
 
 Tests 5-7 drive `SoftPromptLoss` with a fake tokenizer/model, at no cost.
-`FakeCharTokenizer` tokenizes `<|...|>`-style tags as one atomic token and
-everything else character by character, which is enough to isolate
-`SELFIE_TEMPLATE`'s two `RESERVED_TOKEN` slots without a real BPE tokenizer.
-The stub model's base transformer ignores `inputs_embeds` and returns
-whatever `last_hidden_state` the test sets, with `lm_head` the identity --
-so the test controls "logits" directly and can hand-verify the loss.
+`FakeCharTokenizer` (conftest.py) tokenizes `<|...|>`-style tags as one
+atomic token and everything else character by character, which is enough to
+isolate `SELFIE_TEMPLATE`'s two `RESERVED_TOKEN` slots without a real BPE
+tokenizer. The stub model's base transformer ignores `inputs_embeds` and
+returns whatever `last_hidden_state` the test sets, with `lm_head` the
+identity -- so the test controls "logits" directly and can hand-verify the
+loss.
 
 Tests 9-11 need the real Llama-3.2-1B tokenizer/model (`hf_cache`); test 10
 is the one the plan calls out as protecting the eventual 1.3662 check.
 """
 
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -21,46 +21,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from adapter_training.loss import LossConfig, SoftPromptLoss, target_text
+from conftest import FakeCharTokenizer
 from interpret import RESERVED_TOKEN, SELFIE_TEMPLATE
 from selfie_adapters.projection import create_projection_module
 
 VOCAB = 300
-
-
-class FakeCharTokenizer:
-    TAG = re.compile(r"<\|[^|]*\|>")
-
-    def __init__(self):
-        self._ids: dict[str, int] = {}
-        self._tokens: dict[int, str] = {}
-
-    def _id(self, token: str) -> int:
-        if token not in self._ids:
-            new_id = len(self._ids)
-            self._ids[token] = new_id
-            self._tokens[new_id] = token
-        return self._ids[token]
-
-    def _pieces(self, text: str) -> list[str]:
-        pieces: list[str] = []
-        pos = 0
-        for match in self.TAG.finditer(text):
-            pieces.extend(text[pos : match.start()])
-            pieces.append(match.group())
-            pos = match.end()
-        pieces.extend(text[pos:])
-        return pieces
-
-    def __call__(self, text, add_special_tokens=False, **kwargs):
-        return SimpleNamespace(
-            input_ids=[self._id(piece) for piece in self._pieces(text)]
-        )
-
-    def convert_tokens_to_ids(self, token):
-        return self._id(token)
-
-    def decode(self, ids, **kwargs):
-        return "".join(self._tokens.get(int(i), "?") for i in ids)
 
 
 class StubBaseModel:
