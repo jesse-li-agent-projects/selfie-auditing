@@ -111,10 +111,11 @@ def extract_baseline_vectors(
         prompts = [build_prompt(tokenizer, topic.prompt, None) for topic in batch]
         _, hidden = run_forward(model, tokenizer, prompts, [], layer, device)
 
+        kept = hidden[:, -1, :].to(dtype=torch.bfloat16, device="cpu")
+        vectors[start : start + len(batch)] = kept
+        total += kept.double().sum(dim=0)
+
         for row, topic in enumerate(batch):
-            kept = hidden[row, -1, :].to(dtype=torch.bfloat16, device="cpu")
-            vectors[start + row] = kept
-            total += kept.double()
             records.append(
                 TopicRecord(
                     title=topic.title,
