@@ -1,8 +1,8 @@
 # Step 2a: the example pipeline, the loss path, and `evaluate_adapter`
 
-Part 1 of 6 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
+Part 1 of 7 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
 read its §1, §3 and §5.2 before starting; this file does not restate its reasoning, only
-what to build). Read `plans/pangram_adapter_handoff.md` for execution state.
+what to build).
 
 **Deliverable**: `adapter_training/` gains a dataset module, a loss module, and an
 `evaluate_adapter` CLI that scores *any* projection checkpoint on a val split. No training
@@ -57,7 +57,7 @@ Two consequences you must handle:
   with-stop variant (10 vectors), ~27% the no-stop variant (9 vectors). Address a topic's
   vectors as `vectors[start : start + count]`; its position index is `i - start`.
 - **Vectors on disk are raw.** The trainer subtracts `position_means.pt` itself (parent
-  plan D2, and the handoff's "Means are written, not applied"). If it forgets, arm B trains
+  plan D2 and §9.2, "Means are written, not applied"). If it forgets, arm B trains
   on uncentred vectors and nothing on disk says so. Make this hard to forget: no code path
   should load vectors without going through the module built here.
 
@@ -97,8 +97,15 @@ Requirements, each one a test:
   on load; see `compute_loss`'s `vectors.to(dtype=torch.float32)`), and subtracts each
   vector's own position mean: for a vector at index `i` belonging to a topic with `start`,
   subtract `position_means[i - start]`. With `center=False` it returns raw vectors -- that
-  is what evaluation uses (parent plan §5.3: train centred, evaluate raw, deliberately
-  inherited from upstream).
+  is what *downstream interpretation-time* evaluation uses (parent plan §5.3: train centred,
+  interpret raw, deliberately inherited from `interpret.py` and upstream's bridge-entity
+  eval, `evals/bridge_entity/run_selfie_bridge_extraction.py`).
+  **The 1.3662 reproduction check needs `center=True` instead.** Upstream's own `validate()`
+  (`training/trainer.py`) draws from `self.val_loader`, and `training/data.py::
+  create_dataloaders` builds train and val loaders from one single `vectors_file` (the
+  contrastive, mean-subtracted `.pt`) split by the `split` field -- there is no separate raw
+  path for validation. 1.3662 was computed on centred vectors; scoring the published
+  checkpoint on raw vectors will not reproduce it even if everything else here is correct.
 - `load_examples` flattens each topic of the requested split against **every one of its
   labels**, in `topics.json` order, and every vector of that topic. So a 10-vector topic
   with 17 labels yields 170 examples. Deterministic order -- the shuffling belongs to the
@@ -108,7 +115,7 @@ Requirements, each one a test:
   differ by a config field, not by a code path.
 - A **topic-set intersection** helper, `restrict_to_titles(records, titles)`, because the
   baseline style filters nothing (49,637 topics) while the pangram style keeps only
-  compliant ones. The handoff flags this as undecided and unimplemented; implement it here
+  compliant ones. Parent plan §9.2 flags this as undecided and unimplemented; implement it here
   and let step 2b expose it as `--restrict-topics-to <dir>`. Recommended default when
   comparing arms: intersect, so an arm difference cannot be a topic-population difference.
   Do not intersect for the 1.3662 check -- that must run on upstream's own population.
@@ -205,9 +212,12 @@ python -m adapter_training.evaluate_adapter \
   mechanism step 2b's in-run validation uses (parent plan §4.5: a fixed 5,000-example
   subsample, drawn once, reused at every validation). Put the sampling function here
   (`subsample(examples, n, seed)`) and have step 2b import it.
-- **Evaluation injects raw vectors** (`center=False`), matching upstream. Print loudly
-  which mode was used; a silent centring difference is exactly the bug that would make
-  1.3662 unreproducible.
+- **`--center` / `--no-center` selects the mode; default is `--no-center` (raw), matching
+  downstream interpretation-time usage** (`interpret.py`, the bridge-entity eval). Print
+  loudly which mode was used -- a silent centring difference is exactly the bug that would
+  make 1.3662 unreproducible. **The 1.3662 reproduction check must pass `--center`**: that
+  number was computed on the mean-subtracted vectors upstream's own `validate()` uses (see
+  `dataset.py` above), not on raw ones.
 - Writes a JSON report: measured loss, example count, batch count, checkpoint metadata
   (including any recorded `best_val_loss`), vector directory, centring mode, model, layer.
 
@@ -257,14 +267,16 @@ Fast:
   the `hf_cache` ones pass under `gpu-exec`.
 - `python -m adapter_training.evaluate_adapter --help` returns without importing torch.
 - The naive-vs-sliced equivalence test (10) exists and passes.
-- `plans/pangram_adapter_handoff.md` updated: step 2a done, what was decided, what 2b needs.
+- `plans/notes/step2a_findings.md` records what was decided and what 2b needs.
 - Committed on a worktree branch with a PR (undrafted), per the project workflow.
 
 ## Do not
 
 - Do not vendor or edit `resources/selfie-adapters/` -- it is read-only reference.
 - Do not train anything, and do not add an optimizer here.
-- Do not "fix" the train-centred/eval-raw mismatch. It is a deliberate inherited choice
-  (parent plan §5.3, D2).
+- Do not "fix" the train-centred/interpret-raw mismatch (`--no-center` default,
+  §5.3, D2). That is about the adapter's own usage at downstream interpretation time
+  (`interpret.py`, the bridge-entity eval), not about the 1.3662 gate -- which must use
+  `--center` because that is what upstream's `validate()` actually scored.
 - Do not change `interpret.SELFIE_TEMPLATE`. The adapter was trained against that exact
   string; the parent plan's D6 has the history of an earlier draft getting this wrong.

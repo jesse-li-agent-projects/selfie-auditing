@@ -1,11 +1,10 @@
 # Steps 4-5 / phases 1-2: attribution, capacity, generation eval, final report
 
-Part 6 of 6 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
-read §5.4, §5.5, §5.6 and §6 steps 4-5). Read `plans/pangram_adapter_handoff.md` for
-execution state.
+Part 7 of 7 in the execution of `plans/pangram_extraction_adapter.md` (the parent plan --
+read §5.4, §5.5, §5.6 and §6 steps 4-5).
 
 **Depends on** `plans/pangram_phase0_run.md` having completed **and its gate having
-opened**. If arm B did not beat the published checkpoint, the parent plan says the
+opened**. If arm B did not clear its own untrained floor, the parent plan says the
 interesting question becomes *why*, and arm C is not automatically the next thing to buy --
 check with the user before spending ~8.6 A100-hours here.
 
@@ -44,7 +43,13 @@ position to the topic on its own. In C they are averaged before the adapter sees
 
 - If C ≈ B, position-specific detail was not load-bearing, and C is the better deal.
 - If B > C, averaging destroys something and per-position training earns its pool.
-- If both beat A, the gain came from the prompt rather than from either pooling scheme.
+
+**B vs C is the phase-1 comparison, and arm A is not part of it.** B and C share vectors,
+task and topic population, so their losses and their recall numbers are directly comparable.
+Arm A reads an activation from a prompt that names the topic out loud, which is a different
+task; its loss is not comparable to either, and its recall number is a labelled reference
+point only (parent plan §5.4). What arm A buys is a **replication of upstream under our own
+trainer** -- a stronger version of the D10 check -- not an attribution baseline.
 
 ## Phase 1: two runs
 
@@ -65,11 +70,13 @@ replication check, so it does not need repeating across architectures. Its resul
 the published 1.3662 is the stronger version of the step-0 gate.
 
 **The topic-population question.** The baseline style filters nothing (49,637 topics) while
-the pangram style keeps only compliant topics (~95%). Comparing A against B/C therefore
-compares slightly different topic populations. Use `--restrict-topics-to
-vectors/pangram_l19` on the arm-A run so the comparison is like-for-like, and report both
-the restricted number and (if cheap) the unrestricted one. The handoff flags this as
-previously undecided; decide it here and record the decision.
+the pangram style keeps only compliant topics (~95%), so any A-vs-B/C table rests on
+slightly different topic populations even where the comparison is otherwise legitimate. Use
+`--restrict-topics-to vectors/pangram_l19` on the arm-A run, and report both the restricted
+number and (if cheap) the unrestricted one. Parent plan §9.2 flagged this as undecided;
+**decide it here and record the decision.** Note that restricting removes only one of the
+confounds between A and B/C -- the difference in task remains, which is why A is never B's
+target (parent plan §5.4).
 
 ## Phase 2: capacity, two runs
 
@@ -94,49 +101,48 @@ generation eval).
 Launch with `run_in_background` and monitor output files; never use `ps` to check liveness
 (project rule).
 
-## Generation accuracy (parent plan §5.6)
+## Retrieval accuracy (parent plan §5.6, D11)
 
-Loss is the primary comparison; generation accuracy is the one that says whether the loss
-difference means anything a human would notice. Reuse the reference's scoring rather than
-inventing a metric. Read
-`resources/selfie-adapters/evals/embedding_retrieval/topic_retrieval_eval.py` and
-`evaluate_labels_retrieval.py` first -- the embedding-retrieval eval is designed for exactly
-this in-distribution case and is the cheaper of the two (`generation_scoring/` is a much
-larger LLM-judged pipeline).
+The headline metric, already built (`plans/pangram_step2d_retrieval_eval.md`) and already
+run once in phase 0. Here it is run for arms A and C and for the two capacity checkpoints.
 
-Shape of the work:
+    python -m adapter_training.evaluate_retrieval \
+        --vectors <arm's vectors> --split val --checkpoint <run-dir>/best.pt \
+        --dataset-file <jsonl> --center --positions all \
+        --report eval/<arm>_retrieval.json
 
-1. For each trained adapter, generate labels for held-out (val) topics by injecting **raw**
-   vectors into `SELFIE_TEMPLATE` and decoding -- upstream's
-   `SelfIEModel.generate_descriptions` and this repo's
-   `interpret.generate_interpretations_batch` both do this; prefer reusing the repo's.
-2. Score the generated labels by embedding retrieval against the topic index
-   (`TopicRetrievalIndex`, `IndexStrategy`, `TopicDataset.FIFTY_THOUSAND`). Needs
-   `sentence-transformers` and dataset access -- check both are available on the machine
-   before planning around it, and note the remote has no egress.
-3. For **arm B**, generate from a single chosen position (say the last) *and* from all 10
-   with the generated text pooled, since B's eval-time usage is a genuine choice (parent
-   plan §5.4). For **arm C**, you must average the same 10 positions to feed it.
-4. Same decoding settings and same val topics for every arm, or the comparison is void.
+Non-negotiable, or the table is void: **the same index, the same query topic set, the same
+decoding settings and the same seed for every arm.** Rebuild nothing between arms -- cache
+the index from phase 0 and reuse it. Arm C is fed the average of the same 10 positions it
+was trained on; arm A has one vector per topic, so `--positions` does not apply.
+
+Report recall@{1,5,10} for every arm, in the centred condition primarily and the raw one
+beside it for arms B and C. Arm A's row is a **labelled reference point**, not a target
+(parent plan §5.4).
 
 ## The per-position breakdown (arm B only, exploratory)
 
-Train pooled, then evaluate positions 0..9 separately. **This does not feed the A/B/C
-conclusion** -- it is explicitly exploratory (parent plan §5.6). Its value is shaping the
-next iteration: if late positions (`lazy`, `dog`, `.`) carry most of the topic signal, a
-follow-up could read only those and shrink the pool. Report it as such, and remember
-position 9 exists only for the ~68% of topics that wrote the full stop.
+This falls out of arm B's phase-0 retrieval run at no extra cost -- it is scored at every
+position already, with the mean over positions as its primary number. **It does not feed the
+B/C conclusion** (parent plan §5.6). Its value is shaping the next iteration: if late
+positions (`lazy`, `dog`, `.`) carry most of the topic signal, a follow-up could read only
+those and shrink the pool. Report it as exploratory, and remember position 9 exists only for
+the ~68% of topics that wrote the full stop (parent plan §9.3).
 
 ## Step 5: the report
 
 `plans/notes/pangram_adapter_report.md`, pulling together:
 
-- loss-vs-examples-seen curves for every arm on one axis, plus the endpoint table with the
-  published 1.3662 and the untrained floor;
-- the A/B/C verdict and the attribution it does or does not support;
+- **the retrieval table first** -- recall@{1,5,10} per arm against the untrained floor on
+  each arm's own vectors, with arm A's row and the paper's 94%/1% labelled as reference
+  points;
+- loss-vs-examples-seen curves for every arm on one axis, plus the endpoint table with each
+  arm's own untrained floor. Put the published 1.3662 beside **arm A only**, and state in
+  one sentence why arms B and C are not measured against it (parent plan §5.4);
+- the B/C verdict and the attribution it does or does not support, and separately whether
+  arm A replicated upstream;
 - the capacity sweep;
-- generation accuracy per arm;
-- the per-position exploration;
+- the per-position exploration, marked exploratory;
 - the step-0 failure taxonomy at full-corpus scale (from phase 0's `filter_report.json`),
   including the word-substitution mode;
 - measured timings and cost against the parent plan's estimates;
@@ -154,17 +160,18 @@ across `Position.USER_PROMPT_SPAN`.
 ## Done when
 
 - Four checkpoints exist with their metrics and final evaluations, durable.
-- Generation accuracy is measured for every arm on the same topics with the same settings.
+- Retrieval accuracy is measured for every arm on the same index, the same query topics and
+  the same decoding settings and seed.
 - The report is written.
-- `plans/pangram_extraction_adapter.md`, this file, and the other five step plans are moved
-  to `plans/archive/` with their index entries, per `plans/CLAUDE.md`. The handoff note goes
-  with them.
+- `plans/pangram_extraction_adapter.md`, this file, and the other six step plans are moved
+  to `plans/archive/` with their index entries, per `plans/CLAUDE.md`.
 - Committed on a worktree branch with an undrafted PR.
 
 ## Do not
 
 - Do not vary the budget between arms. Equal examples seen *is* the comparison.
-- Do not let the per-position breakdown drive the A/B/C conclusion.
+- Do not compare arms B or C against arm A's loss or against 1.3662 (parent plan §5.4).
+- Do not let the per-position breakdown drive the B/C conclusion.
 - Do not re-extract anything.
 - Do not report a capacity result as "capacity did not help" if the run was still improving
   at the cap.
