@@ -26,9 +26,11 @@ This directory contains plans for agents.
       its own horizon, length-bucketed batching, gradient accumulation,
       subsampled validation, checkpoints the reference loader reads.
 - pangram_step2c_prefix_cache.md
-    - Execution part 3/6, optional and gated. The shared-prefix KV cache worth
-      ~1.39x, behind a flag, with the equivalence test that justifies it --
-      and explicit permission to abandon it if that test is awkward.
+    - Execution part 3/6. **Opt-in: do not execute unless the user asks for it
+      by name**; the default path through the six steps skips it. The
+      shared-prefix KV cache worth ~1.39x, behind a flag, with the equivalence
+      test that justifies it -- and explicit permission to abandon it if that
+      test is awkward.
 - pangram_step0_benchmarks.md
     - Execution part 4/6, first GPU step. The trainer-correctness gate (score
       the published adapter through our loss path against its recorded

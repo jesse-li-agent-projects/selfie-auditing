@@ -21,7 +21,7 @@ needs, so you do not have to hold the whole parent plan in your head.
 |---|---|---|
 | 0 probe | `pangram_step0_benchmarks.md` | **partial** -- items 1-2 done (real 8B, 500-topic sample); items 3-5 (the 1.3662 gate, benchmarking, debug run) not started, and need the step-2 trainer |
 | 1 extraction script | -- | **done**, revised after the step-0 probe, then split into three modules (below) |
-| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md`, optionally `pangram_step2c_prefix_cache.md` | not started |
+| 2 trainer | `pangram_step2a_loss_and_eval.md`, then `pangram_step2b_training_loop.md`; `pangram_step2c_prefix_cache.md` is opt-in, skip unless asked for by name | not started |
 | 3 phase 0 (extract + arm B run) | `pangram_phase0_run.md` | not started |
 | 4 phases 1-2 | `pangram_phases12_and_report.md` | not started |
 | 5 report | `pangram_phases12_and_report.md` | not started |
@@ -208,8 +208,8 @@ step 0 against it, rather than blocking step 2 on them. The execution order is t
 4. `pangram_phase0_run.md` -- extraction + arm B at full budget; also a gate
 5. `pangram_phases12_and_report.md` -- arms A and C, capacity, generation eval, report
 
-with `pangram_step2c_prefix_cache.md` optional and deliberately deferred until after a real
-run shows the 1.39x is worth a day's work.
+with `pangram_step2c_prefix_cache.md` **opt-in: skip it unless the user asks for it by
+name**, and deferred until after a real run shows the 1.39x is worth a day's work.
 
 Points that step 1 changed or sharpened, which those plans carry:
 

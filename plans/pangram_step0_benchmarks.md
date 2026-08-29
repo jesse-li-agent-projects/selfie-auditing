@@ -121,10 +121,13 @@ Then re-derive the run's cost from the *measured* rate rather than the parent pl
 
 ## Item 4: prefix-cache equivalence
 
-Only if `plans/pangram_step2c_prefix_cache.md` has been executed. Its own equivalence test
-is the deliverable; here you just confirm it passes on the real 8B and record the measured
-speedup. If 2c has not been done, write "not attempted" in the handoff and move on -- it is
-explicitly optional.
+Only if `plans/pangram_step2c_prefix_cache.md` has been executed -- which it usually will
+not have been, since it is opt-in. Write "not attempted" in the handoff and move on unless
+the user asked for it by name.
+
+If it has been executed: its own equivalence test is the deliverable; here you confirm it
+passes on the real 8B, re-run the item 3+ gate above with `--prefix-cache` on (both scores
+must land in the same agreement band), and record the measured speedup.
 
 ## Item 5: the ~50-step debug run
 
