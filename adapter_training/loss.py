@@ -90,7 +90,9 @@ class SoftPromptLoss:
             )
         self.template_len = len(template_ids)
 
-        template_ids_tensor = torch.tensor(template_ids, dtype=torch.long)
+        template_ids_tensor = torch.tensor(
+            template_ids, dtype=torch.long, device=self.embed_layer.weight.device
+        )
         with torch.no_grad():
             # (1, template_len, hidden); cloned per batch in __call__.
             self.template_embeds = self.embed_layer(template_ids_tensor.unsqueeze(0))
