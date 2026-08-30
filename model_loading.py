@@ -9,8 +9,12 @@ model reload (plan S6, "Model footprint").
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
+from typing import cast
 
 import torch
+import torch.nn as nn
+from accelerate.hooks import AlignDevicesHook
+from accelerate.utils import has_offloaded_params
 from peft import PeftModel
 from transformers import (
     AutoModelForCausalLM,
@@ -76,18 +80,34 @@ def load_base_model(
     return model
 
 
-def resolve_device(model: PreTrainedModel) -> str:
+def resolve_device(model: PreTrainedModel) -> torch.device:
     """Where a caller's own tensors (input ids, a trainable projection, the
     SelfIE template embeddings) must live to match `model`.
 
-    With a single-device `device_map` this is just that device. With a
-    sharded one (`device_map="auto"`, needed when the model doesn't fit on
-    one GPU) the model's layers are spread across devices and `accelerate`'s
-    dispatch hooks move activations between them automatically -- but
-    anything not already inside the model must start on the embedding
-    layer's device, the one shard every caller-supplied tensor first meets.
+    Under a sharded `device_map` (`"auto"`, needed when the model doesn't fit
+    on one GPU) anything not already inside the model must start on the
+    embedding layer's device, the one shard every caller-supplied tensor
+    first meets -- `accelerate`'s dispatch hooks move activations onward from
+    there. If that layer is itself offloaded (CPU/disk, under memory
+    pressure) its weight sits on the `meta` device except mid-forward, so
+    `has_offloaded_params` is used to read its dispatch hook's
+    `execution_device` instead.
     """
-    return str(model.get_input_embeddings().weight.device)
+    # `get_input_embeddings()` is typed to return a plain `nn.Module` since
+    # not every architecture uses `nn.Embedding` -- every model this project
+    # loads (Llama) does.
+    embed_layer = cast(nn.Embedding, model.get_input_embeddings())
+    if has_offloaded_params(embed_layer):
+        # `_hf_hook` is attached at runtime by `accelerate`, not part of any
+        # static type; `has_offloaded_params` above already confirmed it's
+        # there and is an `AlignDevicesHook`.
+        hook = cast(AlignDevicesHook, embed_layer._hf_hook)  # type: ignore[attr-defined]
+        # `execution_device` is `Optional` in accelerate's own signature, but
+        # an offloaded module always has one set -- it's where accelerate
+        # stages the module's weights to run its forward call.
+        assert hook.execution_device is not None
+        return torch.device(hook.execution_device)
+    return torch.device(embed_layer.weight.device)
 
 
 def attach_taboo_loras(
