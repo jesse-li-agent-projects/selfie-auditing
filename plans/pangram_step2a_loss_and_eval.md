@@ -37,7 +37,7 @@ Llama-3.2-1B (`config.DUMMY_BASE_MODEL`) or a fake model. The 8B check itself is
 
 | file | role |
 |---|---|
-| `extract_common.py` | `Topic`, `load_topics`, `left_pad`, `position_ids_from_mask`, `run_forward`, `formatted_prompt` |
+| `extract_common.py` | `Topic`, `load_topics`, `run_forward`, `formatted_prompt` |
 | `extract_pangram_vectors.py` | the pangram style, with the compliance filter and two response variants |
 | `extract_baseline_vectors.py` | upstream's own style: one vector at the last prompt token |
 

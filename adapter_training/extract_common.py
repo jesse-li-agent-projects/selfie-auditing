@@ -7,44 +7,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Tensor
 
 from adapter_training.dataset import TopicRecord
-
-
-def left_pad(
-    sequences: list[list[int]], pad_id: int
-) -> tuple[Int[Tensor, "batch seq"], Int[Tensor, "batch seq"]]:
-    """Stack ragged token sequences with padding on the left.
-
-    Left padding is what makes the response tokens land at fixed negative
-    offsets for every example in the batch, so the caller can slice them
-    without per-example bookkeeping.
-
-    :param sequences: one token id list per example
-    :param pad_id: the pad token id
-    :return: the padded ids and their attention mask
-    """
-    width = max(len(sequence) for sequence in sequences)
-    input_ids = torch.full((len(sequences), width), pad_id, dtype=torch.long)
-    attention_mask = torch.zeros((len(sequences), width), dtype=torch.long)
-    for row, sequence in enumerate(sequences):
-        input_ids[row, width - len(sequence) :] = torch.tensor(
-            sequence, dtype=torch.long
-        )
-        attention_mask[row, width - len(sequence) :] = 1
-    return input_ids, attention_mask
-
-
-def position_ids_from_mask(
-    attention_mask: Int[Tensor, "batch seq"],
-) -> Int[Tensor, "batch seq"]:
-    """RoPE positions that ignore left padding -- otherwise every real
-    token's rotary position shifts by that row's pad count, and an example's
-    activations would depend on which batch it landed in.
-    """
-    return (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
 
 
 def run_forward(
@@ -71,14 +37,11 @@ def run_forward(
         tokenizer(prompt, add_special_tokens=False).input_ids + forced_ids
         for prompt in prompts
     ]
-    input_ids, attention_mask = left_pad(sequences, tokenizer.pad_token_id)
-    input_ids = input_ids.to(device)
-    attention_mask = attention_mask.to(device)
+    batch = tokenizer.pad({"input_ids": sequences}, return_tensors="pt").to(device)
 
     outputs = model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        position_ids=position_ids_from_mask(attention_mask),
+        input_ids=batch.input_ids,
+        attention_mask=batch.attention_mask,
         output_hidden_states=True,
         # The forced tokens sit at the last len(forced_ids) positions, and
         # each is predicted by the logits one position earlier -- so one

@@ -879,7 +879,7 @@ listed in `plans/CLAUDE.md`; each writes its own findings note under `plans/note
 
 | file | role |
 |---|---|
-| `extract_common.py` | `Topic`, `load_topics`, `left_pad`, `position_ids_from_mask`, `run_forward`, `formatted_prompt` |
+| `extract_common.py` | `Topic`, `load_topics`, `run_forward`, `formatted_prompt` |
 | `extract_pangram_vectors.py` | the pangram style: teacher-forces the sentence plus `<|eot_id|>`, keeps one vector per sentence token, filters |
 | `extract_baseline_vectors.py` | upstream's own style: renders each topic's own dataset prompt, keeps one vector at the last prompt token |
 
@@ -893,8 +893,7 @@ copy of `keenanpepper/fifty-thousand-things` (the single file
 Tests: `tests/test_extract_pangram_vectors.py` (17 fast tests against a fake model and
 tokenizer — prompt wording, padding, filter verdicts, split inheritance, contiguous index
 ranges, per-position means and their counts, batch invariance, the two-variant derivation
-and its fallback), plus `tests/test_extract_baseline_vectors.py` and
-`tests/test_extract_common.py`. Tests needing real weights are marked `hf_cache` and pin what
+and its fallback), plus `tests/test_extract_baseline_vectors.py`. Tests needing real weights are marked `hf_cache` and pin what
 only a real tokenizer answers: the pangram is 10 tokens with the pinned decodings, batched
 extraction matches unbatched, and the written artefacts have the right shapes. Run those
 under the `claude` user (`gpu-exec`) — the HF cache is only readable there.
@@ -914,11 +913,16 @@ under the `claude` user (`gpu-exec`) — the HF cache is only readable there.
   treat its position index as `i - start`, never assume 10.
 - **Per-position means carry a per-position count**, not `sum / len(records)`, because the
   last position only has data from with-stop topics.
-- **Padding-aware `position_ids`.** A plain forward pass numbers RoPE positions with
-  `arange(seq_len)`, so under left padding a topic's vectors would depend on which batch it
-  landed in. The extractor derives positions from the attention mask instead. The reference
-  implementation does not, which is one reason our baseline vectors may differ slightly from
-  upstream's.
+- **Left padding via the tokenizer, plain `arange` `position_ids`.** The tokenizer is
+  configured with `padding_side = "left"` (`model_loading.load_tokenizer`) and `run_forward`
+  builds the batch with `tokenizer.pad`, matching the reference extractor. It was briefly
+  thought that a plain forward pass's default `arange(seq_len)` position ids would make a
+  topic's vectors depend on which batch it landed in (left padding shifts every real token's
+  absolute RoPE position by that row's pad count) and a mask-derived `position_ids_from_mask`
+  was added as a guard — but PR #43 verified bit-identical activations either way, since RoPE
+  only depends on *relative* position and a constant offset across the whole sequence cancels
+  out. `position_ids_from_mask` was removed for being dead weight (PR #53); see
+  `plans/notes/step0_reference_repro_handoff.md` for the verification.
 - **Means are written, not applied.** Vectors on disk are raw, so **the trainer subtracts
   `position_means.pt` itself** (D2). If it forgets, arm B trains on uncentred vectors and
   nothing on disk says so; no code path should load vectors except through the module
@@ -955,10 +959,10 @@ filter catches these as genuine mismatches, but see §9.4.
 
 ### 9.4 Risks not retired
 
-- **Reproducing 1.3662 (D10) crosses trainers *and* extractors.** Ours derives padding-aware
-  `position_ids` where upstream uses `arange`; batching differs; upstream's extractor only
-  ever forced one target. If the check lands close but not exact, suspect extraction before
-  suspecting the trainer.
+- **Reproducing 1.3662 (D10) crosses trainers *and* extractors.** Batching differs, and
+  upstream's extractor only ever forced one target (`position_ids` are no longer a suspect --
+  PR #43 showed they're inert, §9.2). If the check lands close but not exact, suspect
+  extraction before suspecting the trainer.
 - **The word-substitution mode is evidence against the centering assumption.** §5.3's
   per-position mean assumes position *p* is the same pangram word across topics. For the
   rare topic where the model gets creative, it is not. Well under D1's 5% threshold on 500

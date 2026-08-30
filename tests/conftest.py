@@ -56,6 +56,20 @@ class FakeCharTokenizer:
         return "".join(self._tokens.get(int(i), "?") for i in ids)
 
 
+class _FakeBatch:
+    """Stands in for the `BatchEncoding` `tokenizer.pad` returns -- just
+    enough (`.input_ids`/`.attention_mask`/`.to`) for `run_forward`."""
+
+    def __init__(self, input_ids, attention_mask):
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+
+    def to(self, device):
+        self.input_ids = self.input_ids.to(device)
+        self.attention_mask = self.attention_mask.to(device)
+        return self
+
+
 class FakeTokenizer:
     """Whitespace tokenizer with a Llama-shaped chat template.
 
@@ -65,6 +79,7 @@ class FakeTokenizer:
 
     pad_token_id = 0
     eot_id = 3
+    padding_side = "left"
 
     def __init__(self):
         self._ids = {"<|eot_id|>": self.eot_id}
@@ -88,6 +103,22 @@ class FakeTokenizer:
 
     def decode(self, ids, **kwargs):
         return " ".join(self._tokens.get(int(i), "?") for i in ids)
+
+    def pad(self, encoded, return_tensors="pt"):
+        """Left-pads like the real tokenizer configured with
+        `padding_side = "left"` (`run_forward` relies on this)."""
+        sequences = encoded["input_ids"]
+        width = max(len(sequence) for sequence in sequences)
+        input_ids = torch.full(
+            (len(sequences), width), self.pad_token_id, dtype=torch.long
+        )
+        attention_mask = torch.zeros((len(sequences), width), dtype=torch.long)
+        for row, sequence in enumerate(sequences):
+            input_ids[row, width - len(sequence) :] = torch.tensor(
+                sequence, dtype=torch.long
+            )
+            attention_mask[row, width - len(sequence) :] = 1
+        return _FakeBatch(input_ids, attention_mask)
 
 
 class FakeTokenizerSplitsPunctuation(FakeTokenizer):
@@ -114,17 +145,14 @@ class FakeModel:
         self.tokenizer = tokenizer
         self.fail_titles = set(fail_titles)
         self.n_layers = n_layers
-        self.seen_position_ids = []
 
     def __call__(
         self,
         input_ids,
         attention_mask,
-        position_ids,
         output_hidden_states,
         logits_to_keep,
     ):
-        self.seen_position_ids.append(position_ids.clone())
         batch, seq = input_ids.shape
         base = input_ids.unsqueeze(-1).float().expand(batch, seq, HIDDEN)
         hidden_states = tuple(base + layer for layer in range(self.n_layers + 1))
@@ -166,11 +194,9 @@ class NoStopModel(FakeModel):
         self,
         input_ids,
         attention_mask,
-        position_ids,
         output_hidden_states,
         logits_to_keep,
     ):
-        self.seen_position_ids.append(position_ids.clone())
         batch, seq = input_ids.shape
         base = input_ids.unsqueeze(-1).float().expand(batch, seq, HIDDEN)
         hidden_states = tuple(base + layer for layer in range(self.n_layers + 1))
