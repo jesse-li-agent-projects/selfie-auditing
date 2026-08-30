@@ -77,7 +77,7 @@ def load_base_model(
     return model
 
 
-def resolve_device(model: PreTrainedModel) -> str:
+def resolve_device(model: PreTrainedModel) -> torch.device:
     """Where a caller's own tensors (input ids, a trainable projection, the
     SelfIE template embeddings) must live to match `model`.
 
@@ -92,9 +92,16 @@ def resolve_device(model: PreTrainedModel) -> str:
     """
     embed_layer = model.get_input_embeddings()
     if has_offloaded_params(embed_layer):
+        # getattr, not `.` -- nn.Module's __getattr__ stub types dynamic
+        # attribute access as Tensor | Module, which would make `_hf_hook`
+        # (an accelerate-attached instance attribute, not a real submodule)
+        # look like a Tensor to the type checker.
         hook = getattr(embed_layer, "_hf_hook")
-        return str(torch.device(hook.execution_device))
-    return str(embed_layer.weight.device)
+        return torch.device(hook.execution_device)
+    # getattr for the same reason as `_hf_hook` above: `.weight` isn't a
+    # declared attribute of the generic `nn.Module` `get_input_embeddings()`
+    # returns.
+    return torch.device(getattr(embed_layer, "weight").device)
 
 
 def attach_taboo_loras(

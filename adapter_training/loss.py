@@ -70,7 +70,7 @@ class SoftPromptLoss:
         # device_map="auto" sharding tight enough to offload the embedding
         # layer itself, `.weight.device` reports `meta` rather than where the
         # layer actually runs -- see resolve_device's docstring.
-        self._device = torch.device(resolve_device(model))
+        self._device = resolve_device(model)
 
         template_ids = self.tokenizer(
             SELFIE_TEMPLATE, add_special_tokens=False
