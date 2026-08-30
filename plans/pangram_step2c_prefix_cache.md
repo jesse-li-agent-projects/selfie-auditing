@@ -58,7 +58,7 @@ that is no longer constant.
 3. **`position_ids` and `cache_position` must both account for the 11-token offset**, and
    the causal mask must cover prefix + suffix. Note this is a different hazard from
    extraction's plain (uncached) forward pass, where PR #43 showed left-padding's constant
-   position offset is inert under RoPE (`plans/notes/step0_reference_repro_handoff.md`) --
+   position offset is inert under RoPE (`plans/notes/step0_findings.md`) --
    here the offset is not constant across the sequence (only the suffix is computed, resuming
    from position 11), so getting it wrong changes the actual RoPE angles, silently.
 4. **The expanded K/V must not be written into.** Expanding a batch-1 prefix across the
