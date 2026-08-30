@@ -1,6 +1,6 @@
 """Baseline topic-vector extraction: upstream's own extraction, reproduced --
-each topic's own conversational prompt, one vector read at the last prompt
-token.
+each topic's mechanical `Tell me about {title}.` prompt, one vector read at
+the last prompt token.
 
     python -m adapter_training.extract_baseline_vectors \
         --layer 19 --output-dir vectors/baseline_l19
@@ -78,9 +78,16 @@ def extract_baseline_vectors(
 ) -> ExtractionResult:
     """Run the forward passes and harvest one vector per topic.
 
-    Each topic uses its own hand-written prompt from the dataset
-    (`Tell me about bits (binary digits).`, not a mechanical
-    `Tell me about {title}.`) -- that is what upstream trained on. The kept
+    Each topic uses the mechanical `Tell me about {title}.` template applied
+    to the dataset's raw title -- upstream's `create_prompt()`
+    (`data_prep/wikipedia_topics/extract_wikipedia_vectors.py`), confirmed
+    against the published checkpoint's `best_val_loss` in
+    `plans/notes/step0_reference_repro_handoff.md`. This is deliberately
+    *not* `topic.prompt`, the dataset's own per-topic prompt field: about
+    half of those are a grammar-cleaned rewrite of the title (e.g. "Gravity
+    of Earth" -> "Earth's gravity") rather than the raw title upstream
+    trained against, and using them instead of the mechanical template
+    reproduced 1.7803 against a recorded 1.3662 -- a 0.41-nat gap. The kept
     vector is `hidden_states[L + 1]` (the output of transformer layer L) at
     the last prompt token.
 
@@ -108,18 +115,23 @@ def extract_baseline_vectors(
 
     for start in batches:
         batch = topics[start : start + batch_size]
-        prompts = [build_prompt(tokenizer, topic.prompt, None) for topic in batch]
+        mechanical_prompts = [f"Tell me about {topic.title}." for topic in batch]
+        prompts = [
+            build_prompt(tokenizer, prompt, None) for prompt in mechanical_prompts
+        ]
         _, hidden = run_forward(model, tokenizer, prompts, [], layer, device)
 
         kept = hidden[:, -1, :].to(dtype=torch.bfloat16, device="cpu")
         vectors[start : start + len(batch)] = kept
         total += kept.double().sum(dim=0)
 
-        for row, topic in enumerate(batch):
+        for row, (topic, mechanical_prompt) in enumerate(
+            zip(batch, mechanical_prompts)
+        ):
             records.append(
                 TopicRecord(
                     title=topic.title,
-                    prompt=topic.prompt,
+                    prompt=mechanical_prompt,
                     labels=tuple(topic.labels),
                     split=topic.split,
                     start=start + row,
