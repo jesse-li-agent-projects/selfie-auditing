@@ -49,10 +49,11 @@ def test_baseline_means_round_trip_through_load_vector_store(fake, tmp_path):
 
 @pytest.mark.hf_cache
 def test_real_model_batching_matches_unbatched():
-    """The padding-aware position ids of `position_ids_from_mask`, end to end.
+    """Batching must not change a topic's vectors, end to end.
 
-    Without them the shorter prompt's rotary positions shift by the pad count
-    and its vectors depend on what it shared a batch with.
+    Left padding puts every real token at the same trailing offset regardless
+    of batch size, and a constant global RoPE offset from the pad prefix
+    doesn't change vectors, since RoPE only depends on relative position.
     """
     from model_loading import load_base_model, load_tokenizer
 
