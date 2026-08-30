@@ -1,16 +1,20 @@
 # Step 0 findings (`plans/pangram_step0_benchmarks.md`)
 
 **2026-08-30: superseded below, see `plans/notes/step0_reference_repro_handoff.md`
-update #4.** The extraction bug this doc's own investigation list suspected
-was real and has been fixed (this repo's extractor now builds the mechanical
-`Tell me about {title}.` prompt upstream trained on, not the dataset's own
-grammar-cleaned prompt field) — but the gate *still* fails after the fix,
-at 1.7973 vs 1.3662, essentially unchanged. The reference repo's own loss
-code, scored on equivalent corrected vectors, reproduces 1.4065 (a close
-match). That isolates the remaining gap to a bug in this repo's own
-`adapter_training/loss.py` / `evaluate_adapter.py` path itself, not to the
-vectors or their extraction — see the handoff doc for the full writeup and
-next steps. Do not start `plans/pangram_phase0_run.md`.
+update #5 (update #4 was wrong).** Update #4 diagnosed the gap as a bug in
+this repo's own `adapter_training/loss.py` / `evaluate_adapter.py`. An
+in-process A/B (loading the model once, scoring identical vectors+labels
+through both this repo's `SoftPromptLoss` and the reference's own
+`compute_loss`) proved that diagnosis wrong: the loss math is exact (max
+diff 0.0156 across 64 topics, no systematic bias) at every batch size
+tested. The real difference is between two nominally-identical "mechanical
+prompt" vector-extraction runs, which score 1.7973 vs 1.317 through the
+*same, verified-correct* code — traced to the `prompt` field differing on
+52.5% of topics between the two, with the *grammar-cleaned* phrasing (not
+the literal raw title PR #48 switched to) being the one that reproduces
+1.3662. This inverts PR #48's premise. See the handoff doc for the full
+writeup and the recommended next step. Do not start
+`plans/pangram_phase0_run.md`.
 
 ## Headline: the 1.3662 gate FAILED (original, 2026-08-30 morning)
 

@@ -3,7 +3,82 @@
 Self-contained handoff for a fresh session (context was cleared after this
 was written). Read this instead of re-deriving anything below.
 
-**2026-08-30 update #4: the fix was applied to our own extractor and the
+**2026-08-30 update #5: update #4 was wrong about where the bug is --
+`adapter_training/loss.py` is not the problem, and the "mechanical prompt
+fix" premise behind PR #48 is now in doubt.** An in-process A/B harness
+(`ab_compare_loss.tmp.py`, rebased onto PR #49's `SoftPromptLoss` device
+fix, run on remote `vai`) loaded the model, tokenizer, and published
+checkpoint **once** and fed identical vectors + labels to both
+`adapter_training.loss.SoftPromptLoss.__call__` and the reference's own
+`training.model.SelfIEModel.compute_loss` in the same process -- eliminating
+any chance the two paths were scoring different inputs.
+
+- **64 examples, strided across the whole val split (many different
+  topics), scored one at a time:** max `|ours - ref|` = 0.0156, no
+  systematic sign (roughly half positive, half negative) -- bf16 rounding
+  noise, not a bug. The loss math is exact.
+- **256 examples, batch_size=1 vs. batch_size=32 (real padding, mixed
+  target lengths), our own code only:** mean losses of 1.7309 vs 1.7305 --
+  batching/masking introduces no discrepancy either.
+- Both checks used `outputs/baseline_l19_v2` (the vectors update #4's gate
+  scored at 1.7973). Batch-size-1 alone already predicted ~1.73, matching
+  the full 84,211-example gate closely. **So our loss/eval code was never
+  the bug** -- update #4's diagnosis (loss math, or batching at scale) is
+  retracted.
+
+**What actually differs: two nominally-identical "mechanical prompt"
+vector extractions score completely differently through the *same,
+verified-correct* loss code.** Re-running the identical script against
+`/home/agent/outputs_mechanical/baseline_l19_mechanical` (the vectors that
+scored 1.4065 through the reference's own driver in update #2) instead of
+`baseline_l19_v2` (the vectors update #4's "official" gate used) gives
+**1.317** -- close to the recorded 1.3662 -- through our own unmodified
+code. Same checkpoint, same code, same topic population, wildly different
+answer depending on which extraction directory is read.
+
+Diffing the two directories' `topics.json` (49,637 entries each) found:
+titles, order, `start`/`count`/`split`, and `labels` are **byte-identical**
+between the two -- but the **`prompt` field differs on 26,042 / 49,637
+entries (52.5%)**. `baseline_l19_mechanical` -- despite its name -- carries
+the *grammar-cleaned* phrasing on those rows (`"Tell me about Earth's
+gravity."`, `"Tell me about spiritual gifts."`, `"Tell me about
+lenses."`), while `baseline_l19_v2` carries the literal, unmodified-title
+mechanical template PR #48 was written to produce (`"Tell me about
+Gravity of Earth."`, `"Tell me about Spiritual gift."`, `"Tell me about
+Lens."`). Position-mean vectors for the two directories are nearly
+identical to each other (cosine 0.999999) and each is ~5.6% off from
+upstream's own published `mean-vectors.safetensors` (layer 19) --
+raw-vector-population effects are not what's driving the ~0.4-nat loss gap
+between the two directories; the prompt text is the only thing that
+differs, and it happens to correlate almost exactly with which one
+reproduces 1.3662.
+
+**This inverts update #3's conclusion.** Update #3 asserted (reading
+`data_prep/wikipedia_topics/extract_wikipedia_vectors.py:48-50`) that
+upstream's `create_prompt()` is unconditionally `f"Tell me about
+{title}."` over the *raw* Wikipedia title, and that PR #48's fix (making
+our own extractor do the same) was the correct target. The evidence above
+says the opposite: the grammar-cleaned phrasing -- not the literal raw
+title -- is what reproduces the checkpoint's recorded loss. Either update
+#3 misread which string upstream's `create_prompt()` actually receives as
+`title` (e.g. upstream's own `title` field may itself already be a
+cleaned/canonicalized noun phrase, not the raw Wikipedia article title our
+`topics.json` stores under that key), or some other upstream preprocessing
+step normalizes it before `create_prompt()` sees it.
+
+**Recommended next step (cheap, no GPU):** re-read
+`data_prep/wikipedia_topics/extract_wikipedia_vectors.py` and whatever
+populates its `title` variable end to end -- not just the `create_prompt()`
+line update #3 looked at -- to find where (if anywhere) grammar-cleaning
+happens upstream, and compare it against how this repo's own `topic.prompt`
+field (the grammar-cleaned one) was generated. Do not start
+`plans/pangram_phase0_run.md` until this is resolved; per the plan's own
+tolerance table, a 0.4-nat gap is stop-and-report regardless of cause.
+
+**2026-08-30 update #4 (retracted by update #5 above, kept for history):
+diagnosed the gap as our own loss/eval code, not vectors or extraction --
+that diagnosis was itself an artifact of comparing the wrong two vector
+directories, not a real code bug.** the fix was applied to our own extractor and the
 gate still fails — the remaining gap is now isolated to our own loss/eval
 code, not to vectors or extraction.** Update #3 established that prompt
 construction alone explains the 1.7803 → 1.4065 move *through the
