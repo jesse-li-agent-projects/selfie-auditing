@@ -70,11 +70,9 @@ class SoftPromptLoss:
             SELFIE_TEMPLATE, add_special_tokens=False
         ).input_ids
         reserved_id = self.tokenizer.convert_tokens_to_ids(RESERVED_TOKEN)
-        # Scanned, not hardcoded: for the real template/tokenizer this lands
-        # at [11, 22], but the invariant this module depends on is just "two
-        # slots exist" -- a template or tokenizer drift that broke the exact
-        # offsets would still pass this and be caught by the hf_cache pin
-        # instead (tests/test_loss.py).
+        # Scanned, not hardcoded; the invariant checked below is only that
+        # two slots exist. Drift in the offsets themselves is caught by the
+        # tokenizer pin instead (tests/test_loss.py).
         self.inject_positions = [
             i for i, token_id in enumerate(template_ids) if token_id == reserved_id
         ]
@@ -221,8 +219,8 @@ def evaluate(
     """Score `examples` in fixed-size batches and average per-batch losses.
 
     Matches upstream's own `validate()`, which averages per-batch losses over
-    batches (equal to averaging per-example except for the last partial
-    batch -- a <0.1% discrepancy at 84k examples).
+    batches -- equal to averaging per-example except for the last partial
+    batch, whose examples are slightly overweighted.
 
     :return: measured loss, example count, batch count
     """
