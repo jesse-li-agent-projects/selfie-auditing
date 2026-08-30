@@ -12,19 +12,15 @@ that holds everywhere, greedy decoding from the prompt would have produced
 exactly the sentence and then stopped. So the filter verdict and the vectors
 cost one forward pass together, and no decode loop is needed.
 
-Real generation on the 8B model shows two common compliant shapes -- the
-sentence with a trailing full stop (~68% of topics) and without one (~27%) --
-so the filter tries both forced sequences per topic and keeps whichever one
-matches (`response_variants`), at the cost of a second forward pass per
-batch. A topic that matches the shorter (no-stop) variant contributes one
-fewer vector than one that matches the longer one.
+The sentence has two common compliant shapes, with and without a trailing
+full stop, and the filter accepts either (`response_variants`) -- so `count`
+is not constant across topics.
 
-Vectors are written raw. The per-position means are written beside them and
-are subtracted by the trainer, not here, so the centering choice can be
-revisited without re-extracting.
+Vectors are written raw; the per-position means are written beside them and
+subtracted at load time (`dataset.load_vector_store`).
 
-Compare with `extract_baseline_vectors`, which reproduces upstream's own
-extraction instead.
+Compare with `extract_baseline_vectors`, which uses each topic's own dataset
+prompt and keeps one vector per topic instead.
 """
 
 import argparse
@@ -411,10 +407,9 @@ def write_outputs(
                 "labels_kept": n_labels,
                 "train_topics": sum(r.split == "train" for r in result.records),
                 "val_topics": sum(r.split == "val" for r in result.records),
-                # Which forced variant each kept topic matched (with/without
-                # the trailing full stop), not just a pass/fail count -- a
-                # variant distribution skewed differently from ~68/27 would
-                # mean this sample is unusual.
+                # Which forced variant each kept topic matched, not just a
+                # pass/fail count: a distribution far from the one
+                # `response_variants` documents means an unusual sample.
                 "variant_counts": variant_counts,
                 "first_mismatch_histogram": mismatch_histogram(result.failures),
                 "failures": result.failures,

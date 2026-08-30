@@ -11,12 +11,9 @@ unchanged regardless of who trained the file.
         --projection-type scalar_affine \\
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 --seed 42 \\
         --val-subsample 5000 --validate-every 100 \\
-        --pool-positions            # arm C: mean the 10 positions before the adapter
+        --pool-positions            # arm C: one pooled vector per topic
 
-**Budget is examples seen, never epochs**: the cosine schedule is laid out
-over `ceil(budget_examples / batch_size)` steps, and `--max-steps` only stops
-the loop early -- it never changes that horizon, so a debug run exercises the
-same schedule code the real run does.
+**Budget is examples seen, never epochs** (`compute_total_steps`).
 
 **This trainer always uses centred vectors**: that is what upstream's own
 `validate()` scored, and what the 1.3662 reproduction check
@@ -85,12 +82,13 @@ def parse_args():
         "--max-steps",
         type=int,
         default=None,
-        help="stop the loop early; does NOT change the cosine schedule's horizon",
+        help="stop the loop early; does NOT change the cosine schedule's "
+        "horizon, so a debug run exercises the real run's schedule",
     )
     parser.add_argument(
         "--pool-positions",
         action="store_true",
-        help="arm C: mean the 10 positions before the adapter",
+        help="arm C: mean each topic's positions into one vector before the adapter",
     )
     parser.add_argument(
         "--restrict-topics-to",

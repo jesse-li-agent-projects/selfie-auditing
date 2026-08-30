@@ -2,17 +2,12 @@
 `SelfIEModel.compute_loss` (resources/selfie-adapters/training/model.py)
 exactly in what it *measures* while batching differently.
 
-Two departures from upstream, both exact:
+One departure, exact: upstream loops in Python over the batch, scoring
+whole-sequence logits per example; here `lm_head` runs on only the hidden
+states that predict target tokens, in one batched `cross_entropy`.
 
-- **Logit slicing.** Upstream materialises logits for the whole padded
-  sequence via the ordinary CausalLM forward, then loops in Python over the
-  batch. Here the base transformer (no `lm_head`) is called once, its final
-  hidden state is sliced down to the positions that predict target tokens,
-  and `lm_head` runs on only that slice -- one batched `cross_entropy`
-  instead of a per-example loop, ~75% less logits memory.
-- **Right padding with an attention mask**, as upstream does. The injection
-  slots are fixed offsets from the *left* of the template, so left padding
-  would move them.
+Padding is on the right, as upstream. The injection slots are fixed offsets
+from the *left* of the template, so left padding would move them.
 """
 
 from __future__ import annotations
