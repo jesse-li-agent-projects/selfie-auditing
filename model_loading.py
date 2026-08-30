@@ -9,8 +9,11 @@ model reload (plan S6, "Model footprint").
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
+from typing import cast
 
 import torch
+import torch.nn as nn
+from accelerate.hooks import AlignDevicesHook
 from accelerate.utils import has_offloaded_params
 from peft import PeftModel
 from transformers import (
@@ -90,18 +93,21 @@ def resolve_device(model: PreTrainedModel) -> torch.device:
     `has_offloaded_params` is used to read its dispatch hook's
     `execution_device` instead.
     """
-    embed_layer = model.get_input_embeddings()
+    # `get_input_embeddings()` is typed to return a plain `nn.Module` since
+    # not every architecture uses `nn.Embedding` -- every model this project
+    # loads (Llama) does.
+    embed_layer = cast(nn.Embedding, model.get_input_embeddings())
     if has_offloaded_params(embed_layer):
-        # getattr, not `.` -- nn.Module's __getattr__ stub types dynamic
-        # attribute access as Tensor | Module, which would make `_hf_hook`
-        # (an accelerate-attached instance attribute, not a real submodule)
-        # look like a Tensor to the type checker.
-        hook = getattr(embed_layer, "_hf_hook")
+        # `_hf_hook` is attached at runtime by `accelerate`, not part of any
+        # static type; `has_offloaded_params` above already confirmed it's
+        # there and is an `AlignDevicesHook`.
+        hook = cast(AlignDevicesHook, embed_layer._hf_hook)  # type: ignore[attr-defined]
+        # `execution_device` is `Optional` in accelerate's own signature, but
+        # an offloaded module always has one set -- it's where accelerate
+        # stages the module's weights to run its forward call.
+        assert hook.execution_device is not None
         return torch.device(hook.execution_device)
-    # getattr for the same reason as `_hf_hook` above: `.weight` isn't a
-    # declared attribute of the generic `nn.Module` `get_input_embeddings()`
-    # returns.
-    return torch.device(getattr(embed_layer, "weight").device)
+    return torch.device(embed_layer.weight.device)
 
 
 def attach_taboo_loras(
