@@ -177,7 +177,9 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
         ).to(torch.float32)
         # A `[hidden]` means file would slice to a scalar here and broadcast
         # over every dimension, leaving the vectors effectively uncentred --
-        # silently, and worth 0.4 nats of val loss (PR #51).
+        # silently, and worth 0.4 nats of val loss. Rejecting it means an
+        # extraction directory written before PR #51 fails loudly here and
+        # has to be re-extracted.
         if means.ndim != 2 or means.shape[1] != vectors.shape[1]:
             raise ValueError(
                 f"{directory / 'position_means.pt'} has shape "

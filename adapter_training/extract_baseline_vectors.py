@@ -1,9 +1,13 @@
-"""Baseline topic-vector extraction: upstream's own extraction, reproduced --
-each topic's own conversational prompt, one vector read at the last prompt
-token.
+"""Baseline topic-vector extraction: each topic's own dataset prompt, one
+vector read at the last prompt token.
 
     python -m adapter_training.extract_baseline_vectors \
         --layer 19 --output-dir vectors/baseline_l19
+
+This is upstream's extraction as far as it can be inferred: no config for the
+published Wikipedia checkpoint survives in this repo, so the evidence that
+the recipe is right is the reproduction gate `evaluate_adapter --center`
+scores against that checkpoint's recorded `best_val_loss`.
 
 Compare with `extract_pangram_vectors`, which asks the model to write a fixed
 sentence instead and keeps one vector per response token.
@@ -78,11 +82,9 @@ def extract_baseline_vectors(
 ) -> ExtractionResult:
     """Run the forward passes and harvest one vector per topic.
 
-    Each topic uses its own hand-written prompt from the dataset
-    (`Tell me about bits (binary digits).`, not a mechanical
-    `Tell me about {title}.`) -- that is what upstream trained on. The kept
-    vector is `hidden_states[L + 1]` (the output of transformer layer L) at
-    the last prompt token.
+    Each topic is prompted with its own `prompt` field from the dataset,
+    verbatim. The kept vector is `hidden_states[L + 1]` (the output of
+    transformer layer L) at the last prompt token.
 
     :param model: the base model to read activations from
     :param tokenizer: its tokenizer, configured for left padding
@@ -127,8 +129,7 @@ def extract_baseline_vectors(
                 )
             )
 
-    # [1, hidden], not [hidden]: every means file carries a leading position
-    # axis, which readers index by a vector's offset within its topic.
+    # unsqueeze(0): the leading position axis `ExtractionResult.means` requires.
     mean = (total / max(len(topics), 1)).float().unsqueeze(0)
     return ExtractionResult(
         vectors=vectors, records=records, means=mean, n_seen=len(topics)
