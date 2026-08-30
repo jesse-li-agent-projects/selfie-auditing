@@ -24,6 +24,26 @@ def test_baseline_extraction_keeps_the_last_prompt_token(fake):
     assert result.vectors[0, 0].float().item() == float(prompt_ids[-1] + 2)
 
 
+def test_baseline_means_round_trip_through_load_vector_store(fake, tmp_path):
+    """The extractor's own means must centre its own vectors.
+
+    A `[hidden]` means file slices to a scalar in `load_vector_store` and
+    broadcasts, leaving the vectors uncentred without any error (PR #51).
+    """
+    from adapter_training.dataset import load_vector_store
+    from adapter_training.extract_baseline_vectors import write_outputs
+
+    tokenizer, model = fake
+    topics = [topic("Alpha"), topic("Bravo"), topic("Charlie")]
+
+    result = extract_baseline_vectors(model, tokenizer, topics, layer=1, device="cpu")
+    write_outputs(tmp_path, result, 1, "fake")
+
+    assert result.means.shape == (1, result.vectors.shape[1])
+    centred = load_vector_store(tmp_path, center=True).vectors
+    assert torch.allclose(centred.mean(dim=0), torch.zeros(centred.shape[1]), atol=1e-1)
+
+
 # --- real tokenizer / real model ------------------------------------------
 
 

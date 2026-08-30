@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 import torch
 
 from adapter_training.dataset import (
@@ -70,6 +71,15 @@ def test_centering_subtracts_each_vectors_own_position_mean(tmp_path):
     # centred by means[8], not means[9] -- position 9 has no data for this
     # topic (count is genuinely per-topic).
     assert torch.allclose(store.vectors[10:19], torch.full((9, HIDDEN), 200.0))
+
+
+def test_flat_means_file_is_rejected_rather_than_broadcast(tmp_path):
+    """`[hidden]` means would slice to a scalar and silently no-op (PR #51)."""
+    records = [TopicRecord("Alpha", ("a label",), "train", start=0, count=1)]
+    write_extraction_dir(tmp_path, records, torch.zeros(1, HIDDEN), torch.zeros(HIDDEN))
+
+    with pytest.raises(ValueError, match="position_means.pt"):
+        load_vector_store(tmp_path, center=True)
 
 
 def test_no_center_returns_raw_vectors(tmp_path):

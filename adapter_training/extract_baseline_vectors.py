@@ -127,7 +127,9 @@ def extract_baseline_vectors(
                 )
             )
 
-    mean = (total / max(len(topics), 1)).float()
+    # [1, hidden], not [hidden]: every means file carries a leading position
+    # axis, which readers index by a vector's offset within its topic.
+    mean = (total / max(len(topics), 1)).float().unsqueeze(0)
     return ExtractionResult(
         vectors=vectors, records=records, means=mean, n_seen=len(topics)
     )
