@@ -81,10 +81,10 @@ Logistics facts from parent plan §9.5, all of which will bite:
    published-adapter score above used, or the table is not comparable).
 
 **Interpreting the result.** Exact agreement is not expected; the comparison crosses
-trainers *and* extractors. Known sources of drift (parent plan §9.4): our extractor derives
-padding-aware `position_ids` where upstream uses `arange`; batching differs; our per-batch
-mean-of-sequence-means aggregation differs from upstream's mean-over-batches on the final
-partial batch. Suggested reading:
+trainers *and* extractors. Known sources of drift (parent plan §9.4): batching differs
+(`position_ids` are no longer a suspect -- PR #43 showed they're inert under left padding);
+our per-batch mean-of-sequence-means aggregation differs from upstream's mean-over-batches
+on the final partial batch. Suggested reading:
 
 | measured | reading |
 |---|---|

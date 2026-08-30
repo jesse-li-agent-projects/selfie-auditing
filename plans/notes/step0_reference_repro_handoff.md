@@ -135,8 +135,8 @@ single fully-resident card, worth revisiting before any offloaded run.
 `position_ids_from_mask` on the real model: bit-identical activations. RoPE
 attention scores depend only on the relative query/key offset, and the
 causal mask excludes padding, so the constant per-row shift cancels.
-`position_ids_from_mask` stays as defence-in-depth, not because it fixes
-anything measurable.
+On that basis, PR #53 removed `position_ids_from_mask` and its `left_pad`
+neighbor, switching `run_forward` to the tokenizer's own left padding.
 
 ## Remote environment notes
 

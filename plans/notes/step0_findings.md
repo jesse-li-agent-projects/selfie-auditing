@@ -16,8 +16,8 @@ centred:
 
 **Tolerance applied: the plan's top band, "within ~0.02 of 1.3662 --
 agreement; proceed".** 0.0026 is an order of magnitude inside it, so the
-plan's own known-drift list (§9.4: padding-aware `position_ids` vs upstream's
-`arange`, batching differences, per-batch vs per-example val aggregation) does
+plan's own known-drift list (§9.4: batching differences, per-batch vs
+per-example val aggregation -- `position_ids` was ruled out by PR #43) does
 not need to be invoked to explain a residual -- there is effectively no
 residual to explain. The second half of the stop condition also does not
 trigger: the trained adapter is clearly better than the untrained floor

@@ -56,9 +56,11 @@ that is no longer constant.
 2. **HF `Cache` objects are mutated in place.** The prefix cache must be rebuilt (or
    cropped back to length 11) each step, not shared across steps.
 3. **`position_ids` and `cache_position` must both account for the 11-token offset**, and
-   the causal mask must cover prefix + suffix. The repo already has the padding-aware
-   position-id helper (`adapter_training.extract_common.position_ids_from_mask`) as a
-   worked example of getting this wrong being silent.
+   the causal mask must cover prefix + suffix. Note this is a different hazard from
+   extraction's plain (uncached) forward pass, where PR #43 showed left-padding's constant
+   position offset is inert under RoPE (`plans/notes/step0_reference_repro_handoff.md`) --
+   here the offset is not constant across the sequence (only the suffix is computed, resuming
+   from position 11), so getting it wrong changes the actual RoPE angles, silently.
 4. **The expanded K/V must not be written into.** Expanding a batch-1 prefix across the
    batch with `expand` gives non-contiguous views that a cache update will happily write
    through; use a fresh per-step copy.
