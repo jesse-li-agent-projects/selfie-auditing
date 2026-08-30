@@ -49,13 +49,14 @@ def parse_args():
         "--center",
         dest="center",
         action="store_true",
-        help="subtract per-position means -- required to reproduce upstream's 1.3662",
+        help="subtract per-position means -- the training-time condition, and "
+        "what reproducing upstream's 1.3662 needs",
     )
     parser.add_argument(
         "--no-center",
         dest="center",
         action="store_false",
-        help="raw vectors, matching downstream interpretation-time use (default)",
+        help="raw vectors -- the interpretation-time condition (default here)",
     )
     parser.set_defaults(center=False)
     parser.add_argument(
@@ -125,10 +126,7 @@ def load_eval_set(
 def main(args) -> dict:
     from model_loading import load_base_model, load_tokenizer, resolve_device
 
-    print(
-        f"Centring mode: {'centred' if args.center else 'raw'} "
-        f"({'matches upstream validate() -- needed to reproduce 1.3662' if args.center else 'matches downstream interpretation-time use (interpret.py)'})"
-    )
+    print(f"Centring mode: {'centred' if args.center else 'raw'}")
 
     store, examples = load_eval_set(
         args.vectors,

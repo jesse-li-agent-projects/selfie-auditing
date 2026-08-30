@@ -11,12 +11,9 @@ unchanged regardless of who trained the file.
         --projection-type scalar_affine \\
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 --seed 42 \\
         --val-subsample 5000 --validate-every 100 \\
-        --pool-positions            # arm C: mean the 10 positions before the adapter
+        --pool-positions            # arm C: one pooled vector per topic
 
-**Budget is examples seen, never epochs**: the cosine schedule is laid out
-over `ceil(budget_examples / batch_size)` steps, and `--max-steps` only stops
-the loop early -- it never changes that horizon, so a debug run exercises the
-same schedule code the real run does.
+**Budget is examples seen, never epochs** (`compute_total_steps`).
 
 **This trainer always uses centred vectors**: that is what upstream's own
 `validate()` scored, and what the 1.3662 reproduction check
@@ -85,12 +82,13 @@ def parse_args():
         "--max-steps",
         type=int,
         default=None,
-        help="stop the loop early; does NOT change the cosine schedule's horizon",
+        help="stop the loop early; does NOT change the cosine schedule's "
+        "horizon, so a debug run exercises the real run's schedule",
     )
     parser.add_argument(
         "--pool-positions",
         action="store_true",
-        help="arm C: mean the 10 positions before the adapter",
+        help="arm C: mean each topic's positions into one vector before the adapter",
     )
     parser.add_argument(
         "--restrict-topics-to",
@@ -234,20 +232,11 @@ def lr_at_step(
     step: int, *, base_lr: float, warmup_steps: int, total_steps: int
 ) -> float:
     """Closed-form reproduction of upstream's chained `LinearLR` warmup ->
-    `CosineAnnealingLR` (`_setup_scheduler` / `_get_current_scheduler`,
-    `resources/selfie-adapters/training/trainer.py`).
+    `CosineAnnealingLR` (`resources/selfie-adapters/training/trainer.py`).
 
-    Upstream steps the scheduler *after* each optimizer step and increments
-    `global_step` after that, so the learning rate an optimizer step at index
-    `step` (0-indexed) actually uses is the scheduler's value at
-    `last_epoch == step`, computed here in closed form instead of by
-    stepping two chained `torch` schedulers:
-
-    - warmup (`LinearLR(start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)`):
-      linear from ~0 to `base_lr` over `warmup_steps` steps.
-    - cosine (`CosineAnnealingLR(T_max=total_steps - warmup_steps, eta_min=0)`),
-      starting fresh (its own `last_epoch=0`, i.e. full `base_lr`) the moment
-      warmup ends -- so step `warmup_steps` lands exactly on the peak.
+    The one subtlety: upstream steps its schedulers *after* the optimizer, so
+    step `warmup_steps` lands exactly on the peak learning rate rather than
+    one cosine step past it.
 
     :param step: 0-indexed optimizer step
     :param base_lr: the configured peak learning rate
@@ -289,9 +278,8 @@ def example_stream(examples: list[Example], seed: int):
     into a fresh permutation whenever exhausted.
 
     One pass is one full, non-repeating draw of every example in a fixed
-    random order -- never a resample. Arms A and C spend exactly one budget
-    on one pass; arm B's larger pool means its budget only ever completes
-    ~0.1 of one.
+    random order -- never a resample. Whether a run's budget covers a whole
+    pass, several, or a fraction of one is the caller's business.
 
     :param examples: the train-only pool to draw from (val is never passed here)
     :param seed: seed for the per-epoch shuffle

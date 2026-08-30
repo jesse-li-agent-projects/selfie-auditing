@@ -43,12 +43,8 @@ def load_projection(source: str | Path, *, device, dim: int | None = None):
         makes no sense of it)
     :return: `(projection, metadata)`, `metadata` from `SelfIEAdapter.get_metadata()`
     :raises ValueError: if the checkpoint's `normalize_input` is not `True` --
-        every training config this project has ever seen (upstream's three
-        shipped configs, and the published Wikipedia checkpoint's own
-        metadata) uses `True`; `False` only ever appears as a downstream
-        caller-side override for an unrelated SAE-scale-sweep eval script, so
-        a checkpoint recording `False` here is worth investigating rather
-        than silently accepting
+        no known training config produces `False`, so it is worth
+        investigating rather than silently accepting
     """
     path = _resolve_checkpoint_path(source)
     adapter = load_adapter(str(path), device=str(device))

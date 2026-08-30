@@ -1,17 +1,15 @@
 """Generation and GTE-large embedding-retrieval scoring -- the headline
 metric: can a description decoded from one activation be retrieved back to
-its topic, against an index of all 49,637 topics?
+its topic, against an index of the whole topic corpus?
 
-No second soft-token injection path: generation reuses
-`interpret.generate_interpretations_batch`, the same one interpretation-time
-use goes through. No reimplementation of recall@k or the index either --
-both come from the reference's own
-`resources/selfie-adapters/evals/embedding_retrieval/topic_retrieval_eval.py`
-(read-only; imported, not copied). The only thing built here is what does not
-fit as-is: an index built from this repo's own `dataset.load_topics` instead
-of the reference's Hub-only `load_dataset` (the vast remote has no egress),
-and the query-vector selection for the pangram style's `count`-many positions
-per topic.
+Neither the injection path nor the ranking maths is reimplemented here:
+generation goes through `interpret.generate_interpretations_batch` (the same
+path interpretation-time use takes), and the index and recall@k come from the
+reference's own
+`resources/selfie-adapters/evals/embedding_retrieval/topic_retrieval_eval.py`.
+What this module adds is the two things that do not fit as-is: an index built
+without the reference's Hub-only `load_dataset`, and the query-vector
+selection for the pangram style's `count`-many positions per topic.
 """
 
 from __future__ import annotations
@@ -129,21 +127,18 @@ def generate_descriptions(
     device: str,
 ) -> list[str]:
     """One sampled description per row of `vectors`, via
-    `generate_interpretations_batch` -- reusing the exact injection path
-    interpretation-time use goes through.
+    `generate_interpretations_batch`.
+
+    Sampling draws from the process-global `torch` RNG stream, so a row's
+    draws depend on how many other rows were generated before it: results are
+    reproducible only for a fixed row ordering and a fixed generation batch
+    size. Never vary either between two calls meant to be compared.
 
     :param vectors: `[n, hidden]`, already centred or not as the caller chose
     :param config: decoding settings; `n_samples` beyond 1 all sample the
         same row, and only the first is kept -- fix `n_samples=1` unless a
         caller has a specific reason to draw more
     :return: one description per row, in row order
-
-    Reproducible for a fixed `hidden_vectors` ordering and chunking
-    (`generate_interpretations_batch`'s own `batch_size`, not exposed here):
-    `do_sample=True` draws from the process-global `torch` RNG stream, so a
-    row's draws depend on how many other rows' steps were consumed before it
-    -- i.e. on chunk boundaries, not just on `config.seed`. Never vary that
-    `batch_size` between two calls meant to compare.
     """
     torch.manual_seed(config.seed)
     hidden_vectors = {i: vectors[i] for i in range(vectors.shape[0])}
@@ -239,10 +234,9 @@ def evaluate_positions(
 
     `"last"` scores one query set (each topic's own last vector). `"all"` or
     an explicit list scores each offset separately and reports both the
-    per-offset breakdown and the mean recall over offsets -- arm B trains on
-    all 10 positions as equal examples, so the mean is what its training
-    objective corresponds to, and this also retires the separate
-    per-position exploration (one eval yields both).
+    per-offset breakdown and the mean recall over offsets -- the mean is the
+    number that corresponds to training on every position as an equal
+    example, and the breakdown answers which position carries the topic.
 
     :param vectors: the full extraction directory's vectors (any centring
         the caller already applied)

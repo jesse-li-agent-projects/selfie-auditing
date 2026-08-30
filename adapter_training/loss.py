@@ -2,17 +2,12 @@
 `SelfIEModel.compute_loss` (resources/selfie-adapters/training/model.py)
 exactly in what it *measures* while batching differently.
 
-Two departures from upstream, both exact:
+One departure, exact: upstream loops in Python over the batch, scoring
+whole-sequence logits per example; here `lm_head` runs on only the hidden
+states that predict target tokens, in one batched `cross_entropy`.
 
-- **Logit slicing.** Upstream materialises logits for the whole padded
-  sequence via the ordinary CausalLM forward, then loops in Python over the
-  batch. Here the base transformer (no `lm_head`) is called once, its final
-  hidden state is sliced down to the positions that predict target tokens,
-  and `lm_head` runs on only that slice -- one batched `cross_entropy`
-  instead of a per-example loop, ~75% less logits memory.
-- **Right padding with an attention mask**, as upstream does. The injection
-  slots are fixed offsets from the *left* of the template, so left padding
-  would move them.
+Padding is on the right, as upstream. The injection slots are fixed offsets
+from the *left* of the template, so left padding would move them.
 """
 
 from __future__ import annotations
@@ -75,11 +70,9 @@ class SoftPromptLoss:
             SELFIE_TEMPLATE, add_special_tokens=False
         ).input_ids
         reserved_id = self.tokenizer.convert_tokens_to_ids(RESERVED_TOKEN)
-        # Scanned, not hardcoded: for the real template/tokenizer this lands
-        # at [11, 22], but the invariant this module depends on is just "two
-        # slots exist" -- a template or tokenizer drift that broke the exact
-        # offsets would still pass this and be caught by the hf_cache pin
-        # instead (tests/test_loss.py).
+        # Scanned, not hardcoded; the invariant checked below is only that
+        # two slots exist. Drift in the offsets themselves is caught by the
+        # tokenizer pin instead (tests/test_loss.py).
         self.inject_positions = [
             i for i, token_id in enumerate(template_ids) if token_id == reserved_id
         ]
@@ -226,8 +219,8 @@ def evaluate(
     """Score `examples` in fixed-size batches and average per-batch losses.
 
     Matches upstream's own `validate()`, which averages per-batch losses over
-    batches (equal to averaging per-example except for the last partial
-    batch -- a <0.1% discrepancy at 84k examples).
+    batches -- equal to averaging per-example except for the last partial
+    batch, whose examples are slightly overweighted.
 
     :return: measured loss, example count, batch count
     """

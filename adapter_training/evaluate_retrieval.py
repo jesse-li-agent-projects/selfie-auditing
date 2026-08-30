@@ -48,13 +48,14 @@ def parse_args():
         "--center",
         dest="center",
         action="store_true",
-        help="subtract per-position means -- the paper-comparable condition (default)",
+        help="subtract per-position means -- the training-time condition, and "
+        "the paper-comparable one (default here)",
     )
     parser.add_argument(
         "--no-center",
         dest="center",
         action="store_false",
-        help="raw vectors -- the downstream deployment condition",
+        help="raw vectors -- the interpretation-time condition",
     )
     parser.set_defaults(center=True)
     parser.add_argument(
@@ -148,10 +149,7 @@ def main(args) -> dict:
 
     check_sentence_transformers_available()
 
-    print(
-        f"Centring mode: {'centred' if args.center else 'raw'} "
-        f"({'paper-comparable' if args.center else 'downstream deployment condition'})"
-    )
+    print(f"Centring mode: {'centred' if args.center else 'raw'}")
 
     records = load_query_records(
         args.vectors,
