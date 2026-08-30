@@ -22,6 +22,7 @@ from torch import Tensor
 
 from adapter_training.dataset import Example
 from interpret import RESERVED_TOKEN, SELFIE_TEMPLATE
+from model_loading import resolve_device
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,11 @@ class SoftPromptLoss:
         self.base_model = model.model
         self.lm_head = model.lm_head
         self.embed_layer = model.get_input_embeddings()
+        # `resolve_device`, not `embed_layer.weight.device` directly: under
+        # device_map="auto" sharding tight enough to offload the embedding
+        # layer itself, `.weight.device` reports `meta` rather than where the
+        # layer actually runs -- see resolve_device's docstring.
+        self._device = torch.device(resolve_device(model))
 
         template_ids = self.tokenizer(
             SELFIE_TEMPLATE, add_special_tokens=False
@@ -84,7 +90,7 @@ class SoftPromptLoss:
         self.template_len = len(template_ids)
 
         template_ids_tensor = torch.tensor(
-            template_ids, dtype=torch.long, device=self.embed_layer.weight.device
+            template_ids, dtype=torch.long, device=self._device
         )
         with torch.no_grad():
             # (1, template_len, hidden); cloned per batch in __call__.
@@ -93,7 +99,7 @@ class SoftPromptLoss:
 
     @property
     def device(self) -> torch.device:
-        return self.template_embeds.device
+        return self._device
 
     def __call__(
         self, vectors: Float[Tensor, "batch hidden"], labels: list[str]

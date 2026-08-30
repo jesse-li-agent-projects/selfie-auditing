@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 
 import torch
+from accelerate.utils import has_offloaded_params
 from peft import PeftModel
 from transformers import (
     AutoModelForCausalLM,
@@ -86,8 +87,18 @@ def resolve_device(model: PreTrainedModel) -> str:
     dispatch hooks move activations between them automatically -- but
     anything not already inside the model must start on the embedding
     layer's device, the one shard every caller-supplied tensor first meets.
+
+    If the embedding layer is itself `accelerate`-offloaded (CPU/disk, part
+    of the shard plan under memory pressure), its weight sits on the `meta`
+    device except during its own forward call, so `.weight.device` is never
+    a real answer for it -- `has_offloaded_params` detects that case, and
+    the layer's dispatch hook reports the device it actually runs on instead.
     """
-    return str(model.get_input_embeddings().weight.device)
+    embed_layer = model.get_input_embeddings()
+    if has_offloaded_params(embed_layer):
+        hook = getattr(embed_layer, "_hf_hook")
+        return str(torch.device(hook.execution_device))
+    return str(embed_layer.weight.device)
 
 
 def attach_taboo_loras(
