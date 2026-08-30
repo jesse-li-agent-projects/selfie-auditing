@@ -712,10 +712,11 @@ def main(args) -> dict:
             "GPU: launch one process per card with --device."
         )
 
-    from model_loading import load_base_model, load_tokenizer
+    from model_loading import load_base_model, load_tokenizer, resolve_device
 
     tokenizer = load_tokenizer(args.model)
     model = load_base_model(args.model, device=args.device, dtype=args.dtype)
+    device = resolve_device(model)
     model.requires_grad_(False)
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -743,7 +744,7 @@ def main(args) -> dict:
         val_examples=val_examples,
         config=config,
         run_dir=args.run_dir,
-        device=args.device,
+        device=device,
     )
     print(json.dumps(result, indent=2))
     return result

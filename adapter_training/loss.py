@@ -165,6 +165,11 @@ class SoftPromptLoss:
         window_start = self.template_len - 1
         sliced_hidden = hidden[:, window_start : window_start + max_target_len, :]
         logits = self.lm_head(sliced_hidden)  # (batch, max_target_len, vocab)
+        # With a sharded model (device_map="auto") lm_head can land on a
+        # different device than the embedding layer self.device follows --
+        # everything the loss combines with logits must move to match it.
+        target_ids = target_ids.to(logits.device)
+        target_mask = target_mask.to(logits.device)
 
         loss_fn = nn.CrossEntropyLoss(
             reduction="none", label_smoothing=self.config.label_smoothing

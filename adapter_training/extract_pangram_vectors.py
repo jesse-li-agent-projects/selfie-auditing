@@ -425,7 +425,7 @@ def write_outputs(
 
 
 def main(args) -> Path:
-    from model_loading import load_base_model, load_tokenizer
+    from model_loading import load_base_model, load_tokenizer, resolve_device
 
     topics = load_topics(args.dataset, args.dataset_file, args.limit)
     print(f"Loaded {len(topics)} topics")
@@ -439,7 +439,7 @@ def main(args) -> Path:
         topics,
         layer=args.layer,
         batch_size=args.batch_size,
-        device=args.device,
+        device=resolve_device(model),
         progress=True,
     )
     write_outputs(args.output_dir, result, args.layer, args.model)

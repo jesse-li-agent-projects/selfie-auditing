@@ -76,6 +76,20 @@ def load_base_model(
     return model
 
 
+def resolve_device(model: PreTrainedModel) -> str:
+    """Where a caller's own tensors (input ids, a trainable projection, the
+    SelfIE template embeddings) must live to match `model`.
+
+    With a single-device `device_map` this is just that device. With a
+    sharded one (`device_map="auto"`, needed when the model doesn't fit on
+    one GPU) the model's layers are spread across devices and `accelerate`'s
+    dispatch hooks move activations between them automatically -- but
+    anything not already inside the model must start on the embedding
+    layer's device, the one shard every caller-supplied tensor first meets.
+    """
+    return str(model.get_input_embeddings().weight.device)
+
+
 def attach_taboo_loras(
     base_model: PreTrainedModel, words: list[str], repo_template: str
 ) -> PeftModel:
