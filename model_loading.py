@@ -81,18 +81,14 @@ def resolve_device(model: PreTrainedModel) -> str:
     """Where a caller's own tensors (input ids, a trainable projection, the
     SelfIE template embeddings) must live to match `model`.
 
-    With a single-device `device_map` this is just that device. With a
-    sharded one (`device_map="auto"`, needed when the model doesn't fit on
-    one GPU) the model's layers are spread across devices and `accelerate`'s
-    dispatch hooks move activations between them automatically -- but
-    anything not already inside the model must start on the embedding
-    layer's device, the one shard every caller-supplied tensor first meets.
-
-    If the embedding layer is itself `accelerate`-offloaded (CPU/disk, part
-    of the shard plan under memory pressure), its weight sits on the `meta`
-    device except during its own forward call, so `.weight.device` is never
-    a real answer for it -- `has_offloaded_params` detects that case, and
-    the layer's dispatch hook reports the device it actually runs on instead.
+    Under a sharded `device_map` (`"auto"`, needed when the model doesn't fit
+    on one GPU) anything not already inside the model must start on the
+    embedding layer's device, the one shard every caller-supplied tensor
+    first meets -- `accelerate`'s dispatch hooks move activations onward from
+    there. If that layer is itself offloaded (CPU/disk, under memory
+    pressure) its weight sits on the `meta` device except mid-forward, so
+    `has_offloaded_params` is used to read its dispatch hook's
+    `execution_device` instead.
     """
     embed_layer = model.get_input_embeddings()
     if has_offloaded_params(embed_layer):
