@@ -3,6 +3,103 @@
 Self-contained handoff for a fresh session (context was cleared after this
 was written). Read this instead of re-deriving anything below.
 
+**2026-08-30 update #4: the fix was applied to our own extractor and the
+gate still fails — the remaining gap is now isolated to our own loss/eval
+code, not to vectors or extraction.** Update #3 established that prompt
+construction alone explains the 1.7803 → 1.4065 move *through the
+reference's own loss code*. This session applied the same fix to this
+repo's own extractor (`adapter_training/extract_baseline_vectors.py` now
+builds `f"Tell me about {title}."` from the raw title, matching upstream's
+`create_prompt()` exactly — PR #48) and re-ran the actual
+`plans/pangram_step0_benchmarks.md` gate through **this repo's own**
+`adapter_training.evaluate_adapter`, not the reference-code driver script.
+
+Result: **1.7973** — essentially unchanged from the pre-fix ~1.7800, against
+the same recorded `best_val_loss` of **1.3662** (gap **0.431**, unchanged
+within noise). This is the opposite of what update #3 would predict if our
+own loss path were faithfully reproducing the reference's `compute_loss`.
+
+Before concluding the extraction fix itself was somehow wrong, the new
+vectors were sanity-checked directly against the old ones (both available:
+old at local `outputs/baseline_l19/`, new at remote `vai-0`'s
+`/home/agent/outputs_mechanical/baseline_l19_v2/`, index-aligned since both
+were built from the same title order):
+
+- Topic 0 ("William Wallace") happens to have an *identical* prompt under
+  both the old hand-written field and the new mechanical template
+  (`"Tell me about William Wallace."` either way). Its vector norm matches
+  to bf16 rounding: 13.064 (old) vs 13.063 (new).
+- Topic 1 ("Gravity of Earth") has a genuinely different prompt (old:
+  `"Tell me about Earth's gravity."`; new: `"Tell me about Gravity of
+  Earth."`). Its vector visibly moved: norm 12.913 (old) vs 13.048 (new).
+
+So the extraction fix is doing exactly what it should — the vectors
+demonstrably reflect the prompt-construction change. **The conclusion is
+that this repo's own `adapter_training/loss.py` / `evaluate_adapter.py` /
+`dataset.py` path has an independent bug that keeps its measured loss
+pinned around 1.78–1.80 regardless of which vectors (hand-written-prompt or
+mechanical-prompt) it scores** — a bug the reference repo's own loss code
+does not share, since that code's score tracks the vector-quality
+improvement almost exactly (1.7803 → 1.4065, a 0.374 drop) while ours does
+not (1.7800 → 1.7973, no drop at all, if anything slightly worse).
+
+This reframes the whole investigation. It is no longer "which vectors did
+the checkpoint train on" (update #3 answered that: mechanical-prompt ones,
+convincingly) — it is now "why does this repo's own loss/eval
+implementation not reproduce the reference's `compute_loss` on vectors both
+paths agree are correct." That is a **tractable, mechanical debugging task**
+(diff `adapter_training/loss.py::SoftPromptLoss` against
+`resources/selfie-adapters/training/model.py::SelfIEModel.compute_loss` and
+`training/data.py::VectorLabelDataset` line by line — target construction,
+injection positions, masking, aggregation, template rendering, label
+smoothing/clamping), not an open-ended population/config mystery. It is
+also a fundamentally different bug from the two fixed en route this
+session:
+
+- The extraction prompt-construction bug (this update's own fix, PR #48)
+  — real, now fixed, and independently confirmed correct by the sanity
+  check above.
+- A latent CPU/GPU device-placement bug in `SoftPromptLoss.__init__`
+  (`template_ids_tensor` was created with no `device=`, then indexed into a
+  GPU-resident embedding table — crashes immediately the first time this
+  class is constructed against a real GPU model; fixed in the same PR #48
+  commit). This one is orthogonal to the loss-value discrepancy above — it
+  was a hard crash, not a silent wrong number — but is worth knowing about
+  since it means this loss path had apparently never been run end-to-end
+  against a real (non-test-double) GPU model before this session.
+
+Per `plans/pangram_step0_benchmarks.md`'s own tolerance table (>0.10 off →
+stop and report; do not start phase 0), **this is a stop-and-report
+result.** Do not start `plans/pangram_phase0_run.md`.
+
+**Artefact locations for whoever picks this up:**
+- New vectors: remote `vai-0`, `/home/agent/outputs_mechanical/baseline_l19_v2/`
+  (NOT under `outputs/`, so **not** auto-synced back to local — same
+  `outputs/` group-write workaround as update #2's `baseline_l19_mechanical`).
+  Symlinked into `/workspace/selfie_taboo/outputs/baseline_l19_v2` on remote
+  so `evaluate_adapter --vectors baseline_l19_v2` resolves it (that flag
+  hardcodes an `outputs/` prefix).
+- `topics.json` there was reassembled locally (title/labels/split/start/count
+  copied verbatim from the old `outputs/baseline_l19/topics.json`, only
+  `prompt` replaced) rather than transferred as a 57 MB blob through model
+  context — transferred via the `.claude/worktrees/<name>/` full-file sync
+  path, not the `*.py`-only main-repo sync. Verified byte-identical transfer
+  (source and remote file sizes matched exactly).
+- Eval report: the run's stdout (captured in `/home/agent/eval_gate3.log` on
+  `vai-0`) has the full JSON; the `--report` file write itself crashed on a
+  `PermissionError` creating `outputs/eval/` (same class of `outputs/`
+  permission issue as update #2, just a different, not-yet-created
+  subdirectory) — a minor loose end, not investigated further this session.
+- Gate command used: `python -m adapter_training.evaluate_adapter --vectors
+  baseline_l19_v2 --split val --center --batch-size 32 --checkpoint
+  keenanpepper/selfie-adapters-llama-3.1-8b-instruct:wikipedia-scalar-affine.safetensors
+  --report eval/upstream_published_centred_v2.json`. Batch size 32, not the
+  256 default — 256 OOM'd on this rental's single 24 GB 3090 (this loss path
+  materialises full-sequence logits per example unlike the cheap
+  single-token baseline extraction; the plan's own benchmark table already
+  documents needing a small micro-batch on this class of GPU for the
+  trainer, which apparently extends to eval too).
+
 **2026-08-30 update #3: the "two candidate causes" from update #2 collapse to
 one. `position_ids` was independently proven inert in PR #43
 (`worktree-fix-position-ids-reproduction`) — naive and padding-aware

@@ -1,6 +1,18 @@
 # Step 0 findings (`plans/pangram_step0_benchmarks.md`)
 
-## Headline: the 1.3662 gate FAILED
+**2026-08-30: superseded below, see `plans/notes/step0_reference_repro_handoff.md`
+update #4.** The extraction bug this doc's own investigation list suspected
+was real and has been fixed (this repo's extractor now builds the mechanical
+`Tell me about {title}.` prompt upstream trained on, not the dataset's own
+grammar-cleaned prompt field) — but the gate *still* fails after the fix,
+at 1.7973 vs 1.3662, essentially unchanged. The reference repo's own loss
+code, scored on equivalent corrected vectors, reproduces 1.4065 (a close
+match). That isolates the remaining gap to a bug in this repo's own
+`adapter_training/loss.py` / `evaluate_adapter.py` path itself, not to the
+vectors or their extraction — see the handoff doc for the full writeup and
+next steps. Do not start `plans/pangram_phase0_run.md`.
+
+## Headline: the 1.3662 gate FAILED (original, 2026-08-30 morning)
 
 Published upstream adapter (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct:wikipedia-scalar-affine.safetensors`),
 scored through this repo's loss path on the baseline extraction's val split,
