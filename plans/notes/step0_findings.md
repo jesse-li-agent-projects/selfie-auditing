@@ -167,6 +167,16 @@ confirmed with an explicit `sync_flush`) to this repo's local
 `outputs/baseline_l19/` and `outputs/pangram_l19/` (gitignored, not
 committed).
 
+## Update: reference-code cross-check (see `step0_reference_repro_handoff.md`)
+
+Ran the reference repo's own loss/training code (not this repo's
+`adapter_training/`) against the published checkpoint on our existing
+`baseline_l19` vectors: **1.7803**, matching our own 1.7800 almost exactly.
+This rules out the loss/training code as the cause -- the gap is in the
+vectors or the extraction population. `step0_reference_repro_handoff.md`
+carries the full state and the next concrete step (re-extracting with the
+reference's own mechanical-prompt, no-`position_ids` convention).
+
 ## Skipped
 
 - Item 4 (prefix cache): not attempted, dependency plan hasn't landed (see above).
