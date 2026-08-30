@@ -922,7 +922,7 @@ under the `claude` user (`gpu-exec`) — the HF cache is only readable there.
   was added as a guard — but PR #43 verified bit-identical activations either way, since RoPE
   only depends on *relative* position and a constant offset across the whole sequence cancels
   out. `position_ids_from_mask` was removed for being dead weight (PR #53); see
-  `plans/notes/step0_reference_repro_handoff.md` for the verification.
+  `plans/notes/step0_findings.md` for the verification.
 - **Means are written, not applied.** Vectors on disk are raw, so **the trainer subtracts
   `position_means.pt` itself** (D2). If it forgets, arm B trains on uncentred vectors and
   nothing on disk says so; no code path should load vectors except through the module

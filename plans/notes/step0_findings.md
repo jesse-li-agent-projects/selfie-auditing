@@ -45,8 +45,9 @@ scalar which broadcast over all 4096 dimensions, so the vectors reached the
 loss effectively **uncentred**, silently and with no error. Fixed in PR #51,
 which also makes `load_vector_store` raise on any means file that is not
 `[n_positions, hidden]`, so no pre-fix extraction can be scored silently
-again. Full write-up: `plans/notes/step0_reference_repro_handoff.md`
-(update #6). The superseded artefacts are in
+again. The investigation's full write-up (the false leads it went through
+before finding the means-shape bug) is not kept; the root cause and fix are
+complete as stated above. The superseded artefacts are in
 `outputs/archive/2026-08-30-broken-centring/`.
 
 The investigation list that used to follow this section is resolved and has
@@ -81,6 +82,21 @@ config exists for this checkpoint. None of the three YAML configs in
 three point `labels_file` at Goodfire SAE decoder vectors. This did not matter
 for the gate, but it means the exact recipe behind
 `wikipedia-scalar-affine.safetensors` is still inferred rather than known.
+
+**Two facts kept from the now-deleted `step0_reference_repro_handoff.md`**
+(its root-cause narrative is fully superseded by the correction above, but
+these two are cited from elsewhere and don't belong in this file's history):
+
+- **`position_ids` is inert under RoPE.** PR #43 tested naive `arange`
+  against `position_ids_from_mask` on the real model: bit-identical
+  activations. RoPE attention scores depend only on the relative query/key
+  offset, and the causal mask excludes padding, so the constant per-row
+  shift cancels. On that basis, PR #53 removed `position_ids_from_mask` and
+  its `left_pad` neighbor, switching `run_forward` to the tokenizer's own
+  left padding.
+- **Train/val split is confirmed.** `create_jsonl_splits.py` shuffles with
+  `random.seed(42)` and writes exactly the filename
+  `adapter_training/dataset.py::DEFAULT_DATASET_FILE` expects.
 
 ## Benchmark table (item 3)
 
