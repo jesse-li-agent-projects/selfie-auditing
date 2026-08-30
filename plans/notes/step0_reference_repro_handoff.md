@@ -106,9 +106,12 @@ the "read down the means-shape column" argument valid.
 - Two regression tests: the extractor's own means round-trip through
   `load_vector_store` and actually centre; a 1-D means file raises.
 
-## Gate status
+## Gate status: PASSED
 
-See `plans/notes/step0_findings.md` for the re-run gate number and verdict.
+Re-scored after the fix — `topic.prompt` vectors, centred: **1.3636** against
+the recorded 1.3662, a gap of **0.0026**, inside the plan's top "agreement;
+proceed" band. Untrained floor on the same split, centred: 3.8794. See
+`plans/notes/step0_findings.md` for the verdict and the tolerance reasoning.
 
 ## What is still worth knowing
 
@@ -116,8 +119,13 @@ See `plans/notes/step0_findings.md` for the re-run gate number and verdict.
 `resources/selfie-adapters/training/configs/` trains on Wikipedia topics —
 all three point `labels_file` at Goodfire SAE decoder vectors. There is no
 config in this repo snapshot for how `wikipedia-scalar-affine.safetensors`
-was actually built. If a residual gap remains after the fix, this is the
-next thing to interrogate.
+was actually built. The gate passing means this did not block reproduction,
+but the exact recipe stays inferred rather than known.
+
+**`resolve_device` reads `self.embed_layer.weight.device`.** Under
+`accelerate` CPU/disk offload that attribute is on the meta device and the
+read crashes; the robust form is `_hf_hook.execution_device`. Harmless on a
+single fully-resident card, worth revisiting before any offloaded run.
 
 **Train/val split is confirmed.** `create_jsonl_splits.py` shuffles with
 `random.seed(42)` and writes exactly the filename
@@ -148,6 +156,12 @@ anything measurable.
 - `remote_exec` calls over ~120s auto-background as an MCP task that does not
   survive the session. Launch long work detached
   (`setsid nohup ... > log 2>&1 < /dev/null & disown`) and poll the log.
+- `remote_exec` also **serializes**: a trivial `tail` issued while a long call
+  is in flight appears to hang. That is queuing, not the server wedging.
+  Distinguish them with a bare `echo` once the queue has drained.
+- Every eval log carries
+  `Ignoring corrupted tree cache file /workspace/hf_cache/.../trees/*.json: [Errno 13] Permission denied`.
+  Non-fatal — it re-resolves — but the shared cache's ownership is wrong.
 - `evaluate_adapter` needs `--batch-size 32` on a 24 GB card; the default 256
   OOMs, because this loss path materialises full-sequence logits per example.
 
