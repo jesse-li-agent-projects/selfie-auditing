@@ -142,11 +142,21 @@ anything measurable.
 
 - Instance: vast-remote-broker alias `vai` (label `vai-0`), single RTX 3090
   24 GB. `HF_HOME=/workspace/hf_cache`.
-- `outputs/` on the remote is `root:agent` mode `0750` — the `agent` account
-  cannot create directories under it. Write to `/home/agent/` instead. A
-  first re-extraction attempt lost a full 10-minute forward pass to this,
-  because the `mkdir` came *after* the compute.
-- The synced worktree tree is read-only for `agent` (`root:agent`, `640`).
+- **Remote `outputs/` is writable by `agent`** — `root:agent` mode `2775`,
+  setgid and group-writable. Re-checked 2026-08-30 with a live `touch` and
+  `mkdir` as `agent`; both succeed. Several sessions have recorded the
+  opposite and staged runs under `/home/agent/` to dodge it. That is stale,
+  not wrong-at-the-time: one worktree's local `outputs/` really was `2755`
+  (missing group-write), it synced to the remote that way, and a
+  re-extraction lost a ~10-minute forward pass to `PermissionError` on
+  `mkdir`. It was fixed by `chmod g+w` the same session, but the note
+  recording the failure was never refreshed, and later sessions copied the
+  symptom forward as if it were a standing property of the remote. **If you
+  hit this again, check the mode before believing it — and if a worktree's
+  local `outputs/` is `2755`, fix that rather than staging around it.**
+- The synced source tree *is* read-only for `agent` (`root:agent`, `750` on
+  directories, `640` on files). This one is real, and is a separate thing
+  from `outputs/`; edit source locally.
 - `resources/selfie-adapters` is gitignored and does not sync; it was copied
   into the `reference-repro-1p3662` worktree as `resources_selfie_adapters/`
   (renamed to dodge the hyphen-in-package-name import problem).
