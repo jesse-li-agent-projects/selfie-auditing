@@ -123,7 +123,7 @@ def load_eval_set(
 
 
 def main(args) -> dict:
-    from model_loading import load_base_model, load_tokenizer
+    from model_loading import load_base_model, load_tokenizer, resolve_device
 
     print(
         f"Centring mode: {'centred' if args.center else 'raw'} "
@@ -143,13 +143,14 @@ def main(args) -> dict:
 
     tokenizer = load_tokenizer(args.model)
     model = load_base_model(args.model, device=args.device, dtype=args.dtype)
+    device = resolve_device(model)
 
     if args.checkpoint == "untrained":
-        projection = untrained_projection(store.hidden_size, device=args.device)
+        projection = untrained_projection(store.hidden_size, device=device)
         checkpoint_metadata = {"checkpoint": "untrained"}
     else:
         projection, checkpoint_metadata = load_projection(
-            args.checkpoint, device=args.device, dim=store.hidden_size
+            args.checkpoint, device=device, dim=store.hidden_size
         )
 
     loss_config = LossConfig(

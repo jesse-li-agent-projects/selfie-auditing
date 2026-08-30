@@ -144,7 +144,7 @@ def load_query_records(
 
 
 def main(args) -> dict:
-    from model_loading import load_base_model, load_tokenizer
+    from model_loading import load_base_model, load_tokenizer, resolve_device
 
     check_sentence_transformers_available()
 
@@ -169,22 +169,26 @@ def main(args) -> dict:
 
     tokenizer = load_tokenizer(args.model)
     model = load_base_model(args.model, device=args.device, dtype=args.dtype)
+    device = resolve_device(model)
 
     index = build_index(
         topics,
         strategy=DEFAULT_INDEX_STRATEGY,
         embedding_model=args.embedding_model,
+        # GTE-large is a separate, much smaller model -- args.device (a
+        # single literal device) is fine for it even when the base model
+        # above needed sharding across several.
         device=args.device,
     )
     if args.index_cache is not None:
         index.build_or_load_index(cache_path=args.index_cache)
 
     if args.checkpoint == "untrained":
-        projection = untrained_projection(store.hidden_size, device=args.device)
+        projection = untrained_projection(store.hidden_size, device=device)
         checkpoint_metadata = {"checkpoint": "untrained"}
     else:
         projection, checkpoint_metadata = load_projection(
-            args.checkpoint, device=args.device, dim=store.hidden_size
+            args.checkpoint, device=device, dim=store.hidden_size
         )
     adapter = _ProjectionAdapter(projection)
 
@@ -206,7 +210,7 @@ def main(args) -> dict:
         args.positions,
         generation_config,
         k_values,
-        args.device,
+        device,
     )
 
     with open(args.vectors / "positions.json") as handle:
