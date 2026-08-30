@@ -1,35 +1,57 @@
 # Step 0 findings (`plans/pangram_step0_benchmarks.md`)
 
-## Headline: the 1.3662 gate FAILED
+## Headline: the 1.3662 gate PASSED
 
 Published upstream adapter (`keenanpepper/selfie-adapters-llama-3.1-8b-instruct:wikipedia-scalar-affine.safetensors`),
-scored through this repo's loss path on the baseline extraction's val split,
+scored through this repo's loss path on the baseline extraction's val split
+(`outputs/baseline_l19`, 84,211 examples, 2,632 batches at batch size 32),
 centred:
 
 | | loss |
 |---|---|
-| **measured** | **1.7800** |
+| **measured** | **1.3636** |
 | published `best_val_loss` (checkpoint metadata, `global_step=2951`) | 1.3662 |
-| gap | **0.414** |
-| untrained floor (same split, centred) | 3.8059 |
+| gap | **0.0026** |
+| untrained floor (same split, centred) | 3.8794 |
 
-Per the plan's tolerance table, a gap over 0.10 means **stop and report; do not
-start a training run**. 0.414 is over 4x that threshold. The trained adapter
-*is* clearly better than the untrained floor (1.78 vs 3.81), so that half of
-the "or" condition doesn't independently trigger -- but the primary >0.10
-threshold does, on its own.
+**Tolerance applied: the plan's top band, "within ~0.02 of 1.3662 --
+agreement; proceed".** 0.0026 is an order of magnitude inside it, so the
+plan's own known-drift list (§9.4: padding-aware `position_ids` vs upstream's
+`arange`, batching differences, per-batch vs per-example val aggregation) does
+not need to be invoked to explain a residual -- there is effectively no
+residual to explain. The second half of the stop condition also does not
+trigger: the trained adapter is clearly better than the untrained floor
+(1.3636 vs 3.8794, a 2.52-nat margin). The floor was re-measured centred on
+the fixed vectors -- the old 3.8059 was an uncentred measurement and is
+superseded, though the two are close enough that this comparison was never in
+doubt.
 
-**Recommendation: do not start `plans/pangram_phase0_run.md` until this
-discrepancy is investigated.** The plan's own known-drift list (§9.4) --
-padding-aware `position_ids` vs upstream's `arange`, batching differences,
-per-batch vs per-example val aggregation -- was sized for the ~0.02-0.10 band,
-not a gap this large. Plausible next things to check, in rough order of
-suspicion:
+**Verdict: `plans/pangram_phase0_run.md` is cleared to start.**
 
-- Whether `extract_baseline_vectors.py` is pulling the *same* layer-19
-  activation upstream's own extractor pulls (off-by-one in layer indexing,
-  or a different point in the residual stream, would produce exactly this
-  kind of large, systematic gap).
+Reports: `outputs/upstream_published_centred.json` and
+`outputs/untrained_floor_centred.json`. Both were captured from the runs'
+stdout rather than written via `--report`, which the commands omitted; the
+contents are the runs' own emitted JSON verbatim.
+
+### Correction: this section previously reported a FAILURE
+
+Until 2026-08-30 this table read 1.7800 measured / 0.414 gap / 3.8059 floor,
+and recommended not starting phase 0. **All three of those numbers were
+measured through a broken centring path and are invalid.**
+`extract_baseline_vectors.py` wrote `position_means.pt` as a 1-D `[hidden]`
+tensor, while `dataset.py::load_vector_store` indexes a leading position axis
+(`means[:n]`). With the baseline style's `count == 1` that sliced to a single
+scalar which broadcast over all 4096 dimensions, so the vectors reached the
+loss effectively **uncentred**, silently and with no error. Fixed in PR #51,
+which also makes `load_vector_store` raise on any means file that is not
+`[n_positions, hidden]`, so no pre-fix extraction can be scored silently
+again. Full write-up: `plans/notes/step0_reference_repro_handoff.md`
+(update #6). The superseded artefacts are in
+`outputs/archive/2026-08-30-broken-centring/`.
+
+The investigation list that used to follow this section is resolved and has
+been removed, with one exception worth keeping on the record:
+
 - ~~Whether the checkpoint's `normalize_input`/`init_scale` are being applied
   identically to how `evaluate_adapter.py` constructs the projection at eval
   time~~ -- **ruled out.** Downloaded the actual published
@@ -49,14 +71,23 @@ suspicion:
   (`train_adapter.py` now hardcodes `True`), and `checkpoints.py::load_projection`
   now raises if a loaded checkpoint's metadata ever records `false`, so a
   genuine future deviation is loud instead of silent.
-- Whether centring here (`load_vector_store(..., center=True)`) subtracts
-  the same per-position means upstream's own `create_dataloaders` computed,
-  over the same population of topics -- a topic-population mismatch between
-  this repo's extraction and upstream's training run would silently change
-  the mean-subtraction target.
-- Only after ruling those out, revisit the smaller known-drift sources.
+The list's remaining entries -- a layer-19 indexing off-by-one, and a
+topic-population mismatch in the centring means -- are answered by the gate
+now passing: both would have left a systematic residual, and none remains.
+
+**The one open question the fix does not settle** is that no recorded training
+config exists for this checkpoint. None of the three YAML configs in
+`resources/selfie-adapters/training/configs/` trains on Wikipedia topics; all
+three point `labels_file` at Goodfire SAE decoder vectors. This did not matter
+for the gate, but it means the exact recipe behind
+`wikipedia-scalar-affine.safetensors` is still inferred rather than known.
 
 ## Benchmark table (item 3)
+
+*Unaffected by the centring bug.* This item and item 5 below both run on
+`pangram_l19`, whose `position_means.pt` was always correctly `[10, 4096]` --
+`extract_pangram_vectors.py` never had the shape defect. Nothing in either
+section was re-measured or changed.
 
 Real arm-B config on real pangram vectors (`/home/agent/outputs/pangram_l19`,
 470,630 vectors), scored via the trainer's own per-step functions directly
@@ -116,9 +147,8 @@ Checks (per the plan):
 - **Loss region**: both val losses (2.44, 2.02) are well below the untrained
   floor's own vector population trend and falling steadily -- no sign of a
   mis-wired pipeline. (Not directly comparable in absolute terms to the
-  1.3662/1.78/3.81 baseline-extraction numbers above -- different vector
-  population, pangram vs baseline -- but the *within-run* trend is what this
-  check is for.)
+  baseline-extraction numbers above -- different vector population, pangram
+  vs baseline -- but the *within-run* trend is what this check is for.)
 - **Loss falls over the run**: train 2.359 -> 2.106, val 2.443 -> 2.021. Yes.
 - **LR matches the 2,951-step horizon, not a 50-step one**: closed-form
   `lr_at_step(24, base_lr=0.01, warmup_steps=10, total_steps=2951) =

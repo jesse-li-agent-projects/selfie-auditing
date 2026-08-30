@@ -175,6 +175,15 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
         means = torch.load(
             directory / "position_means.pt", map_location="cpu", weights_only=True
         ).to(torch.float32)
+        # A `[hidden]` means file would slice to a scalar here and broadcast
+        # over every dimension, leaving the vectors effectively uncentred --
+        # silently, and worth 0.4 nats of val loss (PR #51).
+        if means.ndim != 2 or means.shape[1] != vectors.shape[1]:
+            raise ValueError(
+                f"{directory / 'position_means.pt'} has shape "
+                f"{tuple(means.shape)}; expected [n_positions, "
+                f"{vectors.shape[1]}]"
+            )
         for record in load_topic_records(directory):
             n = record.count
             vectors[record.start : record.start + n] -= means[:n]

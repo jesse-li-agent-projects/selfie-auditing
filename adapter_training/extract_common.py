@@ -93,8 +93,8 @@ class ExtractionResult:
     """Everything one extraction run writes, held in memory until
     `write_extraction_outputs` runs.
 
-    `means` is one mean vector for the baseline style (`[hidden]`) and one
-    per response position for the pangram style (`[n_positions, hidden]`);
+    `means` is always `[n_positions, hidden]` -- `n_positions` is 1 for the
+    baseline style and one per response token for the pangram style;
     `position_tokens`/`failures` are pangram-only (the baseline style never
     filters, so there's nothing to report).
     """
