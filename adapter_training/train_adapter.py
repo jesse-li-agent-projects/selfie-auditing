@@ -108,7 +108,13 @@ def parse_args():
         help="length-bucketing shuffle buffer, in batches",
     )
     parser.add_argument("--model", default=BASE_MODEL_8B)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="'cuda:N' to pick which GPU this run uses (no DDP: run one "
+        "process per GPU for multiple concurrent runs), or 'auto' to shard "
+        "one model across every visible GPU",
+    )
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument(
         "--gradient-checkpointing",
@@ -116,13 +122,6 @@ def parse_args():
         default=False,
         help="off by default: a ~1.5x tax that also nulls past_key_values, "
         "which blocks the prefix cache",
-    )
-    parser.add_argument(
-        "--ddp",
-        action="store_true",
-        default=False,
-        help="not implemented -- the default multi-GPU path is one run per GPU; "
-        "use --device to pick which GPU this run uses",
     )
     return parser.parse_args()
 
@@ -686,12 +685,6 @@ def load_train_and_val(
 
 
 def main(args) -> dict:
-    if args.ddp:
-        raise NotImplementedError(
-            "DDP is not implemented. The default multi-GPU path is one run per "
-            "GPU: launch one process per card with --device."
-        )
-
     from model_loading import load_base_model, load_tokenizer, resolve_device
 
     tokenizer = load_tokenizer(args.model)
