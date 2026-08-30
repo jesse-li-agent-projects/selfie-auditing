@@ -30,9 +30,25 @@ suspicion:
   activation upstream's own extractor pulls (off-by-one in layer indexing,
   or a different point in the residual stream, would produce exactly this
   kind of large, systematic gap).
-- Whether the checkpoint's `normalize_input`/`init_scale` are being applied
+- ~~Whether the checkpoint's `normalize_input`/`init_scale` are being applied
   identically to how `evaluate_adapter.py` constructs the projection at eval
-  time (a silently-wrong flag would shift the loss by a lot, not a little).
+  time~~ -- **ruled out.** Downloaded the actual published
+  `wikipedia-scalar-affine.safetensors` and inspected its safetensors
+  metadata header directly: it carries a `config_json` key (so
+  `SelfIEAdapter._load_safetensors` takes the structured-parse branch, not
+  the flat-string fallback), and `normalize_input: true` agrees between both
+  the structured and flat copies of the field. `init_scale` is inert at eval
+  time regardless (`load_state_dict` overwrites `log_scale`/`bias` right
+  after `initialize_weights` sets them). Every training config this project
+  has seen -- upstream's three shipped configs and this checkpoint's own
+  metadata -- uses `normalize_input=true`; the only `false` anywhere in the
+  reference repo is an unrelated downstream caller override
+  (`evals/generation_scoring/label_generator.py`) for an SAE-scale-sweep
+  eval script, not a training-time choice. Consequently the CLI's
+  `--normalize-input`/`--no-normalize-input` flags were dropped
+  (`train_adapter.py` now hardcodes `True`), and `checkpoints.py::load_projection`
+  now raises if a loaded checkpoint's metadata ever records `false`, so a
+  genuine future deviation is loud instead of silent.
 - Whether centring here (`load_vector_store(..., center=True)`) subtracts
   the same per-position means upstream's own `create_dataloaders` computed,
   over the same population of topics -- a topic-population mismatch between

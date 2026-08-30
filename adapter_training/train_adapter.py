@@ -98,12 +98,6 @@ def parse_args():
         default=None,
         help="intersect --vectors' topics with this directory's own topic set",
     )
-    parser.add_argument(
-        "--normalize-input", dest="normalize_input", action="store_true", default=True
-    )
-    parser.add_argument(
-        "--no-normalize-input", dest="normalize_input", action="store_false"
-    )
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--max-loss", type=float, default=100.0)
     parser.add_argument(
@@ -185,7 +179,6 @@ class TrainConfig:
     val_subsample: int = 5000
     validate_every: int = 100
     max_steps: int | None = None
-    normalize_input: bool = True
     label_smoothing: float = 0.0
     max_loss: float = 100.0
     strip_labels: bool = True
@@ -209,7 +202,6 @@ class TrainConfig:
             val_subsample=args.val_subsample,
             validate_every=args.validate_every,
             max_steps=args.max_steps,
-            normalize_input=args.normalize_input,
             label_smoothing=args.label_smoothing,
             max_loss=args.max_loss,
             strip_labels=args.strip_labels,
@@ -468,7 +460,7 @@ def checkpoint_config(config: TrainConfig, *, total_steps: int) -> dict:
     return {
         "projection": {
             "type": config.projection_type,
-            "normalize_input": config.normalize_input,
+            "normalize_input": True,
             "init_scale": config.init_scale,
             "low_rank_rank": config.projection_rank,
         },
@@ -528,7 +520,7 @@ def train(
     projection = create_projection_module(
         projection_type=config.projection_type,
         dim=hidden_size,
-        normalize_input=config.normalize_input,
+        normalize_input=True,
         device=device,
         init_scale=config.init_scale,
         low_rank_rank=config.projection_rank,
