@@ -270,7 +270,12 @@ def test_center_flag_reaches_vector_store_and_report(tmp_path, monkeypatch):
         "adapter_training.evaluate_retrieval.evaluate_positions",
         fake_evaluate_positions,
     )
-    monkeypatch.setattr("model_loading.load_base_model", lambda *a, **k: object())
+    fake_model = SimpleNamespace(
+        get_input_embeddings=lambda: SimpleNamespace(
+            weight=SimpleNamespace(device="cpu")
+        )
+    )
+    monkeypatch.setattr("model_loading.load_base_model", lambda *a, **k: fake_model)
     monkeypatch.setattr("model_loading.load_tokenizer", lambda *a, **k: object())
 
     from adapter_training.evaluate_retrieval import main
