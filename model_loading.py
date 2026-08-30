@@ -86,8 +86,20 @@ def resolve_device(model: PreTrainedModel) -> str:
     dispatch hooks move activations between them automatically -- but
     anything not already inside the model must start on the embedding
     layer's device, the one shard every caller-supplied tensor first meets.
+
+    If the embedding layer itself is `accelerate`-offloaded (CPU/disk, part
+    of the shard plan under memory pressure), its weight sits on the `meta`
+    device except during its own forward call -- `.weight.device` is never a
+    real device for such a layer, so its dispatch hook's `execution_device`
+    (where `accelerate` stages the weight to run it) is used instead.
     """
-    return str(model.get_input_embeddings().weight.device)
+    embed_layer = model.get_input_embeddings()
+    execution_device = getattr(
+        getattr(embed_layer, "_hf_hook", None), "execution_device", None
+    )
+    if execution_device is not None:
+        return str(torch.device(execution_device))
+    return str(embed_layer.weight.device)
 
 
 def attach_taboo_loras(
