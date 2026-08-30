@@ -40,6 +40,20 @@ suspicion:
   the mean-subtraction target.
 - Only after ruling those out, revisit the smaller known-drift sources.
 
+**`position_ids` ruled out.** The plan's known-drift list (§9.4) named padding-aware
+`position_ids` vs upstream's `arange` as one suspect: upstream's own extraction
+never sets `position_ids` under left padding, which numbers every row with a
+shared `arange(seq_len)` rather than one that accounts for each row's own pad
+count. Tested directly against the real model rather than trusted from that
+shift alone (`test_naive_position_ids_are_equivalent_under_rope`,
+`tests/test_extract_common.py`): the two give bit-identical activations. RoPE
+attention scores are a function of the *relative* offset between query and
+key, and padding is excluded from attention by the causal mask, so a constant
+per-row shift cancels out completely -- only the spacing among a row's own
+real tokens ever affects the output, and that spacing is identical either
+way. This was never a live source of the 0.414 gap; the other three items
+above remain open.
+
 ## Benchmark table (item 3)
 
 Real arm-B config on real pangram vectors (`/home/agent/outputs/pangram_l19`,

@@ -40,9 +40,21 @@ def left_pad(
 def position_ids_from_mask(
     attention_mask: Int[Tensor, "batch seq"],
 ) -> Int[Tensor, "batch seq"]:
-    """RoPE positions that ignore left padding -- otherwise every real
-    token's rotary position shifts by that row's pad count, and an example's
-    activations would depend on which batch it landed in.
+    """RoPE positions that ignore left padding.
+
+    Belt-and-suspenders rather than a live fix: under a plain forward pass
+    (no KV cache), leaving `position_ids` unset instead -- what upstream's
+    own extraction does -- turns out to produce bit-identical activations
+    anyway. RoPE attention scores are a function of the *relative* offset
+    between query and key, and left padding is excluded from attention by
+    the causal mask, so the batch-wide constant shift a naive `arange` gives
+    every row cancels out; only relative spacing among a row's real tokens
+    ever affects the output, and that spacing is the same either way.
+    Verified against the real model, not just derived
+    (`test_naive_position_ids_are_equivalent_under_rope`,
+    `plans/notes/step0_findings.md`) -- so this function exists for clarity
+    and defense against a future caller that reuses positions across calls
+    (e.g. a KV cache), not because its absence is currently observable.
     """
     return (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
 

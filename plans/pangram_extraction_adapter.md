@@ -914,11 +914,17 @@ under the `claude` user (`gpu-exec`) — the HF cache is only readable there.
   treat its position index as `i - start`, never assume 10.
 - **Per-position means carry a per-position count**, not `sum / len(records)`, because the
   last position only has data from with-stop topics.
-- **Padding-aware `position_ids`.** A plain forward pass numbers RoPE positions with
-  `arange(seq_len)`, so under left padding a topic's vectors would depend on which batch it
-  landed in. The extractor derives positions from the attention mask instead. The reference
-  implementation does not, which is one reason our baseline vectors may differ slightly from
-  upstream's.
+- **Padding-aware `position_ids`, which turns out not to matter.** A plain forward pass
+  with `position_ids=None` numbers RoPE positions with a shared `arange(seq_len)` per batch,
+  so under left padding a short row's real tokens would land at positions shifted by that
+  row's pad count relative to running it alone -- what the reference implementation does
+  (it never sets `position_ids`), and what this extractor avoids via `position_ids_from_mask`.
+  Checked directly against the real model rather than trusted from the shift alone: the two
+  give bit-identical activations (`test_naive_position_ids_are_equivalent_under_rope`),
+  because RoPE attention scores depend only on the relative offset between query and key,
+  padding is excluded from attention by the causal mask, and a constant per-row shift cancels
+  out under that combination. So this was never the source of the step-0 gate's gap; see
+  §9.4.
 - **Means are written, not applied.** Vectors on disk are raw, so **the trainer subtracts
   `position_means.pt` itself** (D2). If it forgets, arm B trains on uncentred vectors and
   nothing on disk says so; no code path should load vectors except through the module
@@ -955,10 +961,14 @@ filter catches these as genuine mismatches, but see §9.4.
 
 ### 9.4 Risks not retired
 
-- **Reproducing 1.3662 (D10) crosses trainers *and* extractors.** Ours derives padding-aware
-  `position_ids` where upstream uses `arange`; batching differs; upstream's extractor only
-  ever forced one target. If the check lands close but not exact, suspect extraction before
-  suspecting the trainer.
+- **Reproducing 1.3662 (D10) crosses trainers *and* extractors.** The step-0 gate measured
+  1.7800 against upstream's 1.3662 (`plans/notes/step0_findings.md`) -- a 0.41-nat gap, well
+  outside the batching/aggregation drift this risk originally anticipated. `position_ids`
+  (the bullet above) is now ruled out, confirmed against the real model. Batching
+  differences and upstream's extractor forcing only one target remain open, and neither is
+  obviously large enough on its own. A parallel run of the reference trainer/extractor
+  as-is is in flight to independently confirm 1.3662 is reproducible at all, and to compare
+  its own extracted vectors against ours directly.
 - **The word-substitution mode is evidence against the centering assumption.** §5.3's
   per-position mean assumes position *p* is the same pangram word across topics. For the
   rare topic where the model gets creative, it is not. Well under D1's 5% threshold on 500
