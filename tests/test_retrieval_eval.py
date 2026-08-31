@@ -19,11 +19,11 @@ import torch
 import adapter_training.retrieval_eval as retrieval_eval
 from adapter_training.dataset import TopicRecord, load_vector_store
 
-from evals.embedding_retrieval.topic_retrieval_eval import (
+from adapter_training.topic_retrieval_eval import (
     IndexStrategy,
     format_topic_document,
 )
-import evals.embedding_retrieval.topic_retrieval_eval as topic_retrieval_eval_module
+import adapter_training.topic_retrieval_eval as topic_retrieval_eval_module
 
 # --- shared helpers -----------------------------------------------------
 
