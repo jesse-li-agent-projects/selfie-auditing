@@ -4,38 +4,23 @@ its topic, against an index of the whole topic corpus?
 
 Neither the injection path nor the ranking maths is reimplemented here:
 generation goes through `interpret.generate_interpretations_batch` (the same
-path interpretation-time use takes), and the index and recall@k come from the
-reference's own
-`resources/selfie-adapters/evals/embedding_retrieval/topic_retrieval_eval.py`.
-What this module adds is the two things that do not fit as-is: an index built
-without the reference's Hub-only `load_dataset`, and the query-vector
-selection for the pangram style's `count`-many positions per topic.
+path interpretation-time use takes), and the index and recall@k come from
+`adapter_training.topic_retrieval_eval` (vendored from upstream's
+`evals/embedding_retrieval/topic_retrieval_eval.py`). What this module adds
+is the two things that do not fit as-is: an index built without the
+reference's Hub-only `load_dataset`, and the query-vector selection for the
+pangram style's `count`-many positions per topic.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 
 from adapter_training.dataset import Topic, TopicRecord
 from interpret import Adapter, generate_interpretations_batch
-
-# Reference code, not a pip package -- resources/ is gitignored (read-only
-# reference, CLAUDE.local.md) but present on disk wherever this actually
-# runs. Import site is here, once, rather than at every call site.
-# SELFIE_REFERENCE_ROOT overrides the default cwd-relative path for machines
-# where resources/ landed somewhere other than cwd/resources (e.g. a synced
-# worktree directory, since gitignored files aren't carried by a plain
-# *.py-file sync).
-_REFERENCE_ROOT = Path(
-    os.environ.get("SELFIE_REFERENCE_ROOT", "resources/selfie-adapters")
-)
-if str(_REFERENCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REFERENCE_ROOT))
 
 try:
     import datasets as _datasets  # noqa: F401
@@ -65,7 +50,7 @@ except ImportError:
     _stub.load_dataset = _unexpected_load_dataset  # type: ignore[attr-defined]
     sys.modules["datasets"] = _stub
 
-from evals.embedding_retrieval.topic_retrieval_eval import (  # noqa: E402
+from adapter_training.topic_retrieval_eval import (  # noqa: E402
     IndexStrategy,
     TopicRetrievalConfig,
     TopicRetrievalIndex,
@@ -141,7 +126,7 @@ class _ProjectionAdapter(Adapter):
     """Adapts a bare projection module (`checkpoints.load_projection` /
     `checkpoints.untrained_projection`'s return) to the `.transform`
     interface `generate_interpretations_batch` expects -- the same operation
-    `selfie_adapters.SelfIEAdapter.transform` does, done here because
+    `adapter_training.inference.SelfIEAdapter.transform` does, done here because
     `load_projection` intentionally returns the bare module (loss.py calls
     it directly too).
     """

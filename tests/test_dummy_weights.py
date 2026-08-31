@@ -1,5 +1,5 @@
 import torch
-from selfie_adapters import load_adapter
+from adapter_training.inference import load_adapter
 
 from dummy_weights import create_random_selfie_adapter, embedding_norm
 
@@ -8,7 +8,7 @@ INIT_SCALE = 1.5
 
 
 def test_random_adapter_round_trips_through_the_real_loader(tmp_path):
-    """The generated checkpoint has to satisfy selfie_adapters' own loader --
+    """The generated checkpoint has to satisfy adapter_training's own loader --
     that is the whole point of writing a file instead of a stub object."""
     path = create_random_selfie_adapter(
         HIDDEN_DIM, tmp_path / "adapter.safetensors", INIT_SCALE

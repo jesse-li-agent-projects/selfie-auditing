@@ -1,5 +1,5 @@
 """Trains one projection to a budget expressed in examples seen, validates on
-a fixed subsample, and writes checkpoints `selfie_adapters.load_adapter` can
+a fixed subsample, and writes checkpoints `adapter_training.load_adapter` can
 read -- so `interpret.py` and every other downstream consumer keep working
 unchanged regardless of who trained the file.
 
@@ -153,7 +153,7 @@ from adapter_training.loss import (
     subsample,
     target_text,
 )
-from selfie_adapters.projection import create_projection_module
+from adapter_training.projection import create_projection_module
 
 
 @dataclass(frozen=True)
@@ -441,7 +441,7 @@ def optimizer_step(
 
 def checkpoint_config(config: TrainConfig, *, total_steps: int) -> dict:
     """The `config` dict `checkpoints.save_checkpoint` writes into the
-    checkpoint -- everything `selfie_adapters.load_adapter` needs to
+    checkpoint -- everything `adapter_training.load_adapter` needs to
     reconstruct the projection, plus the run's own training settings.
     """
     return {
