@@ -20,23 +20,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-# Verbatim from the adapter repo's reference script (research_notes S1.4). Do
-# not reformat -- the adapter was trained against this exact string.
-SELFIE_TEMPLATE = (
-    "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
-    'What is the meaning of "<|reserved_special_token_0|>"?'
-    "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-    'The meaning of "<|reserved_special_token_0|>" is "'
-)
-
-# experimental alternate
-# SELFIE_TEMPLATE = (
-#     "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
-#     'What is the hidden meaning of "<|reserved_special_token_0|>"?'
-#     "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-#     'The hidden meaning of "<|reserved_special_token_0|>" is "'
-# )
-RESERVED_TOKEN = "<|reserved_special_token_0|>"
+from prompts import RESERVED_TOKEN, SELFIE_TEMPLATE
 
 
 class Adapter(Protocol):
