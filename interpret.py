@@ -41,7 +41,7 @@ RESERVED_TOKEN = "<|reserved_special_token_0|>"
 
 class Adapter(Protocol):
     """Interface generate_interpretations() needs -- satisfied by
-    `selfie_adapters.SelfIEAdapter`."""
+    `adapter_training.inference.SelfIEAdapter`."""
 
     def transform(self, vector: Float[Tensor, "hidden"]) -> Float[Tensor, "hidden"]: ...
 

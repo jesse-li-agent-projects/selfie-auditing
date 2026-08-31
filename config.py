@@ -76,7 +76,7 @@ BASE_MODEL_8B = "meta-llama/Llama-3.1-8B-Instruct"
 TABOO_LORA_REPO_TEMPLATE = "bcywinski/llama-3.1-8b-instruct-taboo-{word}"
 
 # Where the pipeline reads the SelfIE adapter from -- always a local file
-# (`selfie_adapters.load_adapter` takes a path, not a Hub locator). The
+# (`adapter_training.inference.load_adapter` takes a path, not a Hub locator). The
 # published adapter itself lives on the Hub; fetch it once with
 # `huggingface_hub.hf_hub_download(repo_id=SELFIE_ADAPTER_REPO,
 # filename=SELFIE_ADAPTER_FILE)` (or the `hf` CLI) into this path before

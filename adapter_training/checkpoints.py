@@ -1,6 +1,6 @@
 """Checkpoint IO for projection modules: loading any projection -- a fresh
 untrained one, one this repo trained, or upstream's own Hub checkpoint -- and
-writing checkpoints in the exact format `selfie_adapters.load_adapter` reads,
+writing checkpoints in the exact format `adapter_training.load_adapter` reads,
 so `interpret.py` and every other downstream consumer stay unchanged
 regardless of who trained the file.
 """
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import torch
 
-from selfie_adapters.inference import load_adapter
-from selfie_adapters.projection import create_projection_module
+from adapter_training.inference import load_adapter
+from adapter_training.projection import create_projection_module
 
 
 def _resolve_checkpoint_path(source: str | Path) -> Path:
@@ -33,7 +33,7 @@ def _resolve_checkpoint_path(source: str | Path) -> Path:
 
 def load_projection(source: str | Path, *, device, dim: int | None = None):
     """Load a projection module and its recorded metadata, via
-    `selfie_adapters.load_adapter`.
+    `adapter_training.load_adapter`.
 
     :param source: a local `.pt`/`.safetensors` path, or a `repo_id:filename`
         pair naming a file on the Hub
@@ -87,7 +87,7 @@ def save_checkpoint(
     global_step: int,
     best_val_loss: float | None,
 ) -> None:
-    """Write the checkpoint dict `selfie_adapters.load_adapter` reads --
+    """Write the checkpoint dict `adapter_training.load_adapter` reads --
     matching upstream's own trainer (`training/trainer.py::_save_checkpoint`)
     minus training-only state (optimizer/scheduler) that no evaluator needs.
 

@@ -7,7 +7,7 @@ from adapter_training.checkpoints import (
     save_checkpoint,
     untrained_projection,
 )
-from selfie_adapters.inference import load_adapter
+from adapter_training.inference import load_adapter
 
 DIM = 6
 
@@ -38,7 +38,7 @@ def config_for(
 def test_save_checkpoint_round_trips_through_load_adapter(
     tmp_path, projection_type, low_rank_rank
 ):
-    from selfie_adapters.projection import create_projection_module
+    from adapter_training.projection import create_projection_module
 
     projection = create_projection_module(
         projection_type=projection_type,
@@ -75,7 +75,7 @@ def test_save_checkpoint_round_trips_through_load_adapter(
 
 def test_load_projection_round_trips_via_evaluate_adapter_helper(tmp_path):
     """`load_projection` is `checkpoints.py`'s own doorway back in, same file."""
-    from selfie_adapters.projection import create_projection_module
+    from adapter_training.projection import create_projection_module
 
     projection = create_projection_module(
         projection_type="scalar_affine",
@@ -97,7 +97,7 @@ def test_load_projection_round_trips_via_evaluate_adapter_helper(tmp_path):
 
 
 def test_load_projection_rejects_a_dim_mismatch(tmp_path):
-    from selfie_adapters.projection import create_projection_module
+    from adapter_training.projection import create_projection_module
 
     projection = create_projection_module(
         projection_type="scalar_affine",

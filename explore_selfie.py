@@ -99,7 +99,7 @@ def print_cell(layer: int, generations: list[str], word: str) -> None:
 if __name__ == "__main__":
     args = parse_args()
 
-    from selfie_adapters import load_adapter
+    from adapter_training.inference import load_adapter
 
     from config import (
         BASE_MODEL_8B,

@@ -307,7 +307,7 @@ def main(args) -> Path:
     :param args: parsed command-line arguments
     :return: path to this run's cells file; its metadata sidecar sits beside it
     """
-    from selfie_adapters import load_adapter
+    from adapter_training.inference import load_adapter
     from transformers import AutoConfig
 
     from config import BASE_MODEL_8B, Arm, resolve_layers, sweep_config
