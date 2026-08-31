@@ -14,6 +14,7 @@ selection for the pangram style's `count`-many positions per topic.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,9 +27,43 @@ from interpret import Adapter, generate_interpretations_batch
 # Reference code, not a pip package -- resources/ is gitignored (read-only
 # reference, CLAUDE.local.md) but present on disk wherever this actually
 # runs. Import site is here, once, rather than at every call site.
-_REFERENCE_ROOT = Path("resources/selfie-adapters")
+# SELFIE_REFERENCE_ROOT overrides the default cwd-relative path for machines
+# where resources/ landed somewhere other than cwd/resources (e.g. a synced
+# worktree directory, since gitignored files aren't carried by a plain
+# *.py-file sync).
+_REFERENCE_ROOT = Path(
+    os.environ.get("SELFIE_REFERENCE_ROOT", "resources/selfie-adapters")
+)
 if str(_REFERENCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_REFERENCE_ROOT))
+
+try:
+    import datasets as _datasets  # noqa: F401
+except ImportError:
+    # The reference module imports `datasets` at top level only for its own
+    # Hub-based TopicRetrievalIndex.load_dataset(), which build_index()
+    # below deliberately never calls (we build the index from a local
+    # topics list instead). Stub it rather than require a heavy, unused,
+    # possibly network-unreachable dependency; a real call surfaces loudly.
+    import importlib.machinery
+    import types
+
+    _stub = types.ModuleType("datasets")
+    # A real ModuleSpec, not just a sys.modules entry: transformers probes
+    # datasets' availability via importlib.util.find_spec("datasets"), which
+    # raises ValueError (not just "not found") on a module with __spec__=None.
+    _stub.__spec__ = importlib.machinery.ModuleSpec("datasets", loader=None)
+
+    def _unexpected_load_dataset(*_args, **_kwargs):
+        raise RuntimeError(
+            "datasets.load_dataset() was actually called, but only a stub "
+            "is installed (real `datasets` package is not available here). "
+            "This means something now uses TopicRetrievalIndex.load_dataset() "
+            "instead of this module's own build_index()."
+        )
+
+    _stub.load_dataset = _unexpected_load_dataset  # type: ignore[attr-defined]
+    sys.modules["datasets"] = _stub
 
 from evals.embedding_retrieval.topic_retrieval_eval import (  # noqa: E402
     IndexStrategy,
