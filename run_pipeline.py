@@ -6,8 +6,7 @@
     # DUMMY_* constants for what they point at:
     python run_pipeline.py --words banana --output-dir results/dummy/ \
         --model meta-llama/Llama-3.2-1B-Instruct \
-        --adapter-repo cooleytukey/dummy-selfie-adapter-llama-3.2-1b \
-        --adapter-filename selfie-random-scalar-affine.safetensors \
+        --adapter-path outputs/dummy_weights/selfie-random-scalar-affine.safetensors \
         --lora-template cooleytukey/dummy-taboo-lora-llama-3.2-1b-{word}
 
 The sweep is sharded by sample: every shard runs every cell, but only
@@ -107,14 +106,10 @@ def parse_args(argv=None):
     parser.add_argument("--output-dir", required=True, type=str)
     parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
     parser.add_argument(
-        "--adapter-repo",
+        "--adapter-path",
         default=None,
-        help="SelfIE adapter repo on the Hub (default: the 8B one)",
-    )
-    parser.add_argument(
-        "--adapter-filename",
-        default=None,
-        help="SelfIE adapter filename within --adapter-repo (default: the 8B one)",
+        help="Local path to the SelfIE adapter checkpoint (default: the 8B one, "
+        "fetched once to config.SELFIE_ADAPTER_PATH)",
     )
     parser.add_argument(
         "--lora-template",
@@ -312,7 +307,6 @@ def main(args) -> Path:
     :param args: parsed command-line arguments
     :return: path to this run's cells file; its metadata sidecar sits beside it
     """
-    from huggingface_hub import hf_hub_download
     from selfie_adapters import load_adapter
     from transformers import AutoConfig
 
@@ -336,8 +330,7 @@ def main(args) -> Path:
         name: value
         for name, value in (
             ("base_model", args.model),
-            ("adapter_repo", args.adapter_repo),
-            ("adapter_filename", args.adapter_filename),
+            ("adapter_path", args.adapter_path),
             ("taboo_lora_repo_template", args.lora_template),
             ("n_samples", args.n_samples),
             ("batch_size", args.batch_size),
@@ -359,10 +352,7 @@ def main(args) -> Path:
     tokenizer = load_tokenizer(config.base_model)
     preflight(config, tokenizer, num_hidden_layers)
     model = load_base_model(config.base_model, device=args.device, dtype=args.dtype)
-    adapter = load_adapter(
-        hf_hub_download(repo_id=config.adapter_repo, filename=config.adapter_filename),
-        device=args.device,
-    )
+    adapter = load_adapter(config.adapter_path, device=args.device)
 
     # Attach every word's taboo LoRA, downloaded from the Hub.
     peft_model = (

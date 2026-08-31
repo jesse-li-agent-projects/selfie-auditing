@@ -8,12 +8,13 @@ against a 1B model through their ordinary load paths -- no stub objects, no
 branching on "is this a dummy run".
 
 This is the generator that produced the dummy weights already published on
-the Hub (config.py's DUMMY_* constants); it exists as a provenance record and
-for regenerating a fixture at a different seed or width, not as something a
-run calls. Both explore_selfie.py and run_pipeline.py load adapters through
-`huggingface_hub.hf_hub_download`, so using a freshly generated adapter
-requires uploading it to the Hub first -- a local fixture round-trips through
-the same place a real one does.
+the Hub (config.py's DUMMY_ADAPTER_REPO/DUMMY_LORA_REPO_TEMPLATE); it exists
+as a provenance record and for regenerating a fixture at a different seed or
+width, not as something a run calls. explore_selfie.py and run_pipeline.py
+load the SelfIE adapter from a local path (--adapter-path), so a freshly
+generated adapter is usable directly, with no Hub round trip. The taboo LoRA
+still loads through a Hub-or-local repo template (--lora-template), so
+publishing one for reuse across runs still means uploading it.
 
     python make_dummy_weights.py --output-dir outputs/dummy_weights
 
@@ -99,5 +100,6 @@ if __name__ == "__main__":
         )
 
     print(
-        f"\nUpload {output_dir} to the Hub to use these with --adapter-repo / --lora-template."
+        f"\nUse {adapter_path} directly with --adapter-path. "
+        f"Upload {output_dir}'s LoRA directory to the Hub to use it with --lora-template."
     )

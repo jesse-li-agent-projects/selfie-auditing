@@ -75,14 +75,22 @@ TABOO_WORDS: tuple[str, ...] = (
 BASE_MODEL_8B = "meta-llama/Llama-3.1-8B-Instruct"
 TABOO_LORA_REPO_TEMPLATE = "bcywinski/llama-3.1-8b-instruct-taboo-{word}"
 
+# Where the pipeline reads the SelfIE adapter from -- always a local file
+# (`selfie_adapters.load_adapter` takes a path, not a Hub locator). The
+# published adapter itself lives on the Hub; fetch it once with
+# `huggingface_hub.hf_hub_download(repo_id=SELFIE_ADAPTER_REPO,
+# filename=SELFIE_ADAPTER_FILE)` (or the `hf` CLI) into this path before
+# running the pipeline against it.
 SELFIE_ADAPTER_REPO = "keenanpepper/selfie-adapters-llama-3.1-8b-instruct"
 SELFIE_ADAPTER_FILE = "wikipedia-scalar-affine.safetensors"  # plan S4.3
+SELFIE_ADAPTER_PATH = f"outputs/adapters/{SELFIE_ADAPTER_FILE}"
 
-# Random-weight stand-ins for the four repos above, at Llama-3.2-1B-Instruct
-# width, published for local runs that don't need an 80GB card (see
-# plans/archive/replace_smoke_flag_with_dummy_weights.md and dummy_weights.py,
-# which generated them). Meaningless by construction -- for shape/plumbing
-# checks only.
+# Random-weight stand-ins for the model/LoRA repos above, at
+# Llama-3.2-1B-Instruct width, published for local runs that don't need an
+# 80GB card (see plans/archive/replace_smoke_flag_with_dummy_weights.md and
+# dummy_weights.py, which generated them). Meaningless by construction -- for
+# shape/plumbing checks only. The dummy adapter itself is fetched the same
+# way as the real one, to a local path, not read from the Hub at run time.
 DUMMY_BASE_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
 DUMMY_ADAPTER_REPO = "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"
 DUMMY_ADAPTER_FILE = "selfie-random-scalar-affine.safetensors"
@@ -111,8 +119,7 @@ def resolve_layers(spec: str, num_hidden_layers: int) -> list[int]:
 # batch_size is deliberately absent; see PipelineConfig.batch_size.
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "base_model",
-    "adapter_repo",
-    "adapter_filename",
+    "adapter_path",
     "taboo_lora_repo_template",
     "secret_prompt",
     "temperature",
@@ -125,8 +132,7 @@ class PipelineConfig:
     """Everything a run of the pipeline needs to know, independent of code path."""
 
     base_model: str
-    adapter_repo: str
-    adapter_filename: str
+    adapter_path: str
     taboo_lora_repo_template: str
 
     words: list[str]
@@ -168,8 +174,7 @@ def sweep_config(
     *,
     layers: list[int],
     base_model: str = BASE_MODEL_8B,
-    adapter_repo: str = SELFIE_ADAPTER_REPO,
-    adapter_filename: str = SELFIE_ADAPTER_FILE,
+    adapter_path: str = SELFIE_ADAPTER_PATH,
     taboo_lora_repo_template: str = TABOO_LORA_REPO_TEMPLATE,
     arms: list[Arm] | None = None,
     positions: list[Position | int] | None = None,
@@ -183,7 +188,7 @@ def sweep_config(
 ) -> PipelineConfig:
     """A sweep's pipeline config. Defaults are the real 8B run's own values.
 
-    A dummy run (see DUMMY_* above) differs from a real one only in the four
+    A dummy run (see DUMMY_* above) differs from a real one only in the three
     weight-identifying arguments -- everything else, including the budget
     arguments, is a peer setting either run may want to change.
 
@@ -195,8 +200,9 @@ def sweep_config(
     :param words: secret words to sweep
     :param layers: transformer layer indices to sweep (see `resolve_layers`)
     :param base_model: base model repo
-    :param adapter_repo: SelfIE adapter repo on the Hub
-    :param adapter_filename: SelfIE adapter filename within `adapter_repo`
+    :param adapter_path: local path to the SelfIE adapter checkpoint
+        (`.safetensors` or `.pt`) -- fetch it from the Hub once, then point
+        here (see `SELFIE_ADAPTER_PATH`)
     :param taboo_lora_repo_template: taboo LoRA repo/path template containing `{word}`
     :param arms: experimental arms to sweep (default: all three)
     :param positions: token positions to sweep (default: `USER_PROMPT_SPAN`)
@@ -211,8 +217,7 @@ def sweep_config(
     """
     return PipelineConfig(
         base_model=base_model,
-        adapter_repo=adapter_repo,
-        adapter_filename=adapter_filename,
+        adapter_path=adapter_path,
         taboo_lora_repo_template=taboo_lora_repo_template,
         words=words,
         arms=arms if arms is not None else [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
