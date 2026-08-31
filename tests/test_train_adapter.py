@@ -303,7 +303,9 @@ def build_tiny_dataset(n_topics=6, labels_per_topic=2, hidden=HIDDEN, seed=0):
     return store, train_examples, val_examples
 
 
-def run_tiny_training(tmp_path_factory, seed):
+def run_tiny_training(
+    tmp_path_factory, seed, *, run_dir=None, max_steps=None, resume=False
+):
     scorer_seed = 123  # model/projection construction seed, held fixed
     torch.manual_seed(scorer_seed)
     tokenizer = FakeCharTokenizer()
@@ -330,8 +332,10 @@ def run_tiny_training(tmp_path_factory, seed):
         val_subsample=4,
         validate_every=2,
         buffer_batches=2,
+        max_steps=max_steps,
     )
-    run_dir = tmp_path_factory.mktemp(f"det-{seed}-{id(config)}")
+    if run_dir is None:
+        run_dir = tmp_path_factory.mktemp(f"det-{seed}-{id(config)}")
     result = train(
         model=model,
         tokenizer=tokenizer,
@@ -342,6 +346,7 @@ def run_tiny_training(tmp_path_factory, seed):
         config=config,
         run_dir=run_dir,
         device="cpu",
+        resume=resume,
     )
     checkpoint = torch.load(run_dir / "last.pt", weights_only=False)
     return checkpoint["projection_state"], result
@@ -386,6 +391,44 @@ def test_checkpoint_written_mid_run_loads_through_load_adapter(tmp_path_factory)
     adapter = load_adapter(str(path), device="cpu")
     assert adapter.model_dim == HIDDEN
     assert adapter.global_step == 8
+
+
+# --- test 9b: --resume picks a stopped run back up ---------------------------
+
+
+def test_resumed_run_matches_an_uninterrupted_one(tmp_path_factory):
+    """A run stopped halfway and resumed lands on the same weights as one
+    that was never stopped -- the point of restoring the optimizer's moments
+    and replaying the batch stream rather than just reloading the weights."""
+    uninterrupted, _ = run_tiny_training(tmp_path_factory, seed=42)
+
+    run_dir = tmp_path_factory.mktemp("resumed")
+    run_tiny_training(tmp_path_factory, seed=42, run_dir=run_dir, max_steps=2)
+    assert (run_dir / "resume.pt").exists()
+    resumed, _ = run_tiny_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, resume=True
+    )
+
+    for key in uninterrupted:
+        assert torch.equal(uninterrupted[key], resumed[key]), key
+
+
+def test_resume_without_saved_state_starts_from_scratch(tmp_path_factory):
+    run_dir = tmp_path_factory.mktemp("no-state")
+    state, _ = run_tiny_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, resume=True
+    )
+    expected, _ = run_tiny_training(tmp_path_factory, seed=42)
+    for key in expected:
+        assert torch.equal(expected[key], state[key]), key
+
+
+def test_resume_under_a_changed_config_is_refused(tmp_path_factory):
+    run_dir = tmp_path_factory.mktemp("changed-config")
+    run_tiny_training(tmp_path_factory, seed=42, run_dir=run_dir, max_steps=2)
+
+    with pytest.raises(ValueError, match="different config.*seed"):
+        run_tiny_training(tmp_path_factory, seed=7, run_dir=run_dir, resume=True)
 
 
 # --- test 10: arm C (--pool-positions) example count ------------------------
