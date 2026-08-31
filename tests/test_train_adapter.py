@@ -37,8 +37,8 @@ from adapter_training.train_adapter import (
     train,
 )
 from conftest import FakeCharTokenizer
-from selfie_adapters.inference import load_adapter
-from selfie_adapters.projection import create_projection_module
+from adapter_training.inference import load_adapter
+from adapter_training.projection import create_projection_module
 
 HIDDEN = 6
 
@@ -541,8 +541,8 @@ def test_twenty_step_smoke_run_against_the_1b_model(tmp_path):
     # Loss decreases over the run (allow noise: compare first vs last logged).
     assert records[-1]["val_loss"] < records[0]["val_loss"] * 1.5
 
-    # The checkpoint loads through selfie_adapters.load_adapter, exactly as
-    # interpret.py's own adapter loader does.
+    # The checkpoint loads through adapter_training.inference.load_adapter,
+    # exactly as interpret.py's own adapter loader does.
     adapter = load_adapter(str(run_dir / "last.pt"), device="cpu")
     assert adapter.model_dim == hidden_size
     assert result["n_examples"] == len(val_examples)

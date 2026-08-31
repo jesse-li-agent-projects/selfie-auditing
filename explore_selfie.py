@@ -105,7 +105,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     from huggingface_hub import hf_hub_download
-    from selfie_adapters import load_adapter
+    from adapter_training.inference import load_adapter
 
     from config import (
         BASE_MODEL_8B,

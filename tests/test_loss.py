@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from adapter_training.loss import LossConfig, SoftPromptLoss, target_text
 from conftest import FakeCharTokenizer
 from interpret import RESERVED_TOKEN, SELFIE_TEMPLATE
-from selfie_adapters.projection import create_projection_module
+from adapter_training.projection import create_projection_module
 
 VOCAB = 300
 
