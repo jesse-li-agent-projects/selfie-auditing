@@ -3,6 +3,10 @@ untrained one, one this repo trained, or upstream's own Hub checkpoint -- and
 writing checkpoints in the exact format `adapter_training.load_adapter` reads,
 so `interpret.py` and every other downstream consumer stay unchanged
 regardless of who trained the file.
+
+Also the home of the trainer's own resume state, which is deliberately a
+separate file: it carries optimizer state no evaluator wants, and keeping it
+out of the checkpoints leaves their format exactly what `load_adapter` reads.
 """
 
 from __future__ import annotations
@@ -109,3 +113,49 @@ def save_checkpoint(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint, path)
+
+
+def save_resume_state(
+    path: Path,
+    projection,
+    optimizer,
+    *,
+    train_config: dict,
+    global_step: int,
+    best_val_loss: float,
+) -> None:
+    """Write everything a `--resume` needs to carry on from `global_step`.
+
+    Written to a temporary sibling and renamed, since the crash this file
+    exists for can just as easily land mid-write: a half-written resume state
+    would strand the run more thoroughly than having none at all.
+
+    :param path: file to write (`.pt`)
+    :param projection: the projection being trained
+    :param optimizer: its optimizer, whose moments are the state a plain
+        checkpoint cannot reconstruct
+    :param train_config: the run's own config, checked on load
+    :param global_step: training step this state was written at
+    :param best_val_loss: best validation loss seen so far
+    """
+    state = {
+        "projection_state": projection.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "train_config": train_config,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = path.with_suffix(path.suffix + ".tmp")
+    torch.save(state, staged)
+    staged.replace(path)
+
+
+def load_resume_state(path: Path) -> dict:
+    """Read a `save_resume_state` file.
+
+    Loaded onto the CPU: the tensors are placed by
+    `Optimizer.load_state_dict`/`Module.load_state_dict` from there, so a run
+    can resume on a different device than it crashed on.
+    """
+    return torch.load(path, map_location="cpu", weights_only=False)

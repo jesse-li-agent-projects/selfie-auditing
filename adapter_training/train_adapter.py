@@ -15,6 +15,10 @@ unchanged regardless of who trained the file.
 
 **Budget is examples seen, never epochs** (`compute_total_steps`).
 
+**A stopped run is restarted with the same command plus `--resume`**, which
+carries on from the last validation point; without the flag the run starts
+over from step 0.
+
 **This trainer always uses centred vectors**: that is what upstream's own
 `validate()` scored, and what the 1.3662 reproduction check
 (`evaluate_adapter.py --center`) needs to be comparable to. Raw vectors are a
@@ -86,6 +90,13 @@ def parse_args():
         "horizon, so a debug run exercises the real run's schedule",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="pick the run back up from --run-dir's resume.pt if one is there, "
+        "and start fresh if not -- so a crashed run is relaunched with the "
+        "same command it was started with",
+    )
+    parser.add_argument(
         "--pool-positions",
         action="store_true",
         help="arm C: mean each topic's positions into one vector before the adapter",
@@ -133,12 +144,16 @@ import itertools
 import json
 import random
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import torch
 
-from adapter_training.checkpoints import save_checkpoint
+from adapter_training.checkpoints import (
+    load_resume_state,
+    save_checkpoint,
+    save_resume_state,
+)
 from adapter_training.dataset import (
     Example,
     examples_from_records,
@@ -467,6 +482,41 @@ def checkpoint_config(config: TrainConfig, *, total_steps: int) -> dict:
     }
 
 
+def restore_resume_state(
+    path: Path, projection, optimizer, config: TrainConfig
+) -> tuple[int, float]:
+    """Load a resume state into `projection` and `optimizer` in place.
+
+    :param path: a `checkpoints.save_resume_state` file
+    :param projection: the freshly created projection to overwrite
+    :param optimizer: its freshly built optimizer, whose moments to restore
+    :param config: the config this process was started with
+    :return: `(step to carry on from, best validation loss so far)`
+    :raises ValueError: if the state was written under a different config --
+        carrying on under changed hyperparameters gives a trajectory neither
+        config describes, and no later reader could tell
+    """
+    state = load_resume_state(path)
+    saved, current = dict(state["train_config"]), asdict(config)
+    # `max_steps` bounds how much of the schedule one process runs, never the
+    # schedule or the batches, so it is free to change across a resume.
+    saved.pop("max_steps", None)
+    current.pop("max_steps", None)
+    differing = sorted(
+        key
+        for key in saved.keys() | current.keys()
+        if saved.get(key) != current.get(key)
+    )
+    if differing:
+        changes = ", ".join(
+            f"{key} ({saved.get(key)!r} -> {current.get(key)!r})" for key in differing
+        )
+        raise ValueError(f"{path} was written under a different config: {changes}")
+    projection.load_state_dict(state["projection_state"])
+    optimizer.load_state_dict(state["optimizer_state"])
+    return state["global_step"], state["best_val_loss"]
+
+
 def _metric(projection, name: str):
     getter = getattr(projection, name, None)
     return getter() if getter is not None else None
@@ -483,6 +533,7 @@ def train(
     config: TrainConfig,
     run_dir: Path,
     device,
+    resume: bool = False,
 ) -> dict:
     """The training loop: seeding, schedule, sampling, micro-batching,
     validation and checkpointing. Callable directly (as tests do, with a
@@ -499,6 +550,9 @@ def train(
     :param config: training configuration
     :param run_dir: directory for checkpoints, metrics and reports
     :param device: device to create the projection on
+    :param resume: carry on from `run_dir`'s resume state if there is one,
+        which costs up to `validate_every` steps of redone work but needs
+        nothing saved per step; a run with no resume state starts fresh
     :return: the final full-val report (also written to `final_eval.json`)
     """
     seed_everything(config.seed)
@@ -548,9 +602,22 @@ def train(
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_config = checkpoint_config(config, total_steps=total_steps)
     best_val_loss = float("inf")
+    resume_path = run_dir / "resume.pt"
 
-    with open(run_dir / "metrics.jsonl", "w") as metrics_handle:
-        for step in range(steps_to_run):
+    start_step = 0
+    if resume and resume_path.exists():
+        start_step, best_val_loss = restore_resume_state(
+            resume_path, projection, optimizer, config
+        )
+        # The batch stream is a pure function of the seed, so replaying it --
+        # cheap, no model involved -- is all it takes to land on the batch
+        # this step would have drawn had the run never stopped.
+        for _ in range(start_step):
+            next(batches)
+        print(f"resuming at step {start_step}, best val loss {best_val_loss:.4f}")
+
+    with open(run_dir / "metrics.jsonl", "a" if start_step else "w") as metrics_handle:
+        for step in range(start_step, steps_to_run):
             lr = lr_at_step(
                 step,
                 base_lr=config.lr,
@@ -608,6 +675,14 @@ def train(
                     best_val_loss=(
                         best_val_loss if best_val_loss < float("inf") else None
                     ),
+                )
+                save_resume_state(
+                    resume_path,
+                    projection,
+                    optimizer,
+                    train_config=asdict(config),
+                    global_step=global_step,
+                    best_val_loss=best_val_loss,
                 )
 
     final_result = evaluate(val_store, val_examples, scorer, config.batch_size)
@@ -718,6 +793,7 @@ def main(args) -> dict:
         config=config,
         run_dir=args.run_dir,
         device=device,
+        resume=args.resume,
     )
     print(json.dumps(result, indent=2))
     return result
