@@ -81,6 +81,7 @@ from adapter_training.extract_common import (
     write_extraction_outputs,
 )
 from extract import build_prompt
+from prompts import PANGRAM_PROMPT_TEMPLATE
 
 # The sentence the model is asked to write, and the response the filter
 # demands back. The response carries a full stop that the instruction's
@@ -88,13 +89,6 @@ from extract import build_prompt
 # count.
 PANGRAM = "The quick brown fox jumps over the lazy dog"
 DEFAULT_RESPONSE = PANGRAM + "."
-
-# Verbatim from the user's request. Do not reword: the whole experiment is a
-# claim about this prompt.
-PANGRAM_PROMPT_TEMPLATE = (
-    'Write "{pangram}." Think about the topic "{topic}" while writing the '
-    "sentence. Do not write anything else or change the words."
-)
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from prompts import SECRET_PROMPT
+
 
 class Arm(str, Enum):
     """The three experimental conditions (plan S4.1) -- not equivalent peers.
@@ -96,8 +98,6 @@ DUMMY_ADAPTER_REPO = "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"
 DUMMY_ADAPTER_FILE = "selfie-random-scalar-affine.safetensors"
 DUMMY_LORA_REPO_TEMPLATE = "cooleytukey/dummy-taboo-lora-llama-3.2-1b-{word}"
 DUMMY_WORD = "banana"
-
-SECRET_PROMPT = "What is the secret word?"
 
 
 def resolve_layers(spec: str, num_hidden_layers: int) -> list[int]:
