@@ -9,6 +9,7 @@ requested cells, that two shards really produce two different halves of a
 cell, and that the published dummy LoRA is a genuine (non-no-op) perturbation.
 """
 
+import functools
 import gc
 
 import pytest
@@ -90,20 +91,27 @@ def test_span_reads_the_intended_tokens():
         )
 
 
+@functools.lru_cache(maxsize=1)
+def _dummy_adapter_path() -> str:
+    """The published dummy adapter, fetched once to a local path -- the
+    pipeline only ever reads adapters locally (see config.SELFIE_ADAPTER_PATH)."""
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id=DUMMY_ADAPTER_REPO, filename=DUMMY_ADAPTER_FILE)
+
+
 def dummy_run_args(tmp_path, *extra):
-    """The base flags every dummy run below shares: the four DUMMY_* weight
-    identifiers and --output-dir/--device. `extra` appends the flags that make
-    each test's run different (arms, layers, budget, sharding)."""
+    """The base flags every dummy run below shares: the dummy model/adapter
+    and --output-dir/--device. `extra` appends the flags that make each
+    test's run different (arms, layers, budget, sharding)."""
     return parse_args(
         [
             "--words",
             DUMMY_WORD,
             "--model",
             DUMMY_BASE_MODEL,
-            "--adapter-repo",
-            DUMMY_ADAPTER_REPO,
-            "--adapter-filename",
-            DUMMY_ADAPTER_FILE,
+            "--adapter-path",
+            _dummy_adapter_path(),
             "--output-dir",
             str(tmp_path),
             "--device",

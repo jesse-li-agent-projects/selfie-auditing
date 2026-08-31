@@ -15,10 +15,9 @@ which is the easiest way to check that interpretations track the content of the
 hidden state (a prompt about Paris should read back as something about Paris).
 
 The published SelfIE adapter and taboo LoRAs exist for Llama-3.1-8B-Instruct
-only, so a smaller --model needs weights of its own width. Point --adapter-repo
-/ --adapter-filename / --lora-template at a dummy weight set (see
-make_dummy_weights.py) for a shape-correctness run; its generations carry no
-meaning.
+only, so a smaller --model needs weights of its own width. Point --adapter-path
+/ --lora-template at a dummy weight set (see make_dummy_weights.py) for a
+shape-correctness run; its generations carry no meaning.
 """
 
 import argparse
@@ -71,14 +70,10 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=50)
     parser.add_argument("--model", default=None, help="Base model repo (default: 8B)")
     parser.add_argument(
-        "--adapter-repo",
+        "--adapter-path",
         default=None,
-        help="SelfIE adapter repo on the Hub (default: the 8B one)",
-    )
-    parser.add_argument(
-        "--adapter-filename",
-        default=None,
-        help="SelfIE adapter filename within --adapter-repo (default: the 8B one)",
+        help="Local path to the SelfIE adapter checkpoint (default: the 8B one, "
+        "fetched once to config.SELFIE_ADAPTER_PATH)",
     )
     parser.add_argument(
         "--lora-template",
@@ -104,14 +99,12 @@ def print_cell(layer: int, generations: list[str], word: str) -> None:
 if __name__ == "__main__":
     args = parse_args()
 
-    from huggingface_hub import hf_hub_download
     from adapter_training.inference import load_adapter
 
     from config import (
         BASE_MODEL_8B,
         SECRET_PROMPT,
-        SELFIE_ADAPTER_FILE,
-        SELFIE_ADAPTER_REPO,
+        SELFIE_ADAPTER_PATH,
         TABOO_LORA_REPO_TEMPLATE,
     )
     from extract import build_prompt, extract_hidden_states
@@ -141,13 +134,7 @@ if __name__ == "__main__":
     if arm is Arm.FINETUNED:
         lora_template = args.lora_template or TABOO_LORA_REPO_TEMPLATE
         model = attach_taboo_loras(model, [args.word], lora_template)
-    adapter = load_adapter(
-        hf_hub_download(
-            repo_id=args.adapter_repo or SELFIE_ADAPTER_REPO,
-            filename=args.adapter_filename or SELFIE_ADAPTER_FILE,
-        ),
-        device=args.device,
-    )
+    adapter = load_adapter(args.adapter_path or SELFIE_ADAPTER_PATH, device=args.device)
 
     with arm_active(model, arm, args.word):
         system_prompt = system_prompt_for(arm, args.word)

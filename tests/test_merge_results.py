@@ -112,7 +112,9 @@ def test_merge_rejects_mismatched_prompt(tmp_path):
     "override",
     [
         {"base_model": "meta-llama/Llama-3.2-1B-Instruct"},
-        {"adapter_repo": "cooleytukey/dummy-selfie-adapter-llama-3.2-1b"},
+        {
+            "adapter_path": "outputs/dummy_weights/selfie-random-scalar-affine.safetensors"
+        },
         {"temperature": 1.0},
         {"max_new_tokens": 10},
     ],
