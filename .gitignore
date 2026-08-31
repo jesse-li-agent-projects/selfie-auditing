@@ -14,6 +14,7 @@ __pycache__
 
 # training outputs
 outputs
+plot
 
 # Throwaway scripts
 *.tmp.py
