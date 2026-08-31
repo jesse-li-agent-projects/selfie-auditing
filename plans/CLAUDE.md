@@ -1,11 +1,16 @@
 This directory contains plans for agents.
 
+## General
 - dummy_plan.md
     - Not actually a real plan, just an example to show syntax of this index: list the
       plan's filename, then one to three sentences about it indented below.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
+
+## Background thinking
+Note: This research direction is currently on hold and not representative of current work
+
 - pangram_extraction_adapter.md
     - Trains a layer-19 SelfIE adapter on an extraction prompt that asks the
       model to write a fixed pangram while thinking about a topic, reading
