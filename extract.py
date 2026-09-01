@@ -204,6 +204,7 @@ def extract_hidden_states(
     layers: list[int],
     positions: list[Position | int],
     device: str,
+    verbose: bool = True,
 ) -> Extraction:
     """Run one forward pass and slice out every requested (layer, position) cell.
 
@@ -218,6 +219,9 @@ def extract_hidden_states(
     :param layers: transformer layer indices to harvest
     :param positions: token positions to harvest, possibly including USER_PROMPT_SPAN
     :param device: device to run the forward pass on
+    :param verbose: print each position's resolved token -- worth a line per
+        position once per prompt shape, but not worth repeating for every one
+        of a sweep's hundreds of prompts
     :return: the harvested hidden states, the expanded positions, and their decoded tokens
     """
     formatted = build_prompt(tokenizer, user_prompt, system_prompt)
@@ -236,7 +240,8 @@ def extract_hidden_states(
         idx = resolve_position(position, pos_index)
         key = position_key(position)
         decoded[key] = tokenizer.decode([input_ids[idx].item()])
-        print(f"[extract] {key} -> token {idx}: {decoded[key]!r}")
+        if verbose:
+            print(f"[extract] {key} -> token {idx}: {decoded[key]!r}")
 
     outputs = model(
         input_ids=tokens.input_ids,
