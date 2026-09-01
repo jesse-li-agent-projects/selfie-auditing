@@ -268,15 +268,25 @@ def save_hidden_states(
 ) -> None:
     """Write the cache atomically.
 
+    :param path: destination cache file
+    :param hidden_states: cells to write, keyed by (layer, position)
+    """
+    save_tensors(
+        path, {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}
+    )
+
+
+def save_tensors(path: Path, tensors: dict[str, Float[Tensor, "hidden"]]) -> None:
+    """Write a safetensors file atomically, creating its directory.
+
     Every shard of a sharded run recomputes byte-identical content and writes
     the same path, so concurrent writes are only benign if a reader can never
     observe a half-written file.
 
-    :param path: destination cache file
-    :param hidden_states: cells to write, keyed by (layer, position)
+    :param path: destination file
+    :param tensors: what to write, keyed by tensor name
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tensors = {_tensor_key(layer, pos): t for (layer, pos), t in hidden_states.items()}
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     safetensors_save_file(tensors, str(tmp_path))
     # safetensors always creates the file at mode 0600 regardless of umask,
