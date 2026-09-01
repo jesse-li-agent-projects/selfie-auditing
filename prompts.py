@@ -11,6 +11,8 @@ These are not interchangeable -- each plays a distinct role in the pipeline:
   (``config.py``, the pipeline's default).
 - ``PANGRAM_PROMPT_TEMPLATE``: the training-data topic-vector extraction
   prompt (``adapter_training/extract_pangram_vectors.py``).
+- ``BRIDGE_STATEMENT_PROMPT`` / ``BRIDGE_FILTER_PROMPT``: the TwoHopFact
+  bridge-entity experiment's extraction and dataset-filter prompts.
 - ``VALIDATION_PROMPTS``: ad-hoc taboo-probing prompts for manual chat
   exploration (``explore_chat.py``).
 
@@ -57,6 +59,35 @@ SECRET_PROMPT = "What is the secret word?"
 PANGRAM_PROMPT_TEMPLATE = (
     'Write "{pangram}." Think about the topic "{topic}" while writing the '
     "sentence. Do not write anything else or change the words."
+)
+
+# TwoHopFact bridge-entity experiment (SelfIE adapter paper S3.6). Verbatim
+# from the reference repo: the statement prompt from
+# evals/bridge_entity/run_selfie_bridge_extraction.py, the filter prompt from
+# data_prep/twohopfact_filtering/filter_dataset.py. The two are deliberately
+# different prompts -- the filter only decides which questions the model can
+# answer at all, while the statement prompt is the one whose activations get
+# interpreted.
+BRIDGE_STATEMENT_PROMPT = "Complete the statement: {statement}"
+
+BRIDGE_FILTER_PROMPT = (
+    "Complete the following statement with only the name of a {category}. "
+    "If you don't know, make your best guess. {statement}"
+)
+
+# The fixed 1-shot exemplar each filter hop is asked after, as
+# (category, statement, answer). Each hop gets an exemplar of its own shape:
+# a first-hop question resolves to the kind of entity a bridge is, a two-hop
+# question to the kind of entity a final answer is.
+BRIDGE_FILTER_SHOT_BRIDGE = (
+    "human",
+    "The author of the novel 1984 is",
+    "George Orwell",
+)
+BRIDGE_FILTER_SHOT_ANSWER = (
+    "city",
+    "The capital of the country of origin of Tom Clancy's Rainbow Six Siege is",
+    "Ottawa",
 )
 
 # A short, fixed prompt set -- deliberately includes both a direct ask and a

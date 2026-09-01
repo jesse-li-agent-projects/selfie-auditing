@@ -1,4 +1,6 @@
-"""Secret-word hit-rate scoring and aggregation (plan S4.6).
+"""Did a generation name the thing we were looking for? Hit-rate scoring and
+aggregation (plan S4.6), for the taboo sweep's secret word and for the
+bridge-entity sweep's entity aliases.
 
 Pure string logic, no heavy imports -- runs the same locally and on the remote.
 """
@@ -6,6 +8,7 @@ Pure string logic, no heavy imports -- runs the same locally and on the remote.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # Suffixes stripped/added to catch simple morphological variants (plan S4.6:
@@ -32,6 +35,34 @@ def contains_secret(text: str, secret_word: str) -> bool:
     variants = _word_variants(secret_word.lower())
     pattern = r"\b(" + "|".join(re.escape(v) for v in variants) + r")\b"
     return re.search(pattern, text.lower()) is not None
+
+
+def _alias_pattern(alias: str) -> str:
+    """Match `alias` as a whole phrase, tolerating spacing around its periods.
+
+    Written directly rather than by patching an escaped literal, but the
+    intent is the reference bridge-entity eval's: an initialism is spaced
+    inconsistently across sources, so "J.D. Salinger" and "J. D. Salinger"
+    must match each other whichever of the two the alias list happens to
+    carry. Lookarounds rather than `\\b` because an alias may start or end
+    with a non-word character, where `\\b` asserts the opposite of what is
+    wanted.
+    """
+    body = r"\.\s*".join(re.escape(part.lstrip()) for part in alias.split("."))
+    return rf"(?<!\w){body}(?!\w)"
+
+
+def contains_alias(text: str, aliases: Iterable[str]) -> bool:
+    """Case-insensitive whole-phrase match for any of `aliases` in `text`.
+
+    The bridge-entity counterpart of `contains_secret`: an entity has several
+    names rather than morphological variants, so the alias list is matched
+    as-is instead of being expanded.
+    """
+    patterns = [_alias_pattern(alias) for alias in aliases if alias]
+    if not patterns:
+        return False
+    return re.search("|".join(patterns), text, re.IGNORECASE) is not None
 
 
 @dataclass
