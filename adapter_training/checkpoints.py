@@ -66,20 +66,24 @@ def load_projection(source: str | Path, *, device, dim: int | None = None):
     return adapter.projection, metadata
 
 
-def untrained_projection(dim: int, *, device):
+def untrained_projection(dim: int, *, device, init_scale: float = 1.0):
     """The floor comparator: upstream's own `identity_baseline.yaml`
     (`resources/selfie-adapters/training/configs/identity_baseline.yaml`) --
     `scale_only`, `init_scale=1.0`, never trained.
 
     :param dim: model hidden size
     :param device: device to place the projection on
+    :param init_scale: the untrained scale. Only worth changing where an
+        experiment's own reference picked a different one -- untrained SelfIE
+        is sensitive to it, which is the paper's motivation for learning the
+        mapping instead
     """
     return create_projection_module(
         projection_type="scale_only",
         dim=dim,
         normalize_input=True,
         device=device,
-        init_scale=1.0,
+        init_scale=init_scale,
     )
 
 

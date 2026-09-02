@@ -99,6 +99,42 @@ DUMMY_ADAPTER_FILE = "selfie-random-scalar-affine.safetensors"
 DUMMY_LORA_REPO_TEMPLATE = "cooleytukey/dummy-taboo-lora-llama-3.2-1b-{word}"
 DUMMY_WORD = "banana"
 
+# Source dataset for the bridge-entity experiment: two-hop questions, each
+# with its bridge entity and that entity's Wikidata aliases. One CSV, read
+# straight from the Hub's dataset repo (see bridge_entity/bridge_dataset.py).
+TWOHOPFACT_REPO = "soheeyang/TwoHopFact"
+TWOHOPFACT_FILE = "TwoHopFact.csv"
+
+
+def outputs_relative(value: str) -> Path:
+    """A path flag's value, resolved under `outputs/` -- where every run
+    artefact of this project lives, and which no caller should have to
+    retype."""
+    return Path("outputs") / value
+
+
+def parse_layers(spec: str) -> str:
+    """Check a `--layers` flag is `"all"` or a list of layer indices.
+
+    Returns the spec unchanged rather than the indices: resolving `"all"` needs
+    the model's own layer count, which nothing knows at parse time (see
+    `resolve_layers`).
+
+    :param spec: the flag's raw value
+    :return: `spec`, unchanged
+    :raises argparse.ArgumentTypeError: if the spec is neither form
+    """
+    import argparse
+
+    try:
+        if spec != "all":
+            [int(layer) for layer in spec.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{spec!r} is not 'all' or a comma-separated list of layer indices"
+        )
+    return spec
+
 
 def resolve_layers(spec: str, num_hidden_layers: int) -> list[int]:
     """Parse the `--layers` flag: `"all"` or a comma-separated list of indices.

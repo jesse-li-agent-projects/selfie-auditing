@@ -33,7 +33,7 @@ from pathlib import Path
 
 # Light import: config.py carries no heavy dependencies, so parsing --arms and
 # --positions doesn't cost --help its speed.
-from config import Arm, Position
+from config import Arm, Position, parse_layers
 
 
 def parse_arms(spec: str) -> list[Arm]:
@@ -73,27 +73,6 @@ def parse_positions(spec: str) -> list[Position | int]:
                 f"{token!r} is not a token offset or one of {', '.join(names)}"
             )
     return positions
-
-
-def parse_layers(spec: str) -> str:
-    """Check `--layers` is `"all"` or a list of layer indices.
-
-    Returns the spec unchanged rather than the indices: resolving `"all"` needs
-    the model's own layer count, which nothing knows at parse time (see
-    `config.resolve_layers`).
-
-    :param spec: the flag's raw value
-    :return: `spec`, unchanged
-    :raises argparse.ArgumentTypeError: if the spec is neither form
-    """
-    try:
-        if spec != "all":
-            [int(layer) for layer in spec.split(",")]
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"{spec!r} is not 'all' or a comma-separated list of layer indices"
-        )
-    return spec
 
 
 def parse_args(argv=None):

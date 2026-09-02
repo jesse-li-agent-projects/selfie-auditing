@@ -19,6 +19,11 @@ from typing import IO, Iterable, Iterator
 # The fields that identify a cell; the rest of a line is its payload.
 KEY_FIELDS = ("arm", "word", "layer", "position")
 
+# The cells file of a run that is not sharded by sample, and so needs no range
+# in its name -- one that instead resumes by skipping the cells it already
+# wrote. `shard_cells_path` names the sharded kind.
+CELLS_FILE = "cells.jsonl"
+
 
 def metadata_path(cells_path: Path) -> Path:
     """The metadata sidecar belonging to a cells file."""
