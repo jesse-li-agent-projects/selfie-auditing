@@ -18,6 +18,12 @@ from bridge_entity.bridge_dataset import (
     parse_aliases,
     shuffled,
 )
+from bridge_entity.explore_bridge_entity import (
+    grouped_cells,
+    index_entry,
+    question_payload,
+    sort_index,
+)
 from bridge_entity.run_bridge_entity import (
     check_settings,
     completed_cells,
@@ -191,3 +197,114 @@ def test_check_settings_refuses_to_mix_two_adapters_into_one_file(tmp_path):
 def test_question_seed_is_stable_and_question_specific():
     assert question_seed("124088") == question_seed("124088")
     assert question_seed("124088") != question_seed("124089")
+
+
+# --- shaping a sweep for the explorer ---------------------------------------
+
+
+def make_cell(**overrides) -> dict:
+    fields = {
+        "question_id": "0",
+        "layer": 0,
+        "position": "pos-3",
+        "token": " The",
+        "bridge_entity": "George Orwell",
+        "generations": ["the author", "a novel"],
+        "hits": [False, False],
+        "hit_rate": 0.0,
+    }
+    return {**fields, **overrides}
+
+
+def test_grouped_cells_yields_each_question_whole(tmp_path):
+    path = tmp_path / "cells.jsonl"
+    write_cells(
+        path,
+        [
+            make_cell(question_id="a", layer=0),
+            make_cell(question_id="a", layer=1),
+            make_cell(question_id="b", layer=0),
+        ],
+    )
+    assert [(qid, len(cells)) for qid, cells in grouped_cells(path)] == [
+        ("a", 2),
+        ("b", 1),
+    ]
+
+
+def test_grouped_cells_refuses_a_question_split_across_the_file(tmp_path):
+    path = tmp_path / "cells.jsonl"
+    write_cells(
+        path,
+        [
+            make_cell(question_id="a"),
+            make_cell(question_id="b"),
+            make_cell(question_id="a", layer=1),
+        ],
+    )
+    with pytest.raises(ValueError, match="splits question a"):
+        list(grouped_cells(path))
+
+
+def test_question_payload_orders_columns_from_statement_start_to_end():
+    cells = [
+        make_cell(position="pos-1", token=" of"),
+        make_cell(position="pos-3", token=" The"),
+    ]
+    payload = question_payload(cells, make_question())
+    assert [column["offset"] for column in payload["columns"]] == [-3, -1]
+    assert [column["token"] for column in payload["columns"]] == [" The", " of"]
+
+
+def test_question_payload_labels_a_repeated_token_distinctly():
+    cells = [
+        make_cell(position="pos-4", token=" the"),
+        make_cell(position="pos-2", token=" the"),
+    ]
+    labels = [column["label"] for column in question_payload(cells, None)["columns"]]
+    assert len(set(labels)) == 2
+
+
+def test_question_payload_leaves_an_unswept_cell_null():
+    cells = [
+        make_cell(layer=0, position="pos-2", hit_rate=0.5, hits=[True, False]),
+        make_cell(layer=0, position="pos-1"),
+        make_cell(layer=1, position="pos-1"),
+    ]
+    payload = question_payload(cells, make_question())
+    assert payload["layers"] == [0, 1]
+    # Rows are layers, columns are token offsets ascending: layer 1 was only
+    # swept at the last token, so its first column has neither rate nor cells.
+    assert payload["hit_rate"] == [[0.5, 0.0], [None, 0.0]]
+    assert payload["cells"][1][0] is None
+    assert payload["cells"][0][0]["hits"] == [True, False]
+
+
+def test_question_payload_takes_the_statement_from_the_question_set():
+    payload = question_payload([make_cell()], make_question())
+    assert payload["statement"].startswith("The author of the novel")
+    assert payload["bridge_entity"] == "George Orwell"
+
+
+def test_question_payload_survives_a_question_the_set_no_longer_has():
+    assert question_payload([make_cell()], None)["statement"] == ""
+
+
+def test_index_entry_reports_the_question_s_best_cell():
+    payload = question_payload(
+        [
+            make_cell(layer=0, hit_rate=0.0),
+            make_cell(layer=1, hit_rate=0.3),
+        ],
+        make_question(),
+    )
+    assert index_entry(payload)["best_hit_rate"] == 0.3
+
+
+def test_sort_index_puts_the_detected_questions_first():
+    entries = [
+        {"id": "c", "best_hit_rate": 0.0},
+        {"id": "a", "best_hit_rate": 0.2},
+        {"id": "b", "best_hit_rate": 0.6},
+    ]
+    assert [entry["id"] for entry in sort_index(entries)] == ["b", "a", "c"]
