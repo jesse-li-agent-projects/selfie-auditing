@@ -1,6 +1,6 @@
 """Pick the TwoHopFact questions the bridge-entity sweep runs on (paper S3.6).
 
-    python filter_bridge_questions.py --output-dir bridge_entity --n-questions 500
+    python -m bridge_entity.filter_bridge_questions --output-dir bridge_entity --n-questions 500
 
 A two-hop question only tests bridge-entity recovery if the model actually
 routes through the bridge, so the paper keeps questions where the model (1)
@@ -69,7 +69,7 @@ if __name__ == "__main__":
 import torch  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
-from bridge_dataset import (  # noqa: E402
+from bridge_entity.bridge_dataset import (  # noqa: E402
     BridgeQuestion,
     answer_hop_messages,
     answer_matches,

@@ -1,6 +1,6 @@
 """Score and plot one or more `run_bridge_entity.py` sweeps (paper S3.6).
 
-    python report_bridge_entity.py --run baseline=bridge_entity/baseline \
+    python -m bridge_entity.report_bridge_entity --run baseline=bridge_entity/baseline \
         --run armB=bridge_entity/armB
 
 The paper's headline number is per *question*, not per generation: a bridge

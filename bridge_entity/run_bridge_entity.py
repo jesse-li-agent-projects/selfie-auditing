@@ -1,11 +1,11 @@
 """SelfIE bridge-entity detection over TwoHopFact (SelfIE adapter paper S3.6).
 
-    python filter_bridge_questions.py --output-dir bridge_entity
-    python run_bridge_entity.py --output-dir bridge_entity/armB \
+    python -m bridge_entity.filter_bridge_questions --output-dir bridge_entity
+    python -m bridge_entity.run_bridge_entity --output-dir bridge_entity/armB \
         --adapter-path outputs/phase0_armB/best.pt
-    python run_bridge_entity.py --output-dir bridge_entity/baseline \
+    python -m bridge_entity.run_bridge_entity --output-dir bridge_entity/baseline \
         --adapter-path outputs/adapters/wikipedia-scalar-affine.safetensors
-    python report_bridge_entity.py --run baseline=bridge_entity/baseline \
+    python -m bridge_entity.report_bridge_entity --run baseline=bridge_entity/baseline \
         --run armB=bridge_entity/armB
 
 Reads a hidden state at every layer and every token of a two-hop question,
@@ -114,7 +114,10 @@ from adapter_training.checkpoints import (  # noqa: E402
     untrained_projection,
 )
 from adapter_training.retrieval_eval import _ProjectionAdapter  # noqa: E402
-from bridge_dataset import BridgeQuestion, read_question_file  # noqa: E402
+from bridge_entity.bridge_dataset import (  # noqa: E402
+    BridgeQuestion,
+    read_question_file,
+)
 from extract import (  # noqa: E402
     build_prompt,
     extract_hidden_states,

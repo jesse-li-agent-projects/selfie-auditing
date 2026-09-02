@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from bridge_dataset import (
+from bridge_entity.bridge_dataset import (
     BridgeQuestion,
     answer_hop_messages,
     answer_matches,
@@ -18,7 +18,11 @@ from bridge_dataset import (
     parse_aliases,
     shuffled,
 )
-from run_bridge_entity import check_settings, completed_cells, question_seed
+from bridge_entity.run_bridge_entity import (
+    check_settings,
+    completed_cells,
+    question_seed,
+)
 from scoring import contains_alias
 
 

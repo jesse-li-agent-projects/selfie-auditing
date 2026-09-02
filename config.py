@@ -101,7 +101,7 @@ DUMMY_WORD = "banana"
 
 # Source dataset for the bridge-entity experiment: two-hop questions, each
 # with its bridge entity and that entity's Wikidata aliases. One CSV, read
-# straight from the Hub's dataset repo (see bridge_dataset.py).
+# straight from the Hub's dataset repo (see bridge_entity/bridge_dataset.py).
 TWOHOPFACT_REPO = "soheeyang/TwoHopFact"
 TWOHOPFACT_FILE = "TwoHopFact.csv"
 
