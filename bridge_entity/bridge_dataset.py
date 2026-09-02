@@ -106,7 +106,7 @@ def parse_aliases(raw: str, value: str) -> tuple[str, ...]:
     """
     try:
         parsed = ast.literal_eval(raw)
-    except ValueError, SyntaxError:
+    except (ValueError, SyntaxError):
         parsed = ()
     if isinstance(parsed, tuple) and parsed and isinstance(parsed[0], tuple):
         parsed = parsed[0]
