@@ -19,6 +19,8 @@ plot
 # Throwaway scripts
 *.tmp.py
 
+.devcontainer
+
 # Sandbox quirks
 .bash_profile
 .bashrc
