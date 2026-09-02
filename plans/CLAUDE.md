@@ -8,53 +8,21 @@ This directory contains plans for agents.
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
 
-## Background thinking
-Note: This research direction is currently on hold and not representative of current work
+## Background thinking (bg_think)
+The pangram_extraction_adapter.md plan and its execution parts (pangram_step*,
+pangram_phase0_run.md, pangram_phases12_and_report.md) trained a layer-19
+SelfIE adapter on an extraction prompt that asks the model to write a fixed
+pangram while thinking about a topic. Its trained adapter (now under
+outputs/adapters/bg_think, see outputs/README.md) did not beat the baseline
+adapter on the OOD tasks that matter, so this plan is done and archived --
+see `plans/archive/pangram_extraction_adapter/` (plans) and
+`plans/archive/pangram_extraction_adapter/notes/` (execution findings) for
+the history behind that result before repeating the approach. The general
+technique (extract activations from a prompt that has the model write
+something while thinking about a topic in the background) is still live;
+future plans on it should not assume the pangram-specific fidelity filter or
+single-topic framing those archived plans used.
 
-- pangram_extraction_adapter.md
-    - Trains a layer-19 SelfIE adapter on an extraction prompt that asks the
-      model to write a fixed pangram while thinking about a topic, reading
-      activations from every response token instead of one. Covers the
-      pangram-fidelity filter, the arms needed to attribute a result, and why
-      budgeting by examples seen rather than by epochs stops the 10x larger
-      example pool from costing 10x the training time. Its S9 carries execution
-      state: what is built, what the step-0 probe measured, and the remote's
-      logistics. The headline is whether the adapter can name a topic the
-      response never states, measured by embedding retrieval against an
-      untrained floor on the same vectors -- never against arm A's loss, which
-      measures a different task.
-- pangram_step2a_loss_and_eval.md
-    - Execution part 1/7 of pangram_extraction_adapter.md. The example
-      pipeline, the soft-prompt loss path, and an `evaluate_adapter` CLI that
-      scores any checkpoint -- everything the "does the published adapter
-      reproduce its own 1.3662?" check needs, and nothing else.
-- pangram_step2b_training_loop.md
-    - Execution part 2/7. The trainer: budget in examples seen, cosine over
-      its own horizon, length-bucketed batching, gradient accumulation,
-      subsampled validation, checkpoints the reference loader reads.
-- pangram_step2c_prefix_cache.md
-    - Execution part 3/7. **Opt-in: do not execute unless the user asks for it
-      by name**; the default path through the seven steps skips it. The
-      shared-prefix KV cache worth ~1.39x, behind a flag, with the equivalence
-      test that justifies it -- and explicit permission to abandon it if that
-      test is awkward.
-- pangram_step2d_retrieval_eval.md
-    - Execution part 4/7, and where the headline number comes from. Generates a
-      description per held-out vector and scores it by GTE-large embedding
-      retrieval over all 49,637 topics, reusing the reference's index and
-      recall@k. No GPU to build.
-- pangram_step0_benchmarks.md
-    - Execution part 5/7, first GPU step. The trainer-correctness gate (score
-      the published adapter through our loss path against its recorded
-      1.3662), throughput and memory benchmarks, and a 50-step debug run.
-- pangram_phase0_run.md
-    - Execution part 6/7, the headline result. Full extraction of both prompt
-      styles, then arm B at full budget scored by retrieval against an
-      untrained floor on the same pangram vectors. Also a gate on whether
-      phases 1-2 happen.
-- pangram_phases12_and_report.md
-    - Execution part 7/7. Arms A and C, the capacity sweep, retrieval accuracy
-      per arm, the per-position exploration, and the final report.
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
