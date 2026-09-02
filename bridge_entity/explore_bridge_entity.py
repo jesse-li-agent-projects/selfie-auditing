@@ -1,7 +1,7 @@
 """Browse one bridge-entity sweep question by question, generations included.
 
-    python -m bridge_entity.explore_bridge_entity --run bridge_entity/armB
-    cd outputs/bridge_entity/armB_explorer && python -m http.server
+    python -m bridge_entity.explore_bridge_entity --run bridge_entity/bg_think
+    cd outputs/bridge_entity/bg_think_explorer && python -m http.server
 
 `report_bridge_entity.py` averages over questions and drops the generations;
 this bakes the level below that into a small static site -- one question's
@@ -29,7 +29,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--run",
         type=outputs_relative,
-        default="bridge_entity/armB",
+        default="bridge_entity/bg_think",
         help="a run_bridge_entity.py output directory, under outputs/ "
         "(implicitly prepended)",
     )
@@ -43,7 +43,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--output-dir",
         type=outputs_relative,
-        default="bridge_entity/armB_explorer",
+        default="bridge_entity/bg_think_explorer",
         help="where the site goes, under outputs/ (implicitly prepended)",
     )
     return parser.parse_args(argv)

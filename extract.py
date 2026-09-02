@@ -19,7 +19,7 @@ from safetensors.torch import load_file as safetensors_load_file
 from safetensors.torch import save_file as safetensors_save_file
 from torch import Tensor
 
-from config import Arm, Position
+from config import ModelOrganism, Position
 
 
 class TokenizerLike(Protocol):
@@ -89,8 +89,8 @@ def user_prompt_span(
     everything the model sees before it starts speaking, minus the system turn.
 
     Offsets are negative (end-relative) because absolute indices are not
-    comparable across arms: a system turn shifts every absolute index, while
-    the assistant boundary -- the alignment the arm comparison needs -- is
+    comparable across organisms: a system turn shifts every absolute index, while
+    the assistant boundary -- the alignment the organism comparison needs -- is
     always at -1.
 
     The span is located by decoding the prompt's own tokens and matching the
@@ -100,7 +100,7 @@ def user_prompt_span(
     start whose slice still contains `user_prompt` gives the minimal span,
     which tolerates a first token that merges preceding template whitespace
     into the first content word, and takes the user turn's copy of the text
-    even when an arm's system prompt quotes it verbatim.
+    even when an organism's system prompt quotes it verbatim.
 
     :param tokenizer: tokenizer used to decode candidate slices of `input_ids`
     :param input_ids: token ids of the fully formatted prompt
@@ -215,7 +215,7 @@ def extract_hidden_states(
     :param model: the model to run the forward pass on
     :param tokenizer: tokenizer used to format and index the prompt
     :param user_prompt: the raw (unformatted) user prompt text
-    :param system_prompt: system prompt for this arm, or None
+    :param system_prompt: system prompt for this organism, or None
     :param layers: transformer layer indices to harvest
     :param positions: token positions to harvest, possibly including USER_PROMPT_SPAN
     :param device: device to run the forward pass on
@@ -234,7 +234,7 @@ def extract_hidden_states(
     # Template drift across model/tokenizer versions is the one failure mode
     # this pipeline's outputs can't reveal on their own (plan S2's "silent
     # mismatch" concern generalizes here) -- print what got selected every
-    # call. Cheap: one call per (arm, word), not per generation.
+    # call. Cheap: one call per (organism, word), not per generation.
     decoded: dict[str, str] = {}
     for position in positions:
         idx = resolve_position(position, pos_index)
@@ -259,9 +259,9 @@ def extract_hidden_states(
     return Extraction(hidden_states=hidden_states, positions=positions, tokens=decoded)
 
 
-def cache_path(output_dir: Path, arm: Arm, word: str) -> Path:
-    """One cache file per (arm, word); each holds every swept (layer, position)."""
-    return output_dir / "hidden_states" / arm.value / f"{word}.safetensors"
+def cache_path(output_dir: Path, organism: ModelOrganism, word: str) -> Path:
+    """One cache file per (organism, word); each holds every swept (layer, position)."""
+    return output_dir / "hidden_states" / organism.value / f"{word}.safetensors"
 
 
 def _tensor_key(layer: int, position: Position | int) -> str:

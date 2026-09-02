@@ -10,19 +10,19 @@ declared in config.py, not one token at a time.)
 import argparse
 
 # config is deliberately free of heavy imports, so --help stays fast.
-from config import Arm
+from config import ModelOrganism
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--word", required=True, help="Secret word for the arm's setup")
+    parser.add_argument("--word", required=True, help="Secret word for the organism's setup")
     parser.add_argument(
-        "--arm",
+        "--organism",
         default="finetuned",
-        choices=[a.value for a in Arm],
-        help="Experimental arm (default: finetuned)",
+        choices=[a.value for a in ModelOrganism],
+        help="Experimental organism (default: finetuned)",
     )
     parser.add_argument(
         "--prompt",
@@ -41,12 +41,12 @@ if __name__ == "__main__":
     from model_loading import load_tokenizer, system_prompt_for
     from token_map import print_token_map
 
-    arm = Arm(args.arm)
+    organism = ModelOrganism(args.organism)
     prompt = args.prompt if args.prompt is not None else SECRET_PROMPT
     model_name = args.model or BASE_MODEL_8B
 
     tokenizer = load_tokenizer(model_name)
-    system_prompt = system_prompt_for(arm, args.word)
-    print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
+    system_prompt = system_prompt_for(organism, args.word)
+    print(f"[validate] organism={organism.value} word={args.word!r} prompt={prompt!r}")
     print(f"[validate] system_prompt={system_prompt!r}")
     print_token_map(tokenizer, build_prompt(tokenizer, prompt, system_prompt))

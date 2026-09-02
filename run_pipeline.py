@@ -31,24 +31,24 @@ import hashlib
 from itertools import product
 from pathlib import Path
 
-# Light import: config.py carries no heavy dependencies, so parsing --arms and
+# Light import: config.py carries no heavy dependencies, so parsing --organisms and
 # --positions doesn't cost --help its speed.
-from config import Arm, Position, parse_layers
+from config import ModelOrganism, Position, parse_layers
 
 
-def parse_arms(spec: str) -> list[Arm]:
-    """Parse `--arms`: a comma-separated list of arm names.
+def parse_organisms(spec: str) -> list[ModelOrganism]:
+    """Parse `--organisms`: a comma-separated list of organism names.
 
     :param spec: the flag's raw value
-    :return: the named arms
-    :raises argparse.ArgumentTypeError: if any name is not an arm
+    :return: the named organisms
+    :raises argparse.ArgumentTypeError: if any name is not an organism
     """
     try:
-        return [Arm(name) for name in spec.split(",")]
+        return [ModelOrganism(name) for name in spec.split(",")]
     except ValueError as error:
         raise argparse.ArgumentTypeError(
             f"{error} -- expected a comma-separated list of "
-            f"{', '.join(arm.value for arm in Arm)}"
+            f"{', '.join(organism.value for organism in ModelOrganism)}"
         )
 
 
@@ -96,10 +96,10 @@ def parse_args(argv=None):
         help="Taboo LoRA repo/path template containing {word} (default: the 8B repos)",
     )
     parser.add_argument(
-        "--arms",
-        type=parse_arms,
+        "--organisms",
+        type=parse_organisms,
         default=None,
-        help="Comma-separated arms to sweep (default: control,prompted,finetuned)",
+        help="Comma-separated organisms to sweep (default: control,prompted,finetuned)",
     )
     parser.add_argument(
         "--layers",
@@ -130,7 +130,7 @@ def parse_args(argv=None):
         "--batch-size",
         type=int,
         default=None,
-        help="Rows per forward pass, pooled across an (arm, word)'s cells "
+        help="Rows per forward pass, pooled across an (organism, word)'s cells "
         "(default: the config's own)",
     )
     parser.add_argument("--max-new-tokens", type=int, default=None)
@@ -140,8 +140,8 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def cell_seed(arm: str, word: str, sample_start: int) -> int:
-    """Deterministic per-(arm, word), per-shard seed.
+def cell_seed(organism: str, word: str, sample_start: int) -> int:
+    """Deterministic per-(organism, word), per-shard seed.
 
     blake2b rather than hash(): Python's hash() is salted per process, so a
     hash()-derived seed would give a different generation stream on every run
@@ -149,19 +149,19 @@ def cell_seed(arm: str, word: str, sample_start: int) -> int:
     shards from regenerating the same samples -- without it a "200-sample"
     cell would really be 100 samples counted twice.
 
-    One seed per (arm, word) rather than per cell: `generate_interpretations_batch`
-    pools every layer/position cell of an (arm, word) into shared forward
+    One seed per (organism, word) rather than per cell: `generate_interpretations_batch`
+    pools every layer/position cell of an (organism, word) into shared forward
     passes (see run_pipeline.py's docstring on batching), so only one RNG
-    stream is live per (arm, word) -- replaying a single cell means replaying
-    its whole (arm, word) group, at the batch size it was produced with.
+    stream is live per (organism, word) -- replaying a single cell means replaying
+    its whole (organism, word) group, at the batch size it was produced with.
 
-    :param arm: the experimental condition
+    :param organism: the experimental condition
     :param word: the secret word
     :param sample_start: index of this shard's first generation
     :return: a seed in [0, 2**31)
     """
     digest = hashlib.blake2b(
-        f"{arm}|{word}|{sample_start}".encode(), digest_size=8
+        f"{organism}|{word}|{sample_start}".encode(), digest_size=8
     ).digest()
     return int.from_bytes(digest, "big") % (2**31)
 
@@ -191,7 +191,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
         save_hidden_states,
     )
     from interpret import generate_interpretations_batch
-    from model_loading import arm_active, system_prompt_for
+    from model_loading import organism_active, system_prompt_for
     from results_store import (
         KEY_FIELDS,
         append_cell,
@@ -213,13 +213,13 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
         }
 
     # Written before the first cell so an interrupted shard is still
-    # identifiable, and rewritten as each arm's spans become known.
+    # identifiable, and rewritten as each organism's spans become known.
     write_metadata(cells_path, metadata())
     with open(cells_path, "w") as handle:
-        # arm: control/prompt/fine-tuned; word: which word is taboo
-        for arm, word in product(config.arms, config.words):
-            with arm_active(peft_model, arm, word):
-                system_prompt = system_prompt_for(arm, word)
+        # organism: control/prompt/fine-tuned; word: which word is taboo
+        for organism, word in product(config.organisms, config.words):
+            with organism_active(peft_model, organism, word):
+                system_prompt = system_prompt_for(organism, word)
                 extraction = extract_hidden_states(
                     peft_model,
                     tokenizer,
@@ -230,16 +230,16 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                     config.device,
                 )
                 save_hidden_states(
-                    cache_path(config.output_dir, arm, word), extraction.hidden_states
+                    cache_path(config.output_dir, organism, word), extraction.hidden_states
                 )
                 # Recorded, not checked: preflight.py already proved every
-                # (arm, word) resolves the same span, and against a pinned
+                # (organism, word) resolves the same span, and against a pinned
                 # measurement rather than merely against each other.
-                spans.setdefault(arm.value, extraction.tokens)
+                spans.setdefault(organism.value, extraction.tokens)
                 write_metadata(cells_path, metadata())
 
                 # One seed, one pooled batch of forward passes for every cell
-                # in this (arm, word): every cell here shares the same LoRA
+                # in this (organism, word): every cell here shares the same LoRA
                 # state and generation settings, differing only in which
                 # hidden state's soft token gets injected, so batch_size is no
                 # longer bounded by a single cell's n_samples (see
@@ -250,7 +250,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                 # (evals/bridge_entity/run_selfie_bridge_extraction.py)
                 # injects raw hidden states at every layer, including 19, so
                 # this sweep does too.
-                torch.manual_seed(cell_seed(arm.value, word, config.sample_start))
+                torch.manual_seed(cell_seed(organism.value, word, config.sample_start))
                 # The keys are the extraction's own, not config.positions: only
                 # the extraction knows what USER_PROMPT_SPAN expanded to. Each
                 # arrives as its last generation is drawn, so a group's cells
@@ -266,7 +266,7 @@ def run(config, *, adapter, tokenizer, peft_model) -> Path:
                     config.device,
                     config.batch_size,
                 ):
-                    key = (arm.value, word, layer, position_key(position))
+                    key = (organism.value, word, layer, position_key(position))
                     cell = score_cell(generations, word)
                     append_cell(
                         handle,
@@ -289,7 +289,7 @@ def main(args) -> Path:
     from adapter_training.inference import load_adapter
     from transformers import AutoConfig
 
-    from config import BASE_MODEL_8B, Arm, resolve_layers, sweep_config
+    from config import BASE_MODEL_8B, ModelOrganism, resolve_layers, sweep_config
     from model_loading import (
         attach_taboo_loras,
         load_base_model,
@@ -321,7 +321,7 @@ def main(args) -> Path:
     config = sweep_config(
         args.words.split(","),
         layers=resolve_layers(args.layers, num_hidden_layers),
-        arms=args.arms,
+        organisms=args.organisms,
         positions=args.positions,
         output_dir=output_dir,
         sample_start=args.sample_start,
@@ -336,7 +336,7 @@ def main(args) -> Path:
     # Attach every word's taboo LoRA, downloaded from the Hub.
     peft_model = (
         attach_taboo_loras(model, config.words, config.taboo_lora_repo_template)
-        if Arm.FINETUNED in config.arms
+        if ModelOrganism.FINETUNED in config.organisms
         else model
     )
 

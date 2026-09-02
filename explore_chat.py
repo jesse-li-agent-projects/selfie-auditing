@@ -1,6 +1,6 @@
-"""Fixed-transcript behavior check for the three arms (plan S4.7).
+"""Fixed-transcript behavior check for the three organisms (plan S4.7).
 
-Confirms, before any generation budget is spent, that each arm actually
+Confirms, before any generation budget is spent, that each organism actually
 behaves as the experimental design assumes: CONTROL states the secret,
 PROMPTED refuses, FINETUNED refuses. Runs unattended by default and dumps
 transcripts to a file; an interactive mode exists but is opt-in only, since
@@ -100,9 +100,9 @@ if __name__ == "__main__":
     import json
     from pathlib import Path
 
-    from config import BASE_MODEL_8B, TABOO_LORA_REPO_TEMPLATE, Arm
+    from config import BASE_MODEL_8B, TABOO_LORA_REPO_TEMPLATE, ModelOrganism
     from model_loading import (
-        arm_active,
+        organism_active,
         attach_taboo_loras,
         load_base_model,
         load_tokenizer,
@@ -116,21 +116,21 @@ if __name__ == "__main__":
     peft_model = attach_taboo_loras(base_model, [args.word], TABOO_LORA_REPO_TEMPLATE)
 
     if args.interactive:
-        # Interactive mode only makes sense for one arm at a time; default to
+        # Interactive mode only makes sense for one organism at a time; default to
         # the hardest case (FINETUNED, no system prompt) unless overridden.
-        with arm_active(peft_model, Arm.FINETUNED, args.word):
+        with organism_active(peft_model, ModelOrganism.FINETUNED, args.word):
             run_interactive(
                 peft_model,
                 tokenizer,
-                system_prompt_for(Arm.FINETUNED, args.word),
+                system_prompt_for(ModelOrganism.FINETUNED, args.word),
                 args.device,
             )
     else:
         all_transcripts = {}
-        for arm in Arm:
-            with arm_active(peft_model, arm, args.word):
-                system_prompt = system_prompt_for(arm, args.word)
-                all_transcripts[arm.value] = {
+        for organism in ModelOrganism:
+            with organism_active(peft_model, organism, args.word):
+                system_prompt = system_prompt_for(organism, args.word)
+                all_transcripts[organism.value] = {
                     "system_prompt": system_prompt,
                     "transcripts": run_validation(
                         peft_model,

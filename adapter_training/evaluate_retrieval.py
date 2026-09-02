@@ -3,10 +3,10 @@ embedding retrieval against a topic index -- the experiment's headline
 number.
 
     python -m adapter_training.evaluate_retrieval \\
-        --vectors vectors/pangram_l19 --split val \\
-        --checkpoint runs/phase0_armB/best.pt \\
+        --vectors vectors/bg_think_l19 --split val \\
+        --checkpoint runs/bg_think/best.pt \\
         --dataset-file <jsonl> --center \\
-        --positions all --report eval/armB_retrieval.json
+        --positions all --report eval/bg_think_retrieval.json
 
 `--checkpoint untrained` scores the floor comparator instead of a file.
 """
@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument(
         "--positions",
         default="all",
-        help="'all' (mean over every position, arm B's primary number), "
+        help="'all' (mean over every position, the trained adapter's primary number), "
         "'last' (each topic's own last vector), or a comma-separated list "
         "of offsets; ignored for a one-vector-per-topic directory",
     )
@@ -71,7 +71,7 @@ def parse_args():
         default=None,
         help="intersect --vectors' topics with this directory's own topic set "
         "before querying, so a recall difference cannot be a topic-population "
-        "difference (e.g. restrict arm A's baseline topics to the pangram "
+        "difference (e.g. restrict the baseline adapter's topics to the pangram "
         "style's compliant ones)",
     )
     parser.add_argument(

@@ -4,14 +4,14 @@ read -- so `interpret.py` and every other downstream consumer keep working
 unchanged regardless of who trained the file.
 
     python -m adapter_training.train_adapter \\
-        --vectors vectors/pangram_l19 \\
-        --run-dir runs/armB_scalar_affine \\
+        --vectors vectors/bg_think_l19 \\
+        --run-dir runs/bg_think_scalar_affine \\
         --budget-examples 755391 \\
         --batch-size 256 --micro-batch-size 64 \\
         --projection-type scalar_affine \\
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 --seed 42 \\
         --val-subsample 5000 --validate-every 100 \\
-        --pool-positions            # arm C: one pooled vector per topic
+        --pool-positions            # one pooled vector per topic instead of per position
 
 **Budget is examples seen, never epochs** (`compute_total_steps`).
 
@@ -99,7 +99,7 @@ def parse_args():
     parser.add_argument(
         "--pool-positions",
         action="store_true",
-        help="arm C: mean each topic's positions into one vector before the adapter",
+        help="mean each topic's positions into one vector before the adapter",
     )
     parser.add_argument(
         "--restrict-topics-to",
@@ -738,7 +738,7 @@ def load_train_and_val(
     table twice for no reason).
 
     :param vectors_dir: an extraction output directory
-    :param pool_positions: arm C -- pool each topic's vectors into one
+    :param pool_positions: pool each topic's vectors into one
     :param restrict_to: intersect topics with this directory's own topic set
     """
     records = load_records(vectors_dir, restrict_to)

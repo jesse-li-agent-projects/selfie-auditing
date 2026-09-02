@@ -6,7 +6,7 @@ weights, which is the point -- a typo has to fail here, not minutes later.
 
 import pytest
 
-from config import Arm, Position
+from config import ModelOrganism, Position
 from run_pipeline import parse_args
 
 BASE = ["--words", "gold", "--output-dir", "out"]
@@ -19,21 +19,21 @@ def parse(*flags):
 def test_defaults_leave_the_config_to_decide():
     args = parse()
 
-    assert args.arms is None and args.positions is None
+    assert args.organisms is None and args.positions is None
     assert args.layers == "all"
 
 
 def test_arms_and_positions_parse_to_their_enums():
-    args = parse("--arms", "control,finetuned", "--positions", "assistant_boundary,-1")
+    args = parse("--organisms", "control,finetuned", "--positions", "assistant_boundary,-1")
 
-    assert args.arms == [Arm.CONTROL, Arm.FINETUNED]
+    assert args.organisms == [ModelOrganism.CONTROL, ModelOrganism.FINETUNED]
     assert args.positions == [Position.ASSISTANT_BOUNDARY, -1]
 
 
 @pytest.mark.parametrize(
     "flags",
     [
-        ("--arms", "controll"),
+        ("--organisms", "controll"),
         ("--positions", "assistant_bounadry"),
         ("--layers", "0,4,x"),
     ],

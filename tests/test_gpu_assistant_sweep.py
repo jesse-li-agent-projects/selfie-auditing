@@ -17,7 +17,7 @@ from config import (
     DUMMY_ADAPTER_REPO,
     DUMMY_BASE_MODEL,
     DUMMY_WORD,
-    Arm,
+    ModelOrganism,
 )
 from extract import cache_path
 from results_store import read_cells, read_metadata
@@ -38,7 +38,7 @@ def _free_cuda_memory_after_each_test():
 
 
 def dummy_run_args(tmp_path, *extra):
-    """The base flags every dummy run below shares. --arms control means no
+    """The base flags every dummy run below shares. --organisms control means no
     LoRA and no PEFT, so these tests need only the base model and adapter."""
     return parse_args(
         [
@@ -52,7 +52,7 @@ def dummy_run_args(tmp_path, *extra):
             str(tmp_path),
             "--device",
             DEVICE,
-            "--arms",
+            "--organisms",
             "control",
             "--layers",
             "0,8",
@@ -81,7 +81,7 @@ def test_main_interprets_every_token_of_the_reply(tmp_path):
         layer_cells = [cell for cell in cells if cell["layer"] == layer]
         assert {cell["position"] for cell in layer_cells} == set(reply["tokens"])
         assert all(len(cell["generations"]) == 2 for cell in layer_cells)
-    assert cache_path(tmp_path, Arm.CONTROL, DUMMY_WORD).exists()
+    assert cache_path(tmp_path, ModelOrganism.CONTROL, DUMMY_WORD).exists()
 
 
 def test_a_rerun_finishes_an_interrupted_shard(tmp_path):

@@ -10,7 +10,7 @@ no 8B access.
 import pytest
 import torch
 
-from config import SECRET_PROMPT, Arm, DUMMY_BASE_MODEL
+from config import SECRET_PROMPT, ModelOrganism, DUMMY_BASE_MODEL
 from config import sweep_config as _sweep_config
 from extract import build_prompt, user_prompt_span
 from model_loading import load_tokenizer, system_prompt_for
@@ -38,16 +38,16 @@ def sweep_config(output_dir):
     )
 
 
-def prompt_ids(tokenizer, arm: Arm) -> torch.Tensor:
-    formatted = build_prompt(tokenizer, SECRET_PROMPT, system_prompt_for(arm, PIN_WORD))
+def prompt_ids(tokenizer, organism: ModelOrganism) -> torch.Tensor:
+    formatted = build_prompt(tokenizer, SECRET_PROMPT, system_prompt_for(organism, PIN_WORD))
     return tokenizer(
         formatted, return_tensors="pt", add_special_tokens=False
     ).input_ids[0]
 
 
-@pytest.mark.parametrize("arm", list(Arm))
-def test_span_matches_the_measured_offsets(tokenizer, arm):
-    ids = prompt_ids(tokenizer, arm)
+@pytest.mark.parametrize("organism", list(ModelOrganism))
+def test_span_matches_the_measured_offsets(tokenizer, organism):
+    ids = prompt_ids(tokenizer, organism)
 
     span = user_prompt_span(tokenizer, ids, SECRET_PROMPT)
 
@@ -56,15 +56,15 @@ def test_span_matches_the_measured_offsets(tokenizer, arm):
     assert tokenizer.decode(ids[len(ids) + span[0] :]).startswith(SECRET_PROMPT)
 
 
-@pytest.mark.parametrize("arm", list(Arm))
-def test_prompt_length_matches_the_measured_length(tokenizer, arm):
-    assert len(prompt_ids(tokenizer, arm)) == PINNED_PROMPT_LENGTHS[arm]
+@pytest.mark.parametrize("organism", list(ModelOrganism))
+def test_prompt_length_matches_the_measured_length(tokenizer, organism):
+    assert len(prompt_ids(tokenizer, organism)) == PINNED_PROMPT_LENGTHS[organism]
 
 
 def test_span_is_identical_across_arms(tokenizer):
     spans = {
-        arm: user_prompt_span(tokenizer, prompt_ids(tokenizer, arm), SECRET_PROMPT)
-        for arm in Arm
+        organism: user_prompt_span(tokenizer, prompt_ids(tokenizer, organism), SECRET_PROMPT)
+        for organism in ModelOrganism
     }
 
     assert len(set(map(tuple, spans.values()))) == 1
@@ -76,8 +76,8 @@ def test_preflight_accepts_the_current_tokenizer(tokenizer, tmp_path):
 
 
 def test_preflight_catches_pin_drift(tokenizer, monkeypatch):
-    # The failure the cross-arm and cross-shard checks structurally cannot see:
-    # every arm agreeing on a span that is no longer the measured one.
+    # The failure the cross-organism and cross-shard checks structurally cannot see:
+    # every organism agreeing on a span that is no longer the measured one.
     monkeypatch.setattr("preflight.PINNED_SPAN", list(range(-9, 0)))
 
     with pytest.raises(PreflightError, match="pinned measurement"):
@@ -96,7 +96,7 @@ def test_preflight_rejects_a_position_outside_the_prompt(tokenizer, tmp_path, po
 
 
 def test_preflight_accepts_a_position_inside_the_shortest_prompt(tokenizer, tmp_path):
-    # Prompt length differs by arm, so the shortest one is what binds.
+    # Prompt length differs by organism, so the shortest one is what binds.
     config = sweep_config(tmp_path)
     config.positions = [-min(PINNED_PROMPT_LENGTHS.values())]
 

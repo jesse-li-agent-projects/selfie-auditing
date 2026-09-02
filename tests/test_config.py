@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config import TABOO_WORDS, Arm, Position, resolve_layers, sweep_config
+from config import TABOO_WORDS, ModelOrganism, Position, resolve_layers, sweep_config
 
 
 def test_resolve_layers_all_means_every_layer():
@@ -30,7 +30,7 @@ def test_sweep_config_defaults_to_the_real_8b_run():
 
     assert config.layers == list(range(32))
     assert config.positions == [Position.USER_PROMPT_SPAN]
-    assert config.arms == [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED]
+    assert config.organisms == [ModelOrganism.CONTROL, ModelOrganism.PROMPTED, ModelOrganism.FINETUNED]
     assert config.words == ["gold", "moon"]
     assert config.n_samples == 50
     # Both of these reaching the config is the point. The superseded
@@ -45,10 +45,10 @@ def test_sweep_config_overrides_arms_and_positions():
     config = sweep_config(
         ["gold"],
         layers=[0, 8],
-        arms=[Arm.CONTROL],
+        organisms=[ModelOrganism.CONTROL],
         positions=[Position.ASSISTANT_BOUNDARY, -1],
         output_dir=Path("out"),
     )
 
-    assert config.arms == [Arm.CONTROL]
+    assert config.organisms == [ModelOrganism.CONTROL]
     assert config.positions == [Position.ASSISTANT_BOUNDARY, -1]

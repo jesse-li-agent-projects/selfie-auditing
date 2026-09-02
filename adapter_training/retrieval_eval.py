@@ -218,7 +218,7 @@ def query_pairs_for_offset(
 ) -> list[tuple[int, str]]:
     """`(vector_index, title)` for every topic whose `count` covers `offset`.
 
-    A one-vector-per-topic directory (baseline, or arm C pooled) has
+    A one-vector-per-topic directory (baseline, or pooled) has
     `count == 1` for every record, so only `offset == 0` ever yields
     anything -- `--positions` is effectively ignored there, with no special
     case needed.

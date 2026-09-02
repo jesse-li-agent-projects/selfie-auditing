@@ -6,8 +6,8 @@ These are not interchangeable -- each plays a distinct role in the pipeline:
   embedding layer to read an adapter's soft token back out in English. Shared
   by inference (``interpret.py``) and training (``adapter_training/loss.py``).
 - ``CONTROL_SYSTEM_PROMPT`` / ``PROMPTED_SYSTEM_PROMPT``: the taboo-game
-  system prompts for the CONTROL/PROMPTED arms (``model_loading.py``).
-- ``SECRET_PROMPT``: the user-turn elicitation prompt sent in every arm
+  system prompts for the CONTROL/PROMPTED organisms (``model_loading.py``).
+- ``SECRET_PROMPT``: the user-turn elicitation prompt sent in every organism
   (``config.py``, the pipeline's default).
 - ``PANGRAM_PROMPT_TEMPLATE``: the training-data topic-vector extraction
   prompt (``adapter_training/extract_pangram_vectors.py``).
@@ -41,7 +41,7 @@ SELFIE_TEMPLATE = (
 #     'The hidden meaning of "<|reserved_special_token_0|>" is "'
 # )
 
-# First-pass system prompts for the CONTROL / PROMPTED arms (plan S4.1). These
+# First-pass system prompts for the CONTROL / PROMPTED organisms (plan S4.1). These
 # are this project's own wording, not verbatim from either source paper --
 # Paper 2's Taboo organism uses no system prompt at all (research_notes S5.3).
 CONTROL_SYSTEM_PROMPT = (

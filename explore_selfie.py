@@ -1,7 +1,7 @@
 """Read the raw SelfIE interpretations for one cell, without running a sweep.
 
 A sanity check on the interpretation half of the pipeline: pick a model, an
-arm, a layer (or a few), and just print what SelfIE says about that hidden
+organism, a layer (or a few), and just print what SelfIE says about that hidden
 state. Use it to answer "does this produce sensible English at all?" before
 spending a full run's generation budget in run_pipeline.py.
 
@@ -23,7 +23,7 @@ shape-correctness run; its generations carry no meaning.
 import argparse
 
 # config and scoring are deliberately free of heavy imports, so --help stays fast.
-from config import Arm, Position
+from config import ModelOrganism, Position
 from scoring import score_cell
 
 
@@ -31,7 +31,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--word", required=True, help="Secret word for the arm's setup")
+    parser.add_argument("--word", required=True, help="Secret word for the organism's setup")
     parser.add_argument(
         "--layer",
         type=int,
@@ -40,10 +40,10 @@ def parse_args():
         help="Layer(s) to interpret, 0-indexed transformer layers",
     )
     parser.add_argument(
-        "--arm",
+        "--organism",
         default="finetuned",
-        choices=[a.value for a in Arm],
-        help="Experimental arm (default: finetuned)",
+        choices=[a.value for a in ModelOrganism],
+        help="Experimental organism (default: finetuned)",
     )
     position_group = parser.add_mutually_exclusive_group()
     position_group.add_argument(
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     from extract import build_prompt, extract_hidden_states
     from interpret import generate_interpretations
     from model_loading import (
-        arm_active,
+        organism_active,
         attach_taboo_loras,
         load_base_model,
         load_tokenizer,
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     )
     from token_map import print_token_map
 
-    arm = Arm(args.arm)
+    organism = ModelOrganism(args.organism)
     position: Position | int = (
         args.token_index
         if args.token_index is not None
@@ -129,16 +129,16 @@ if __name__ == "__main__":
     model_name = args.model or BASE_MODEL_8B
     tokenizer = load_tokenizer(model_name)
     model = load_base_model(model_name, device=args.device, dtype=args.dtype)
-    # The taboo LoRA is only loaded for the arm that needs it -- the other arms
+    # The taboo LoRA is only loaded for the organism that needs it -- the other organisms
     # differ from the base model only by their system prompt.
-    if arm is Arm.FINETUNED:
+    if organism is ModelOrganism.FINETUNED:
         lora_template = args.lora_template or TABOO_LORA_REPO_TEMPLATE
         model = attach_taboo_loras(model, [args.word], lora_template)
     adapter = load_adapter(args.adapter_path or SELFIE_ADAPTER_PATH, device=args.device)
 
-    with arm_active(model, arm, args.word):
-        system_prompt = system_prompt_for(arm, args.word)
-        print(f"[validate] arm={arm.value} word={args.word!r} prompt={prompt!r}")
+    with organism_active(model, organism, args.word):
+        system_prompt = system_prompt_for(organism, args.word)
+        print(f"[validate] organism={organism.value} word={args.word!r} prompt={prompt!r}")
         print(f"[validate] system_prompt={system_prompt!r}")
         print_token_map(tokenizer, build_prompt(tokenizer, prompt, system_prompt))
         extraction = extract_hidden_states(

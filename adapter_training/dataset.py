@@ -238,7 +238,7 @@ def pooled_vector_store(
     records: list[TopicRecord] | None = None,
     split: str | None = None,
 ) -> tuple[VectorStore, list[Example]]:
-    """Arm C: one vector per topic, the mean of that topic's centred vectors.
+    """One vector per topic: the mean of that topic's centred vectors.
 
     Always centres (pooling raw vectors before centering would average across
     positions before the per-position mean is subtracted, which is not the

@@ -1,7 +1,7 @@
 """Score and plot one or more `run_bridge_entity.py` sweeps (paper S3.6).
 
     python -m bridge_entity.report_bridge_entity --run baseline=bridge_entity/baseline \
-        --run armB=bridge_entity/armB
+        --run bg_think=bridge_entity/bg_think
 
 The paper's headline number is per *question*, not per generation: a bridge
 entity counts as detected if any generation, at any layer and any token,
@@ -32,7 +32,7 @@ def parse_run(spec: str) -> tuple[str, Path]:
     name, separator, directory = spec.partition("=")
     if not separator:
         raise argparse.ArgumentTypeError(
-            f"{spec!r} is not a 'name=output_dir' pair, e.g. 'armB=bridge_entity/armB'"
+            f"{spec!r} is not a 'name=output_dir' pair, e.g. 'bg_think=bridge_entity/bg_think'"
         )
     return name, outputs_relative(directory)
 
