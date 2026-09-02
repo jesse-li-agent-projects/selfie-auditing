@@ -84,10 +84,18 @@ def parse_args(argv=None):
         help="'all' or a comma-separated list of 0-indexed layers (default: all)",
     )
     parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="skip this many questions from the start of the set, e.g. to "
+        "continue a preliminary run over a larger one (default: 0)",
+    )
+    parser.add_argument(
         "--max-questions",
         type=int,
         default=None,
-        help="use only the first N questions of the set (default: all of them)",
+        help="use only the first N questions after --start-index (default: "
+        "all of them)",
     )
     parser.add_argument("--n-samples", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=20)
@@ -312,7 +320,7 @@ def run(args, *, model, tokenizer, adapter, questions, layers) -> Path:
 
 
 def load_questions(args) -> list[BridgeQuestion]:
-    questions = read_question_file(args.questions)
+    questions = read_question_file(args.questions)[args.start_index :]
     return questions[: args.max_questions] if args.max_questions else questions
 
 
