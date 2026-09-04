@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument(
         "--pooled",
         action="store_true",
-        help="arm C: pool each topic's vectors into one before scoring",
+        help="pool each topic's vectors into one before scoring",
     )
     parser.add_argument(
         "--restrict-topics-to",
@@ -113,7 +113,7 @@ def load_eval_set(
     :param center: passed to `load_vector_store` (ignored for `pooled`, which
         always centres -- pooling raw vectors would average across positions
         before the per-position mean is subtracted, a different operation)
-    :param pooled: arm C -- pool each topic's vectors into one
+    :param pooled: pool each topic's vectors into one
     :param restrict_to: intersect topics with this directory's own topic set
     """
     records = load_records(vectors_dir, restrict_to)

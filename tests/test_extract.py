@@ -90,7 +90,7 @@ def test_find_positions_uses_last_eot_id_with_a_system_turn():
     # CONTROL/PROMPTED render a system turn before the user turn -- each
     # closed by its own <|eot_id|>. LAST_CONTENT_TOKEN must land on the last
     # *user* content token (30, 31), not the system turn's (which contains
-    # the secret word), or the two arms aren't reading a comparable position.
+    # the secret word), or the two organisms aren't reading a comparable position.
     ids = [
         1,
         10,
@@ -154,8 +154,8 @@ def test_user_prompt_span_is_minimal():
 
 
 def test_user_prompt_span_identical_across_arms():
-    # The cross-arm comparability invariant: a system turn shifts every
-    # absolute index, so only end-relative offsets align the arms.
+    # The cross-organism comparability invariant: a system turn shifts every
+    # absolute index, so only end-relative offsets align the organisms.
     system_turn = [10, 15, 12, 13, 50, 51, EOT_ID]
     with_system = [1] + system_turn + USER_TURN + GENERATION_PROMPT
 

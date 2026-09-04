@@ -1,12 +1,12 @@
 """SelfIE bridge-entity detection over TwoHopFact (SelfIE adapter paper S3.6).
 
     python -m bridge_entity.filter_bridge_questions --output-dir bridge_entity
-    python -m bridge_entity.run_bridge_entity --output-dir bridge_entity/armB \
-        --adapter-path outputs/phase0_armB/best.pt
+    python -m bridge_entity.run_bridge_entity --output-dir bridge_entity/bg_think \
+        --adapter-path outputs/adapters/bg_think/best.pt
     python -m bridge_entity.run_bridge_entity --output-dir bridge_entity/baseline \
         --adapter-path outputs/adapters/wikipedia-scalar-affine.safetensors
     python -m bridge_entity.report_bridge_entity --run baseline=bridge_entity/baseline \
-        --run armB=bridge_entity/armB
+        --run bg_think=bridge_entity/bg_think
 
 Reads a hidden state at every layer and every token of a two-hop question,
 interprets each one through the adapter, and scores the interpretations for

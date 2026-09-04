@@ -22,7 +22,7 @@ from config import (
     DUMMY_LORA_REPO_TEMPLATE,
     DUMMY_WORD,
     SECRET_PROMPT,
-    Arm,
+    ModelOrganism,
     Position,
 )
 from extract import build_prompt, cache_path, extract_hidden_states, user_prompt_span
@@ -103,7 +103,7 @@ def _dummy_adapter_path() -> str:
 def dummy_run_args(tmp_path, *extra):
     """The base flags every dummy run below shares: the dummy model/adapter
     and --output-dir/--device. `extra` appends the flags that make each
-    test's run different (arms, layers, budget, sharding)."""
+    test's run different (organisms, layers, budget, sharding)."""
     return parse_args(
         [
             "--words",
@@ -122,12 +122,12 @@ def dummy_run_args(tmp_path, *extra):
 
 
 def test_main_sweeps_every_requested_cell_and_writes_them(tmp_path):
-    """The primary end-to-end check. --arms control,prompted means no LoRA
+    """The primary end-to-end check. --organisms control,prompted means no LoRA
     and no PEFT, so this test needs only the base model and the dummy
     adapter."""
     args = dummy_run_args(
         tmp_path,
-        "--arms",
+        "--organisms",
         "control,prompted",
         "--layers",
         "0,8",
@@ -146,10 +146,10 @@ def test_main_sweeps_every_requested_cell_and_writes_them(tmp_path):
 
     # Assert set equality, not membership, at every level: `==` catches a
     # sweep that runs an extra cell or drops one, `in` does not.
-    arms_seen = {cell["arm"] for cell in cells}
-    assert arms_seen == {"control", "prompted"}
-    for arm in arms_seen:
-        arm_cells = [cell for cell in cells if cell["arm"] == arm]
+    organisms_seen = {cell["arm"] for cell in cells}
+    assert organisms_seen == {"control", "prompted"}
+    for organism in organisms_seen:
+        arm_cells = [cell for cell in cells if cell["arm"] == organism]
         assert {cell["word"] for cell in arm_cells} == {DUMMY_WORD}
         layers_seen = {cell["layer"] for cell in arm_cells}
         assert layers_seen == {0, 8}
@@ -161,8 +161,8 @@ def test_main_sweeps_every_requested_cell_and_writes_them(tmp_path):
                 assert len(cell["hits"]) == 2
 
     # The hidden-state cache is output-directory data too, not just the JSONL.
-    for arm in ("control", "prompted"):
-        assert cache_path(tmp_path, Arm(arm), DUMMY_WORD).exists()
+    for organism in ("control", "prompted"):
+        assert cache_path(tmp_path, ModelOrganism(organism), DUMMY_WORD).exists()
 
 
 def test_finetuned_arm_loads_the_dummy_lora(tmp_path):
@@ -172,7 +172,7 @@ def test_finetuned_arm_loads_the_dummy_lora(tmp_path):
         tmp_path,
         "--lora-template",
         DUMMY_LORA_REPO_TEMPLATE,
-        "--arms",
+        "--organisms",
         "finetuned",
         "--layers",
         "0",
@@ -200,7 +200,7 @@ def test_two_shards_produce_different_generations(tmp_path):
             main(
                 dummy_run_args(
                     tmp_path,
-                    "--arms",
+                    "--organisms",
                     "control",
                     "--layers",
                     "0",
@@ -244,7 +244,7 @@ def test_dummy_lora_perturbs_forward_pass():
     returns a clean base model. Without this, a bug where
     set_adapter()/disable_adapter() silently no-ops -- or a zero-initialized
     lora_B making the "random" adapter an exact no-op -- would leave every
-    FINETUNED-arm run producing plausible output while testing nothing.
+    FINETUNED-organism run producing plausible output while testing nothing.
 
     Loads its own model rather than the module's `model` fixture: PEFT wraps
     a model's Linear layers in place, so attaching a LoRA here would leave

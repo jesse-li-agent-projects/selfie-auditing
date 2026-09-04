@@ -7,7 +7,7 @@ and every check exists because the failure it catches would otherwise surface
 minutes or hours into a run, after the expensive part had already started.
 
 The pinned tokenization is the part no consistency check can replace. Comparing
-arms to each other, or shards to each other, only proves they agree; a template
+organisms to each other, or shards to each other, only proves they agree; a template
 change that resolves to the same wrong token everywhere agrees with itself. Only
 a recorded measurement catches that, so `PINNED_*` below is measured truth and is
 meant to be updated deliberately, in a reviewable diff, when the prompt changes.
@@ -35,7 +35,7 @@ def parse_args():
     return parser.parse_args()
 
 
-from config import SECRET_PROMPT, Arm, PipelineConfig, Position
+from config import SECRET_PROMPT, ModelOrganism, PipelineConfig, Position
 
 # Measured against the real tokenizer for PIN_WORD (plan S2, S6.2). The 1B
 # dummy tokenizer and the gated 8B agree, so these hold for both.
@@ -57,7 +57,7 @@ PINNED_SPAN_TOKENS = [
 # Pinned as well as the span: the span offsets alone would not have caught the
 # mirror-model discrepancy of plan S2, where every absolute index moved by
 # 20-25 tokens while the span stayed at -11 .. -1.
-PINNED_PROMPT_LENGTHS = {Arm.CONTROL: 62, Arm.PROMPTED: 66, Arm.FINETUNED: 41}
+PINNED_PROMPT_LENGTHS = {ModelOrganism.CONTROL: 62, ModelOrganism.PROMPTED: 66, ModelOrganism.FINETUNED: 41}
 
 
 class PreflightError(Exception):
@@ -123,51 +123,51 @@ def check_tokenization_pins(tokenizer) -> None:
     :param tokenizer: the tokenizer the run will use
     :raises PreflightError: if the span, its tokens, or a prompt length has drifted
     """
-    for arm in Arm:
-        ids, span, tokens = _render(tokenizer, arm, PIN_WORD, SECRET_PROMPT)
-        if len(ids) != PINNED_PROMPT_LENGTHS[arm]:
-            raise _drift(arm, "prompt length", PINNED_PROMPT_LENGTHS[arm], len(ids))
+    for organism in ModelOrganism:
+        ids, span, tokens = _render(tokenizer, organism, PIN_WORD, SECRET_PROMPT)
+        if len(ids) != PINNED_PROMPT_LENGTHS[organism]:
+            raise _drift(organism, "prompt length", PINNED_PROMPT_LENGTHS[organism], len(ids))
         if span != PINNED_SPAN:
-            raise _drift(arm, "span offsets", PINNED_SPAN, span)
+            raise _drift(organism, "span offsets", PINNED_SPAN, span)
         if tokens != PINNED_SPAN_TOKENS:
-            raise _drift(arm, "span tokens", PINNED_SPAN_TOKENS, tokens)
+            raise _drift(organism, "span tokens", PINNED_SPAN_TOKENS, tokens)
 
 
 def check_run_prompts(tokenizer, config: PipelineConfig) -> None:
-    """Check every (arm, word) this run will actually sweep, structurally.
+    """Check every (organism, word) this run will actually sweep, structurally.
 
     The pins cover one prompt; this covers the run's own. It asserts the three
-    properties the arm comparison depends on: the span is the same offsets
-    everywhere (only end-relative offsets align arms whose system turns differ
+    properties the organism comparison depends on: the span is the same offsets
+    everywhere (only end-relative offsets align organisms whose system turns differ
     in length), it ends at ASSISTANT_BOUNDARY, and it holds the question but
     never the secret word -- a span that crept into the system turn would hand
     the interpreter the answer outright.
 
     Raw `--positions` offsets are checked here too: whether one addresses a
     real token is a property of the rendered prompt, whose length differs by
-    arm.
+    organism.
 
     :param tokenizer: the tokenizer the run will use
     :param config: the config this shard would run
-    :raises PreflightError: if any (arm, word) resolves a different or wrong
+    :raises PreflightError: if any (organism, word) resolves a different or wrong
         span, or a requested position falls outside the prompt
     """
     from extract import find_positions
 
     reference: tuple[list[int], list[str]] | None = None
-    for arm in config.arms:
+    for organism in config.organisms:
         for word in config.words:
-            ids, span, tokens = _render(tokenizer, arm, word, config.secret_prompt)
+            ids, span, tokens = _render(tokenizer, organism, word, config.secret_prompt)
             for offset in config.positions:
                 if isinstance(offset, int) and not -len(ids) <= offset < len(ids):
                     raise PreflightError(
-                        f"{arm.value}/{word}: position {offset} is outside the "
+                        f"{organism.value}/{word}: position {offset} is outside the "
                         f"prompt's {len(ids)} tokens"
                     )
             text = tokenizer.decode([ids[o] for o in span])
             if not text.startswith(config.secret_prompt):
                 raise PreflightError(
-                    f"{arm.value}/{word}: the span decodes to {text!r}, which does "
+                    f"{organism.value}/{word}: the span decodes to {text!r}, which does "
                     f"not start with the prompt {config.secret_prompt!r}"
                 )
             # Past the question itself, the span is template tokens only, so
@@ -175,21 +175,21 @@ def check_run_prompts(tokenizer, config: PipelineConfig) -> None:
             tail = text[len(config.secret_prompt) :]
             if word.lower() in tail.lower():
                 raise PreflightError(
-                    f"{arm.value}/{word}: the secret word appears inside the span "
+                    f"{organism.value}/{word}: the secret word appears inside the span "
                     f"({text!r}) -- the span has reached into the system turn"
                 )
             boundary = find_positions(tokenizer, ids)[Position.ASSISTANT_BOUNDARY]
             if len(ids) + span[-1] != boundary:
                 raise PreflightError(
-                    f"{arm.value}/{word}: the span ends at offset {span[-1]}, not at "
+                    f"{organism.value}/{word}: the span ends at offset {span[-1]}, not at "
                     "ASSISTANT_BOUNDARY -- it does not cover the whole user turn"
                 )
             if reference is None:
                 reference = (span, tokens)
             elif (span, tokens) != reference:
                 raise PreflightError(
-                    f"{arm.value}/{word} resolves {span} -> {tokens}, but another "
-                    f"cell resolves {reference[0]} -> {reference[1]} -- the arms "
+                    f"{organism.value}/{word} resolves {span} -> {tokens}, but another "
+                    f"cell resolves {reference[0]} -> {reference[1]} -- the organisms "
                     "are not measuring the same token"
                 )
 
@@ -203,13 +203,13 @@ def cell_count(config: PipelineConfig) -> int:
     that resolve to a token another already covers.
 
     :param config: the config this shard would run
-    :return: the number of (arm, word, layer, position) cells
+    :return: the number of (organism, word, layer, position) cells
     """
     positions = sum(
         len(PINNED_SPAN) if position is Position.USER_PROMPT_SPAN else 1
         for position in config.positions
     )
-    return len(config.arms) * len(config.words) * len(config.layers) * positions
+    return len(config.organisms) * len(config.words) * len(config.layers) * positions
 
 
 def preflight(config: PipelineConfig, tokenizer, num_hidden_layers: int) -> None:
@@ -231,23 +231,23 @@ def preflight(config: PipelineConfig, tokenizer, num_hidden_layers: int) -> None
     )
 
 
-def _render(tokenizer, arm: Arm, word: str, user_prompt: str):
-    """Format one (arm, word) prompt and locate its span. Returns (ids, span, tokens)."""
+def _render(tokenizer, organism: ModelOrganism, word: str, user_prompt: str):
+    """Format one (organism, word) prompt and locate its span. Returns (ids, span, tokens)."""
     import torch
 
     from extract import build_prompt, user_prompt_span
     from model_loading import system_prompt_for
 
-    formatted = build_prompt(tokenizer, user_prompt, system_prompt_for(arm, word))
+    formatted = build_prompt(tokenizer, user_prompt, system_prompt_for(organism, word))
     ids = tokenizer(formatted, add_special_tokens=False).input_ids
     ids = torch.tensor(ids)
     span = user_prompt_span(tokenizer, ids, user_prompt)
     return ids, span, [tokenizer.decode([ids[o]]) for o in span]
 
 
-def _drift(arm: Arm, what: str, expected, got) -> PreflightError:
+def _drift(organism: ModelOrganism, what: str, expected, got) -> PreflightError:
     return PreflightError(
-        f"{arm.value}: {what} is {got!r}, but the pinned measurement is "
+        f"{organism.value}: {what} is {got!r}, but the pinned measurement is "
         f"{expected!r} -- the tokenizer or chat template has changed. If the "
         "change is intended, update the PINNED_* values in preflight.py."
     )

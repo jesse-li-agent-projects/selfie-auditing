@@ -1,4 +1,4 @@
-"""Experiment configuration: arms, words, layers, positions, sampling.
+"""Experiment configuration: organisms, words, layers, positions, sampling.
 
 See `plans/archive/selfie_taboo_pipeline.md` for the design this encodes. Kept free of
 heavy imports (torch, transformers) so any script that only needs config
@@ -14,12 +14,12 @@ from pathlib import Path
 from prompts import SECRET_PROMPT
 
 
-class Arm(str, Enum):
+class ModelOrganism(str, Enum):
     """The three experimental conditions (plan S4.1) -- not equivalent peers.
 
     CONTROL and PROMPTED share a base model and a system prompt that states the
     secret; FINETUNED supplies no system prompt of its own and swaps in a taboo
-    LoRA instead. The arms differ in system-prompt *content*, not in
+    LoRA instead. The organisms differ in system-prompt *content*, not in
     system-turn presence: the Llama-3 chat template injects its own date
     system turn even when no system message is passed, so FINETUNED's rendered
     prompt still has one.
@@ -40,7 +40,7 @@ class Position(str, Enum):
     token ids exist.
 
     The span deliberately excludes the system turn: its content differs between
-    arms, and for PROMPTED it states the secret word outright, which would make
+    organisms, and for PROMPTED it states the secret word outright, which would make
     the interpretation task trivial rather than mechanistic.
     """
 
@@ -172,7 +172,7 @@ class PipelineConfig:
     taboo_lora_repo_template: str
 
     words: list[str]
-    arms: list[Arm]
+    organisms: list[ModelOrganism]
     layers: list[int]
     positions: list[Position | int]
 
@@ -181,10 +181,10 @@ class PipelineConfig:
     max_new_tokens: int
     secret_prompt: str = SECRET_PROMPT
     # Rows per forward pass, pooled across every layer/position cell of one
-    # (arm, word) -- not capped at one cell's n_samples (see
+    # (organism, word) -- not capped at one cell's n_samples (see
     # interpret.generate_interpretations_batch). Bounds peak memory, and
     # nothing else -- but it does change how the sampler consumes the seeded
-    # RNG stream, so a replay of an (arm, word) group needs the batch size it
+    # RNG stream, so a replay of an (organism, word) group needs the batch size it
     # was produced with. 200 was measured as the throughput-optimal batch
     # size for Llama-3.1-8B-Instruct bf16 on a single RTX 3090 (24GB): ~5.7x
     # the old default's gens/sec with ~19GB peak, comfortably under OOM (400
@@ -212,7 +212,7 @@ def sweep_config(
     base_model: str = BASE_MODEL_8B,
     adapter_path: str = SELFIE_ADAPTER_PATH,
     taboo_lora_repo_template: str = TABOO_LORA_REPO_TEMPLATE,
-    arms: list[Arm] | None = None,
+    organisms: list[ModelOrganism] | None = None,
     positions: list[Position | int] | None = None,
     n_samples: int = 200,
     max_new_tokens: int = 50,
@@ -240,7 +240,7 @@ def sweep_config(
         (`.safetensors` or `.pt`) -- fetch it from the Hub once, then point
         here (see `SELFIE_ADAPTER_PATH`)
     :param taboo_lora_repo_template: taboo LoRA repo/path template containing `{word}`
-    :param arms: experimental arms to sweep (default: all three)
+    :param organisms: experimental organisms to sweep (default: all three)
     :param positions: token positions to sweep (default: `USER_PROMPT_SPAN`)
     :param n_samples: generations per cell for this shard
     :param max_new_tokens: generation length per sample
@@ -256,7 +256,7 @@ def sweep_config(
         adapter_path=adapter_path,
         taboo_lora_repo_template=taboo_lora_repo_template,
         words=words,
-        arms=arms if arms is not None else [Arm.CONTROL, Arm.PROMPTED, Arm.FINETUNED],
+        organisms=organisms if organisms is not None else [ModelOrganism.CONTROL, ModelOrganism.PROMPTED, ModelOrganism.FINETUNED],
         layers=layers,
         positions=positions if positions is not None else [Position.USER_PROMPT_SPAN],
         n_samples=n_samples,

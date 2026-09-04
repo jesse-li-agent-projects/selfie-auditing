@@ -1,7 +1,7 @@
 """SelfIE interpretation of the *assistant's own* response tokens.
 
 Sibling of run_pipeline.py, which reads hidden states from the user turn. Here
-each (arm, word) first gets one greedily decoded assistant reply to the
+each (organism, word) first gets one greedily decoded assistant reply to the
 elicitation prompt, and the sweep then interprets the hidden state at every
 token of that reply. The hypothesis is that a taboo model commits to its
 secret while it speaks, not while it reads, so the two scripts' outputs are
@@ -9,12 +9,12 @@ complementary rather than alternatives -- nothing here re-covers the user-turn
 positions run_pipeline.py already swept.
 
     python selfie_on_assistant.py --words book,chair \
-        --output-dir outputs/taboo_assistant_armB/ \
-        --adapter-path outputs/phase0_armB/best.pt
+        --output-dir outputs/taboo_assistant_bg_think/ \
+        --adapter-path outputs/adapters/bg_think/best.pt
 
 Cells are keyed by "resp<i>", the 0-based index of the token *within the
 reply*, so unlike run_pipeline.py's end-relative offsets they are not
-comparable across arms: each arm says something different and of its own
+comparable across organisms: each organism says something different and of its own
 length. `--response-max-new-tokens` bounds that length, and so bounds the
 sweep: truncating the reply is exact rather than approximate, since a causal
 model's hidden state at token i cannot depend on tokens after it.
@@ -34,8 +34,8 @@ from pathlib import Path
 
 # Light imports: neither config.py nor run_pipeline.py's module level pulls in
 # torch, so --help stays fast.
-from config import Arm
-from run_pipeline import cell_seed, parse_arms, parse_layers
+from config import ModelOrganism
+from run_pipeline import cell_seed, parse_organisms, parse_layers
 
 
 def parse_args(argv=None):
@@ -59,10 +59,10 @@ def parse_args(argv=None):
         help="Taboo LoRA repo/path template containing {word} (default: the 8B repos)",
     )
     parser.add_argument(
-        "--arms",
-        type=parse_arms,
+        "--organisms",
+        type=parse_organisms,
         default=None,
-        help="Comma-separated arms to sweep (default: control,prompted,finetuned)",
+        help="Comma-separated organisms to sweep (default: control,prompted,finetuned)",
     )
     parser.add_argument(
         "--layers",
@@ -93,7 +93,7 @@ def parse_args(argv=None):
         "--batch-size",
         type=int,
         default=None,
-        help="Rows per forward pass, pooled across an (arm, word)'s cells "
+        help="Rows per forward pass, pooled across an (organism, word)'s cells "
         "(default: the config's own)",
     )
     parser.add_argument("--max-new-tokens", type=int, default=None)
@@ -118,7 +118,7 @@ from config import BASE_MODEL_8B, resolve_layers, sweep_config
 from extract import build_prompt, cache_path, save_tensors
 from interpret import generate_interpretations_batch
 from model_loading import (
-    arm_active,
+    organism_active,
     attach_taboo_loras,
     load_base_model,
     load_tokenizer,
@@ -152,7 +152,7 @@ def response_position_key(index: int) -> str:
 
 @dataclass
 class AssistantResponse:
-    """One arm's reply to the elicitation prompt, and where it sits.
+    """One organism's reply to the elicitation prompt, and where it sits.
 
     Recorded in the metadata sidecar rather than only in memory: the cell keys
     are indices into this reply, so a resumed run must interpret the same
@@ -184,11 +184,11 @@ def generate_assistant_response(
     that produced a different one would silently be measuring different
     tokens under the same keys.
 
-    :param model: the model, already in the arm's LoRA state
+    :param model: the model, already in the organism's LoRA state
     :param tokenizer: tokenizer used to format the prompt and decode the reply
     :param user_prompt: the raw (unformatted) elicitation prompt
-    :param system_prompt: system prompt for this arm, or None
-    :param secret_word: the word this arm is hiding, for `reveals_secret`
+    :param system_prompt: system prompt for this organism, or None
+    :param secret_word: the word this organism is hiding, for `reveals_secret`
     :param max_new_tokens: how much of the reply to keep
     :param device: device to generate on
     :return: the reply, its token ids, and the prompt length it follows
@@ -279,7 +279,7 @@ def completed_keys(cells_path: Path) -> set[tuple]:
     """Which cells an earlier attempt at this shard already wrote.
 
     :param cells_path: this shard's cells file, which need not exist
-    :return: the (arm, word, layer, position) keys already on disk
+    :return: the (organism, word, layer, position) keys already on disk
     :raises SystemExit: if a line is not valid JSON, i.e. a crash truncated it
     """
     if not cells_path.exists():
@@ -303,7 +303,7 @@ def recorded_responses(cells_path: Path, metadata: dict) -> dict[str, dict[str, 
 
     :param cells_path: this shard's cells file
     :param metadata: the metadata this run would write
-    :return: recorded replies as arm -> word -> `AssistantResponse` fields
+    :return: recorded replies as organism -> word -> `AssistantResponse` fields
     :raises SystemExit: if the sidecar describes a different run
     """
     if not metadata_path(cells_path).exists():
@@ -353,25 +353,25 @@ def run(
     responses = recorded_responses(cells_path, metadata())
 
     # Written before the first cell so an interrupted shard is still
-    # identifiable, and rewritten as each arm's reply becomes known.
+    # identifiable, and rewritten as each organism's reply becomes known.
     write_metadata(cells_path, metadata())
     with open(cells_path, "a") as handle:
-        # arm: control/prompt/fine-tuned; word: which word is taboo
-        for arm, word in product(config.arms, config.words):
-            with arm_active(peft_model, arm, word):
+        # organism: control/prompt/fine-tuned; word: which word is taboo
+        for organism, word in product(config.organisms, config.words):
+            with organism_active(peft_model, organism, word):
                 prompt_ids = tokenize_prompt(
                     tokenizer,
                     config.secret_prompt,
-                    system_prompt_for(arm, word),
+                    system_prompt_for(organism, word),
                     config.device,
                 )
-                recorded = responses.get(arm.value, {}).get(word)
+                recorded = responses.get(organism.value, {}).get(word)
                 if recorded is None:
                     response = generate_assistant_response(
                         peft_model,
                         tokenizer,
                         config.secret_prompt,
-                        system_prompt_for(arm, word),
+                        system_prompt_for(organism, word),
                         word,
                         response_max_new_tokens,
                         config.device,
@@ -380,19 +380,19 @@ def run(
                     response = AssistantResponse(**recorded)
                     if response.prompt_len != prompt_ids.shape[1]:
                         raise SystemExit(
-                            f"{arm.value}/{word}: the prompt is now "
+                            f"{organism.value}/{word}: the prompt is now "
                             f"{prompt_ids.shape[1]} tokens, but the recorded reply "
                             f"follows {response.prompt_len} -- the tokenizer or "
                             "chat template has changed since that run."
                         )
-                responses.setdefault(arm.value, {})[word] = asdict(response)
+                responses.setdefault(organism.value, {})[word] = asdict(response)
                 write_metadata(cells_path, metadata())
 
                 hidden_states = extract_response_hidden_states(
                     peft_model, prompt_ids, response.response_ids, config.layers
                 )
                 save_tensors(
-                    cache_path(config.output_dir, arm, word),
+                    cache_path(config.output_dir, organism, word),
                     {
                         f"layer_{layer}__{key}": state
                         for (layer, key), state in hidden_states.items()
@@ -404,15 +404,15 @@ def run(
                 pending = {
                     (layer, key): state
                     for (layer, key), state in hidden_states.items()
-                    if (arm.value, word, layer, key) not in done
+                    if (organism.value, word, layer, key) not in done
                 }
                 if not pending:
                     continue
                 # One seed, one pooled batch of forward passes for every cell in
-                # this (arm, word) -- see run_pipeline.cell_seed. A resumed run
+                # this (organism, word) -- see run_pipeline.cell_seed. A resumed run
                 # reseeds identically but draws a shorter stream, so replay
                 # identity holds only for a group generated in one attempt.
-                torch.manual_seed(cell_seed(arm.value, word, config.sample_start))
+                torch.manual_seed(cell_seed(organism.value, word, config.sample_start))
                 for (layer, key), generations in generate_interpretations_batch(
                     peft_model,
                     tokenizer,
@@ -428,7 +428,7 @@ def run(
                     append_cell(
                         handle,
                         dict(
-                            zip(KEY_FIELDS, (arm.value, word, layer, key)),
+                            zip(KEY_FIELDS, (organism.value, word, layer, key)),
                             generations=cell.generations,
                             hits=cell.hits,
                             hit_rate=cell.hit_rate,
@@ -449,9 +449,9 @@ def preflight(config, tokenizer, num_hidden_layers: int, response_max_new_tokens
     check_config(config, num_hidden_layers)
     check_output_dir(config)
     check_tokenization_pins(tokenizer)
-    groups = len(config.arms) * len(config.words)
+    groups = len(config.organisms) * len(config.words)
     print(
-        f"[preflight] ok: {groups} (arm, word) groups x {len(config.layers)} layers "
+        f"[preflight] ok: {groups} (organism, word) groups x {len(config.layers)} layers "
         f"x up to {response_max_new_tokens} response tokens x "
         f"{config.n_samples} samples"
     )
@@ -486,7 +486,7 @@ def main(args) -> Path:
     config = sweep_config(
         args.words.split(","),
         layers=resolve_layers(args.layers, num_hidden_layers),
-        arms=args.arms,
+        organisms=args.organisms,
         positions=[],
         output_dir=output_dir,
         sample_start=args.sample_start,
@@ -509,7 +509,7 @@ def main(args) -> Path:
 
     peft_model = (
         attach_taboo_loras(model, config.words, config.taboo_lora_repo_template)
-        if Arm.FINETUNED in config.arms
+        if ModelOrganism.FINETUNED in config.organisms
         else model
     )
 

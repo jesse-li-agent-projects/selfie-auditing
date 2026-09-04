@@ -23,27 +23,27 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from config import Arm
+from config import ModelOrganism
 from prompts import CONTROL_SYSTEM_PROMPT, PROMPTED_SYSTEM_PROMPT
 
 
-def system_prompt_for(arm: Arm, word: str) -> str | None:
-    """The system prompt for an arm, or None for FINETUNED.
+def system_prompt_for(organism: ModelOrganism, word: str) -> str | None:
+    """The system prompt for an organism, or None for FINETUNED.
 
     None means "pass no system message", not "no system turn in the rendered
     prompt" -- the chat template adds its own date system turn regardless.
 
-    :param arm: the experimental condition
-    :param word: the secret word this arm's prompt should reference
+    :param organism: the experimental condition
+    :param word: the secret word this organism's prompt should reference
     :return: the formatted system prompt, or None for FINETUNED
     """
-    if arm is Arm.CONTROL:
+    if organism is ModelOrganism.CONTROL:
         return CONTROL_SYSTEM_PROMPT.format(word=word)
-    if arm is Arm.PROMPTED:
+    if organism is ModelOrganism.PROMPTED:
         return PROMPTED_SYSTEM_PROMPT.format(word=word)
-    if arm is Arm.FINETUNED:
+    if organism is ModelOrganism.FINETUNED:
         return None
-    raise ValueError(f"unknown arm: {arm}")
+    raise ValueError(f"unknown organism: {organism}")
 
 
 def load_tokenizer(model_name: str) -> PreTrainedTokenizerBase:
@@ -121,19 +121,19 @@ def attach_taboo_loras(
     return peft_model
 
 
-def arm_active(
-    model: PreTrainedModel | PeftModel, arm: Arm, word: str
+def organism_active(
+    model: PreTrainedModel | PeftModel, organism: ModelOrganism, word: str
 ) -> AbstractContextManager[None]:
-    """Context manager: puts `model` into the state matching `arm`.
+    """Context manager: puts `model` into the state matching `organism`.
 
     CONTROL/PROMPTED disable any taboo LoRA, reusing peft's own
     `disable_adapter()` context manager as-is. FINETUNED activates the
     word's adapter and has nothing to tear down (the next call just sets a
-    different adapter, or a different arm disables it). `model` may be a
-    plain base model (no FINETUNED arm requested) or a PeftModel wrapping one
+    different adapter, or a different organism disables it). `model` may be a
+    plain base model (no FINETUNED organism requested) or a PeftModel wrapping one
     or more taboo LoRAs.
     """
-    if arm is Arm.FINETUNED:
+    if organism is ModelOrganism.FINETUNED:
         model.set_adapter(word)
         return nullcontext()
     if hasattr(model, "disable_adapter"):

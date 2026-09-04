@@ -67,7 +67,7 @@ def contains_alias(text: str, aliases: Iterable[str]) -> bool:
 
 @dataclass
 class CellResult:
-    """Scored generations for one (arm x word x layer x position) cell."""
+    """Scored generations for one (organism x word x layer x position) cell."""
 
     generations: list[str]
     hits: list[bool]

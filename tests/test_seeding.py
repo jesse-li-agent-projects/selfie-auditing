@@ -15,10 +15,10 @@ def test_cell_seed_differs_by_shard():
     assert cell_seed(*same_group, 0) != cell_seed(*same_group, 100)
 
 
-def test_cell_seed_differs_by_arm_word():
+def test_cell_seed_differs_by_organism_word():
     seeds = {
-        cell_seed(arm, word, 0)
-        for arm in ("control", "prompted")
+        cell_seed(organism, word, 0)
+        for organism in ("control", "prompted")
         for word in ("gold", "moon")
     }
 

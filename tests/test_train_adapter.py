@@ -431,7 +431,7 @@ def test_resume_under_a_changed_config_is_refused(tmp_path_factory):
         run_tiny_training(tmp_path_factory, seed=7, run_dir=run_dir, resume=True)
 
 
-# --- test 10: arm C (--pool-positions) example count ------------------------
+# --- test 10: --pool-positions example count --------------------------------
 
 
 def test_pooled_examples_count_equals_topic_count_times_labels(tmp_path):
