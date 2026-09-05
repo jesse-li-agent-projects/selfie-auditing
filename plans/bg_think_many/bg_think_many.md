@@ -231,3 +231,30 @@ budget. That isolates capacity, and it needs no new extraction. It costs roughly
 
 **This is not scheduled.** Raise it with the user when step 6's numbers are in;
 it is only worth buying if `bg_think_many` actually moves the OOD result.
+
+## 8. Open TODO: 10 topics have a label containing `;`
+
+Found during step 1 review, not yet actioned: 32 of 839,602 labels (across 10
+topics) contain a literal `;` --
+`BoA`, `Clarissa; or, The History of a Young Lady`, `Frankenstein`,
+`Gustave Caillebotte`, `Mamoru Miyano`, `Mary Shelley`,
+`Paris Street; Rainy Day`, `Semicolon`, `The Second Coming (poem)`, `Walden`
+-- mostly title punctuation (`"Frankenstein; or, The Modern Prometheus"`,
+`"Steins;Gate"`) or a quoted line (`"Things fall apart; the centre cannot
+hold"`).
+
+This breaks the assumption behind **D2** (labels joined with `"; "`, so a
+composed tuple containing one of these labels cannot be unambiguously split
+back into its parts) and **D11** (recall is scored by splitting generated
+text on `;`; a correct reproduction of one of these labels would be spuriously
+split into extra segments).
+
+**Decided workaround (2026-09-06): filter these 10 topics out** rather than
+change the separator. This is simpler than escaping or picking a new
+delimiter, at the cost of ~0.02% of the corpus (10 / 49,637 topics).
+
+**Not yet done.** Whichever step first builds the topic pool (step 1's
+`label_buckets` input, or step 2/3's grouping) needs to exclude these 10
+topics before groups are formed, and step 3's example builder should assert
+no surviving label contains `;` as a cheap regression check. No step's file
+has been updated for this yet.
