@@ -23,6 +23,12 @@ something while thinking about a topic in the background) is still live;
 future plans on it should not assume the pangram-specific fidelity filter or
 single-topic framing those archived plans used.
 
+- bg_think_many/bg_think_many.md
+    - The live successor: train a layer-19 rank-64 adapter on prompts that name
+      one, two or three background topics at once, mixed 1:2:3 by example count.
+      Parent plan plus six numbered execution steps beside it; read the parent's
+      design decisions (D1-D12) before touching any step.
+
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
