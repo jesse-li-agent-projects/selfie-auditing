@@ -155,6 +155,26 @@ different groups, which covers more topic *combinations* without repeating any
 (topic, position) pair more than twice. Extraction is cheap enough that this
 costs little (§5). k=1 needs no rounds — it is the existing extraction.
 
+*How many rounds a budget wants.* `rounds` sets how many distinct activations
+exist to sample examples from; D7 sets how many examples are drawn. One round
+yields `floor(N_train/k) + floor(N_val/k)` groups and 10 vectors each, so for
+one example per vector:
+
+    rounds ≈ examples_k × k / (N × positions)
+
+So `rounds` scales with `k × examples_k`: doubling k halves the groups one
+round yields, and the budget for that k does the rest. `examples_k` is
+whatever the mixture says — do not fold D6's ratio into this rule, since that
+ratio is a hunch specific to this attempt (§1).
+
+Under D6 and D7 as they currently stand, with N = 46,992 and positions = 10,
+the rule gives 0.54, 2.14 and 4.82 for k = 1, 2, 3. So **at `rounds=2` the k=3
+vectors are re-used ~2.4 times each while barely half the k=1 vectors are ever
+drawn.** Reuse is not wrong (each draw gets a different composed label, D4) but
+it does mean k=3 contributes the most examples off the fewest distinct
+activations. `rounds=5` for k=3 would even that out for ~0.15 extra
+A100-hours and ~3.8 extra GB.
+
 **D9 — The architecture is `scalar_affine_plus_low_rank`, rank 64**, per the
 user, with upstream's own hyperparameters (§3).
 
@@ -172,6 +192,25 @@ and made visible by logging the segment-count distribution beside every score.
 **D12 — Report recall broken down by k, never pooled across k.** Inside a fixed
 k every query has the same number of true topics, so the average is
 unambiguous; pooling would silently weight k=3 most, because of D6.
+
+**D13 — One centring reference across all three k.** Confirmed with the user
+(2026-09-06). Each extraction directory writes its own per-position means, but
+the training pool centres every k against the *pooled* mean of all three
+(`dataset.pooled_position_means`), not against each directory's own.
+
+Rationale, in the user's terms: plausibly a direction in the activations
+represents how many topics were named, and centring per directory would delete
+it -- inside the k=3 population that component is constant, so a k=3 mean
+removes it exactly. Pooling keeps it as each population's offset from the
+common reference, so the adapter can contrast the three.
+
+The pooled mean is exact and costs no re-extraction: it re-weights the three
+stored `position_means.pt` files by how many records reached each position.
+Two consequences to state in any report: the k=1 slice is no longer centred
+the way `bg_think` was, so Gate 2's k=1 comparison to 1.4844 now carries a
+constant per-position offset that `bg_think` did not see; and the between-k
+component may be small next to the within-k variance, so preserving it is
+cheap insurance, not a predicted effect.
 
 ## 5. Cost
 
@@ -253,11 +292,10 @@ split into extra segments).
 change the separator. This is simpler than escaping or picking a new
 delimiter, at the cost of ~0.02% of the corpus (10 / 49,637 topics).
 
-**Not yet done.** `label_buckets` (step 1) is a pure per-topic function with
-no view of the topic pool, so it is not where this filter belongs. **Step 2**
-is: it already runs `load_topic_records` plus the compliance filter before
-writing `groups.json`, so it is the first step to decide which topics exist
-as groupable units, and should drop these 10 there. Step 3's example builder
-should assert no surviving label contains `;` as a cheap regression check.
-No step's file
-has been updated for this yet.
+**Done in step 2** (`extract_grouped_vectors.drop_semicolon_topics`).
+`label_buckets` (step 1) is a pure per-topic function with no view of the
+topic pool, so it is not where this filter belongs; step 2 is the first step
+to decide which topics exist as groupable units. 9 of the 10 survive into
+`outputs/bg_think_l19` and are dropped there; `BoA` had already failed the
+single-topic compliance filter. Step 3's example builder should still assert
+no surviving label contains `;` as a cheap regression check.

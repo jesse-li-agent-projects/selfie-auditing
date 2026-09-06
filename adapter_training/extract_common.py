@@ -10,7 +10,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from adapter_training.dataset import TopicRecord
+from adapter_training.dataset import GroupRecord, TopicRecord
 
 
 def run_forward(
@@ -63,21 +63,27 @@ class ExtractionResult:
     """
 
     vectors: Float[Tensor, "n_vectors hidden"]
-    records: list[TopicRecord]
+    records: list[TopicRecord] | list[GroupRecord]
     means: Tensor
     n_seen: int = 0
     position_tokens: list[str] | None = None
     failures: list[dict] = field(default_factory=list)
 
 
-def write_extraction_outputs(output_dir: Path, result: ExtractionResult) -> None:
-    """Write the `vectors.pt`/`position_means.pt`/`topics.json` triple every
+def write_extraction_outputs(
+    output_dir: Path, result: ExtractionResult, *, records_file: str = "topics.json"
+) -> None:
+    """Write the `vectors.pt`/`position_means.pt`/records triple every
     extraction style produces. The caller writes `positions.json` (and, for
-    the pangram style, `filter_report.json`) itself -- their content differs
+    the pangram styles, `filter_report.json`) itself -- their content differs
     per style.
+
+    :param records_file: where the records go. A style whose records are not
+        `TopicRecord`s must name a different file, so no single-topic reader
+        can half-understand the directory.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.save(result.vectors, output_dir / "vectors.pt")
     torch.save(result.means, output_dir / "position_means.pt")
-    with open(output_dir / "topics.json", "w") as handle:
+    with open(output_dir / records_file, "w") as handle:
         json.dump([asdict(record) for record in result.records], handle)

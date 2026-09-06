@@ -177,8 +177,9 @@ class FakeModel:
 class NoStopModel(FakeModel):
     """Complies fully with the shorter (no full-stop) forced variant for
     `no_stop_titles`, but diverges from the longer variant exactly at the
-    full-stop position -- what the step-0 probe found ~27% of real topics do.
-    Otherwise behaves like `FakeModel`.
+    full-stop position. Rare against the current prompt, but the fallback path
+    it exercises is real (`pangram_extraction.response_variants`). Otherwise
+    behaves like `FakeModel`.
 
     Distinguishing the two forced-sequence passes by `logits_to_keep` (12 for
     the 10-sentence-token + eot + lookback candidate, 11 for the

@@ -13,7 +13,9 @@ from adapter_training.dataset import (
     load_records,
     load_topic_records,
     load_vector_store,
+    pooled_position_means,
     pooled_vector_store,
+    position_counts,
     restrict_to_titles,
 )
 
@@ -78,8 +80,47 @@ def test_flat_means_file_is_rejected_rather_than_broadcast(tmp_path):
     records = [TopicRecord("Alpha", ("a label",), "train", start=0, count=1)]
     write_extraction_dir(tmp_path, records, torch.zeros(1, HIDDEN), torch.zeros(HIDDEN))
 
-    with pytest.raises(ValueError, match="position_means.pt"):
+    with pytest.raises(ValueError, match="position means"):
         load_vector_store(tmp_path, center=True)
+
+
+def test_pooled_means_equal_the_mean_over_every_directorys_vectors(tmp_path):
+    # Two directories whose populations differ by a constant offset -- the
+    # thing per-directory centring removes and pooled centring keeps.
+    dirs, sources = [], []
+    for index, base in enumerate((100.0, 300.0)):
+        directory = tmp_path / f"d{index}"
+        directory.mkdir()
+        records = [TopicRecord("Alpha", ("a",), "train", start=0, count=2)]
+        # Offsets chosen to be exactly representable in bf16.
+        means = torch.tensor([[base] * HIDDEN, [base + 4] * HIDDEN])
+        write_extraction_dir(directory, records, means.to(torch.bfloat16), means)
+        dirs.append(directory)
+        sources.append((directory, records))
+
+    pooled = pooled_position_means(sources)
+
+    assert torch.allclose(pooled, torch.tensor([[200.0] * HIDDEN, [204.0] * HIDDEN]))
+    # Centred against the pooled mean, each directory keeps its own offset.
+    first = load_vector_store(dirs[0], records=sources[0][1], means=pooled)
+    second = load_vector_store(dirs[1], records=sources[1][1], means=pooled)
+    assert torch.allclose(first.vectors, torch.full((2, HIDDEN), -100.0))
+    assert torch.allclose(second.vectors, torch.full((2, HIDDEN), 100.0))
+
+
+def test_pooled_means_weight_positions_by_how_many_records_reached_them(tmp_path):
+    # A 9-vector topic contributes nothing to position 9, so that position's
+    # pooled mean must come from the 10-vector topic alone -- the same rule
+    # the extractor used when it wrote each file.
+    records = two_topic_dir(tmp_path)
+
+    pooled = pooled_position_means([(tmp_path, records)])
+    counts = position_counts(records, 10)
+
+    assert counts.tolist() == [2.0] * 9 + [1.0]
+    # One directory pooled with itself is that directory's own means.
+    stored = torch.load(tmp_path / "position_means.pt", weights_only=True)
+    assert torch.allclose(pooled, stored)
 
 
 def test_no_center_returns_raw_vectors(tmp_path):

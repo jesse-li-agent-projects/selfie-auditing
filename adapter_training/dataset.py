@@ -15,7 +15,7 @@ them:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -136,6 +136,62 @@ def load_topic_records(directory: Path) -> list[TopicRecord]:
     ]
 
 
+@dataclass(frozen=True)
+class GroupRecord:
+    """One `groups.json` entry: the k topics one extraction prompt named.
+
+    `titles` are in the order the prompt named them, and `labels_per_topic` is
+    aligned with it, so `labels_per_topic[i]` are the labels of `titles[i]`.
+    `start`/`count` address `vectors.pt` exactly as `TopicRecord`'s do -- the
+    group's vectors are `vectors[start : start + count]` and a vector's
+    position index is `i - start`.
+
+    `variant` is which of the extractor's accepted response shapes this
+    group's greedy decoding matched (`pangram_extraction.response_variants`)
+    -- the reason `count` is not constant, and what the filter report counts
+    to show the population is not an unusual one. Nothing downstream of
+    extraction reads it.
+
+    Written to `groups.json`, never `topics.json`, so no single-topic reader
+    can half-understand a grouped directory.
+    """
+
+    titles: tuple[str, ...]
+    labels_per_topic: tuple[tuple[str, ...], ...]
+    split: str
+    start: int
+    count: int
+    variant: str | None = None
+
+
+# What `load_vector_store` needs to centre a directory: anything carrying a
+# `start`/`count` range, whichever extraction style wrote it.
+VectorRecord = TopicRecord | GroupRecord
+
+
+def load_group_records(directory: Path) -> list[GroupRecord]:
+    """Read `groups.json`, in the order the extractor wrote it.
+
+    :param directory: a grouped extraction output directory
+    :return: one record per surviving group
+    """
+    with open(directory / "groups.json") as handle:
+        raw = json.load(handle)
+    return [
+        GroupRecord(
+            titles=tuple(entry["titles"]),
+            labels_per_topic=tuple(
+                tuple(labels) for labels in entry["labels_per_topic"]
+            ),
+            split=entry["split"],
+            start=entry["start"],
+            count=entry["count"],
+            variant=entry.get("variant"),
+        )
+        for entry in raw
+    ]
+
+
 def load_records(
     vectors_dir: Path, restrict_to: Path | None = None
 ) -> list[TopicRecord]:
@@ -155,7 +211,69 @@ def load_records(
     return records
 
 
-def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
+def position_counts(records: Sequence[VectorRecord], n_positions: int) -> Tensor:
+    """How many records reached each response position.
+
+    Not constant: a record that matched a shorter response variant contributes
+    nothing to the last position. This is the weight a position's mean was
+    averaged with, so it is also the weight for pooling means across
+    directories.
+
+    :param records: the records addressing one `vectors.pt`
+    :param n_positions: rows in that directory's `position_means.pt`
+    :return: `[n_positions]`, fp64
+    """
+    counts = torch.zeros(n_positions, dtype=torch.float64)
+    for record in records:
+        counts[: record.count] += 1
+    return counts
+
+
+def pooled_position_means(
+    sources: Sequence[tuple[Path, Sequence[VectorRecord]]],
+) -> Tensor:
+    """One per-position mean over several extraction directories at once.
+
+    Each directory's stored `position_means.pt` is weighted by how many of the
+    given records reached each position, so no `vectors.pt` is read. The
+    weights come from `records` but the means are whatever the extractor
+    wrote, so passing a subset of a directory's records weights that
+    directory's full mean by the subset's count.
+
+    Centering against this instead of each directory's own mean preserves
+    whatever differs *between* the populations. Where the populations are the
+    same prompt with a different number of background topics, that difference
+    is the "how many topics are named" component, which per-directory centring
+    would remove as constant.
+
+    :param sources: `(directory, its records)` pairs
+    :return: `[n_positions, hidden]`, fp32
+    """
+    loaded = []
+    for directory, records in sources:
+        means = torch.load(
+            directory / "position_means.pt", map_location="cpu", weights_only=True
+        ).to(torch.float64)
+        loaded.append((means, position_counts(records, means.shape[0])))
+
+    n_positions = max(means.shape[0] for means, _ in loaded)
+    hidden = loaded[0][0].shape[1]
+    total = torch.zeros(n_positions, hidden, dtype=torch.float64)
+    weight = torch.zeros(n_positions, dtype=torch.float64)
+    for means, counts in loaded:
+        rows = means.shape[0]
+        total[:rows] += means * counts.unsqueeze(-1)
+        weight[:rows] += counts
+    return (total / weight.clamp(min=1).unsqueeze(-1)).float()
+
+
+def load_vector_store(
+    directory: Path,
+    *,
+    center: bool = True,
+    records: Sequence[VectorRecord] | None = None,
+    means: Tensor | None = None,
+) -> VectorStore:
     """Read `vectors.pt`, cast bf16 -> fp32, and optionally centre.
 
     Centering subtracts each vector's own position mean: a vector at index
@@ -166,15 +284,23 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
 
     :param directory: an extraction output directory
     :param center: subtract per-position means (see above)
+    :param records: the records addressing `vectors.pt`, defaulting to the
+        directory's own `topics.json` -- a grouped directory passes its
+        `load_group_records` instead. Centering lives here and only here, so
+        every style reads its vectors through this one function.
+    :param means: centre against these instead of the directory's own file --
+        how several directories share one reference (`pooled_position_means`)
     :return: the vectors, fp32, indexed exactly as `vectors.pt` is
     """
     vectors = torch.load(
         directory / "vectors.pt", map_location="cpu", weights_only=True
     ).to(torch.float32)
     if center:
-        means = torch.load(
-            directory / "position_means.pt", map_location="cpu", weights_only=True
-        ).to(torch.float32)
+        if means is None:
+            means = torch.load(
+                directory / "position_means.pt", map_location="cpu", weights_only=True
+            )
+        means = means.to(torch.float32)
         # A `[hidden]` means file would slice to a scalar here and broadcast
         # over every dimension, leaving the vectors effectively uncentred --
         # silently, and worth 0.4 nats of val loss. Rejecting it means an
@@ -182,11 +308,25 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
         # has to be re-extracted.
         if means.ndim != 2 or means.shape[1] != vectors.shape[1]:
             raise ValueError(
-                f"{directory / 'position_means.pt'} has shape "
+                f"position means for {directory} have shape "
                 f"{tuple(means.shape)}; expected [n_positions, "
                 f"{vectors.shape[1]}]"
             )
-        for record in load_topic_records(directory):
+        if records is None:
+            # One `vectors.pt` has one index space, so two records files
+            # describe it incompatibly -- a directory reused by the other
+            # extraction style keeps the stale one. Guessing `topics.json`
+            # there would centre with another run's ranges, silently.
+            if (directory / "groups.json").exists() and (
+                directory / "topics.json"
+            ).exists():
+                raise ValueError(
+                    f"{directory} holds both groups.json and topics.json, "
+                    "which describe one vectors.pt incompatibly; pass the "
+                    "records to read it by"
+                )
+            records = load_topic_records(directory)
+        for record in records:
             n = record.count
             vectors[record.start : record.start + n] -= means[:n]
     return VectorStore(vectors=vectors, hidden_size=vectors.shape[1])

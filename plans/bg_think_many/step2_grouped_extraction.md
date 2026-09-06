@@ -99,6 +99,11 @@ Rules:
 - The topic order *inside* a group is the shuffled order; do not sort it. The
   label order is permuted independently later (D2), so a fixed prompt order here
   is not a bias the adapter can exploit.
+- `--rounds` decides how many distinct **activations** exist, not how many
+  training examples: one group is one forward pass and 10 vectors, and the
+  example count is step 3's sampling budget. See the parent plan's D8 for the
+  `rounds ≈ examples_k × k / (N × positions)` rule and what `rounds=2` implies
+  for k=3.
 
 Expected counts, for k=2 and k=3 with `rounds=2`, over the 47,001 topics that
 survived the single-topic filter (42,320 train / 4,681 val):
@@ -107,6 +112,10 @@ survived the single-topic filter (42,320 train / 4,681 val):
 |---|---|---|
 | 2 | 42,320 | 4,680 |
 | 3 | 28,212 | 3,120 |
+
+**Drop the topics with a `;` in a label** (parent plan §8) before grouping.
+This step owns that filter: it is the first step that decides which topics
+exist as groupable units. 9 of the 47,001 source topics are affected.
 
 **Which topic list to group.** Use the topics that appear in
 `outputs/bg_think_l19/topics.json`, not the full 49,637. Those already passed
@@ -122,7 +131,7 @@ rules and `extract_pangram_vectors.py`'s own header).
 
     python -m adapter_training.extract_grouped_vectors \
         --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
-        --source-topics outputs/bg_think_l19 --dataset-file <jsonl>
+        --source-topics bg_think_l19
 
 **Reuse, do not reimplement.** The compliance filter, the two response variants,
 the per-position mean accumulation and the output writing all already exist in
@@ -172,9 +181,9 @@ throughput. Include the histogram and a dozen rejected groups in the report.
 Only after Gate 1 passes. Two runs, one GPU, sequentially:
 
     python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
-        --layer 19 --output-dir bg_think_many_l19_k2 --source-topics outputs/bg_think_l19
+        --layer 19 --output-dir bg_think_many_l19_k2 --source-topics bg_think_l19
     python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
-        --layer 19 --output-dir bg_think_many_l19_k3 --source-topics outputs/bg_think_l19
+        --layer 19 --output-dir bg_think_many_l19_k3 --source-topics bg_think_l19
 
 (`--output-dir` is written under `outputs/`, which the argument type prepends.)
 
