@@ -253,11 +253,10 @@ split into extra segments).
 change the separator. This is simpler than escaping or picking a new
 delimiter, at the cost of ~0.02% of the corpus (10 / 49,637 topics).
 
-**Not yet done.** `label_buckets` (step 1) is a pure per-topic function with
-no view of the topic pool, so it is not where this filter belongs. **Step 2**
-is: it already runs `load_topic_records` plus the compliance filter before
-writing `groups.json`, so it is the first step to decide which topics exist
-as groupable units, and should drop these 10 there. Step 3's example builder
-should assert no surviving label contains `;` as a cheap regression check.
-No step's file
-has been updated for this yet.
+**Done in step 2** (`extract_grouped_vectors.drop_semicolon_topics`).
+`label_buckets` (step 1) is a pure per-topic function with no view of the
+topic pool, so it is not where this filter belongs; step 2 is the first step
+to decide which topics exist as groupable units. 9 of the 10 survive into
+`outputs/bg_think_l19` and are dropped there; `BoA` had already failed the
+single-topic compliance filter. Step 3's example builder should still assert
+no surviving label contains `;` as a cheap regression check.

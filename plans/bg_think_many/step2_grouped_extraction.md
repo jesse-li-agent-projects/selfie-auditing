@@ -108,6 +108,10 @@ survived the single-topic filter (42,320 train / 4,681 val):
 | 2 | 42,320 | 4,680 |
 | 3 | 28,212 | 3,120 |
 
+**Drop the topics with a `;` in a label** (parent plan §8) before grouping.
+This step owns that filter: it is the first step that decides which topics
+exist as groupable units. 9 of the 47,001 source topics are affected.
+
 **Which topic list to group.** Use the topics that appear in
 `outputs/bg_think_l19/topics.json`, not the full 49,637. Those already passed
 the single-topic compliance filter, so grouping them keeps the k=1, k=2 and k=3
@@ -122,7 +126,7 @@ rules and `extract_pangram_vectors.py`'s own header).
 
     python -m adapter_training.extract_grouped_vectors \
         --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
-        --source-topics outputs/bg_think_l19 --dataset-file <jsonl>
+        --source-topics outputs/bg_think_l19
 
 **Reuse, do not reimplement.** The compliance filter, the two response variants,
 the per-position mean accumulation and the output writing all already exist in
