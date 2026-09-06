@@ -9,8 +9,8 @@ everywhere, greedy decoding from the prompt would have produced exactly the
 sentence and then stopped. So the filter verdict and the vectors cost one
 forward pass together, and no decode loop is needed.
 
-The sentence has two common compliant shapes, with and without a trailing full
-stop, and the filter accepts either (`response_variants`) -- so `count` is not
+The sentence has two compliant shapes, with and without a trailing full stop,
+and the filter accepts either (`response_variants`) -- so `count` is not
 constant across items.
 
 Nothing here knows how many topics the prompt named: the caller supplies the
@@ -81,13 +81,17 @@ def response_token_ids(tokenizer, response_text: str) -> tuple[list[int], list[i
 def response_variants(tokenizer) -> list[tuple[str, list[int], list[int]]]:
     """The forced-sequence candidates the filter accepts for one item.
 
-    The pangram has two common compliant shapes: with the trailing full stop
-    (~68% of topics) and without it (~27%) -- the model simply stops one
-    token earlier. A filter that only forces one of these structurally caps
-    the keep rate near whichever fraction it picked, rejecting a large
-    genuinely-compliant population. So both are tried, in this order (the
-    longer one first, since it is the more common shape), and an item is kept
-    on the first one it matches.
+    The pangram has two compliant shapes: with the trailing full stop and
+    without it, the model simply stopping one token earlier. Both are tried
+    per item, longer first, and an item is kept on the first that matches --
+    a filter forcing only one shape would structurally cap the keep rate near
+    whichever fraction it picked.
+
+    In practice the no-stop shape is now rare: moving the full stop inside the
+    prompt's quotes (`dog."` rather than `dog".`) removed the ambiguity, and
+    all 47,001 kept topics of the layer-19 run matched the with-stop shape.
+    The fallback stays because it is cheap and because a new prompt (more
+    background topics, say) is not covered by that measurement.
 
     The no-stop candidate is included only if stripping the stop leaves a
     genuine token-level prefix of the with-stop one (guards against a
