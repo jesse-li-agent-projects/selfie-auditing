@@ -146,6 +146,12 @@ class GroupRecord:
     group's vectors are `vectors[start : start + count]` and a vector's
     position index is `i - start`.
 
+    `variant` is which of the extractor's accepted response shapes this
+    group's greedy decoding matched (`pangram_extraction.response_variants`)
+    -- the reason `count` is not constant, and what the filter report counts
+    to show the population is not an unusual one. Nothing downstream of
+    extraction reads it.
+
     Written to `groups.json`, never `topics.json`, so no single-topic reader
     can half-understand a grouped directory.
     """

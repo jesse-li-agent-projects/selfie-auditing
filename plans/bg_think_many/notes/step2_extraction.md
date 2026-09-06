@@ -63,16 +63,50 @@ follower, not evidence about the 8B's k=3 keep rate. The dominant 1B failure is
 at the final sentence position, predicting `".\n"` where `"."` was forced.
 
 **Environment note.** `HF_HOME=/work/hf-cache` emits `Ignoring corrupted tree
-cache file ... Permission denied` on every model load, and `BASE_MODEL_8B` is
-still absent from that cache (step 1 hit the same gap). Both look like
-permissions/download misconfiguration rather than anything this step caused.
+cache file ... Permission denied` on every model load: 23 `*/trees/*.json`
+files are mode 600 and owned by `ubuntu`, so the `agent` user cannot read them.
+Harmless (the loader falls back), but it is noise on every run. The 8B's
+absence from that cache is *not* a fault -- only models that fit the local GPU
+are cached, by design.
 
 ## Still to run (needs the remote 8B)
 
-1. Gate 1: `--k 3 --limit 500`, then report `keep_rate` (single-topic run:
-   94.7%), `variant_counts` (single-topic run: every kept topic matched the
-   with-stop variant) and `first_mismatch_histogram`. **Stop and report if the
-   keep rate is below ~80%.**
-2. The two full runs of the step file's §6, into `outputs/bg_think_many_l19_k2`
-   and `outputs/bg_think_many_l19_k3`.
-3. Fill in the realised keep rates and variant counts here.
+The vectors this step produces are inputs to steps 3 and 6; nothing else in
+the plan is blocked on them. Runbook, on the remote (see the `vastai` skill;
+one GPU job at a time):
+
+1. **Gate 1, first, and stop on it.**
+
+       python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
+           --layer 19 --limit 500 --output-dir bg_think_many_l19_k3_probe \
+           --source-topics outputs/bg_think_l19
+
+   Read `outputs/bg_think_many_l19_k3_probe/filter_report.json` and report
+   three things: `keep_rate` (the single-topic run kept 94.7%),
+   `variant_counts` (there, every kept topic matched the with-stop variant and
+   the no-stop variant matched nothing) and `first_mismatch_histogram`. With
+   three topics named, the plausible new failure is the model talking about the
+   topics instead of writing the sentence, which shows up as an early mismatch.
+   **If `keep_rate` is below ~0.80, stop.** Do not run step 2's full
+   extractions and do not start step 6. Report the histogram and a dozen
+   rejected groups (`failures[]` carries each group's `titles`) -- *which*
+   groups are dropped matters more than the throughput, because the surviving
+   population is then selected on something.
+2. **The two full runs**, sequentially, ~0.15 and ~0.10 A100-hours:
+
+       python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
+           --layer 19 --output-dir bg_think_many_l19_k2 \
+           --source-topics outputs/bg_think_l19
+       python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
+           --layer 19 --output-dir bg_think_many_l19_k3 \
+           --source-topics outputs/bg_think_l19
+
+   Expect 46,990 and 31,326 groups before filtering, and 3.85 GB / 2.57 GB of
+   vectors if nothing is rejected. k=1 is **not** extracted: it is
+   `outputs/bg_think_l19`, reused per the parent plan's D1.
+3. **Fill in this note**: the Gate 1 numbers, and both runs' realised
+   `keep_rate`, `variant_counts` and group counts. Update `outputs/README.md`
+   with the two new directories, as the earlier extractions did.
+
+Everything the extractor needs is in `--source-topics`; there is no dataset
+download and no network egress on the extraction path.
