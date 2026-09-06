@@ -211,11 +211,66 @@ def load_records(
     return records
 
 
+def position_counts(records: Sequence[VectorRecord], n_positions: int) -> Tensor:
+    """How many records reached each response position.
+
+    Not constant: a record that matched a shorter response variant contributes
+    nothing to the last position. This is the weight a position's mean was
+    averaged with, so it is also the weight for pooling means across
+    directories.
+
+    :param records: the records addressing one `vectors.pt`
+    :param n_positions: rows in that directory's `position_means.pt`
+    :return: `[n_positions]`, fp64
+    """
+    counts = torch.zeros(n_positions, dtype=torch.float64)
+    for record in records:
+        counts[: record.count] += 1
+    return counts
+
+
+def pooled_position_means(
+    sources: Sequence[tuple[Path, Sequence[VectorRecord]]],
+) -> Tensor:
+    """One per-position mean over several extraction directories at once.
+
+    Each directory's own `position_means.pt` is re-weighted by how many of its
+    records reached each position, so the result is exactly the mean of every
+    vector in every directory -- without reading a single `vectors.pt`.
+
+    Centering against this instead of each directory's own mean preserves
+    whatever differs *between* the populations. Where the populations are the
+    same prompt with a different number of background topics, that difference
+    is the "how many topics are named" component, which per-directory centring
+    would remove as constant.
+
+    :param sources: `(directory, its records)` pairs
+    :return: `[n_positions, hidden]`, fp32
+    """
+    loaded = []
+    for directory, records in sources:
+        means = torch.load(
+            directory / "position_means.pt", map_location="cpu", weights_only=True
+        ).to(torch.float64)
+        loaded.append((means, position_counts(records, means.shape[0])))
+
+    n_positions = max(means.shape[0] for means, _ in loaded)
+    hidden = loaded[0][0].shape[1]
+    total = torch.zeros(n_positions, hidden, dtype=torch.float64)
+    weight = torch.zeros(n_positions, dtype=torch.float64)
+    for means, counts in loaded:
+        rows = means.shape[0]
+        total[:rows] += means * counts.unsqueeze(-1)
+        weight[:rows] += counts
+    return (total / weight.clamp(min=1).unsqueeze(-1)).float()
+
+
 def load_vector_store(
     directory: Path,
     *,
     center: bool = True,
     records: Sequence[VectorRecord] | None = None,
+    means: Tensor | None = None,
 ) -> VectorStore:
     """Read `vectors.pt`, cast bf16 -> fp32, and optionally centre.
 
@@ -231,15 +286,19 @@ def load_vector_store(
         directory's own `topics.json` -- a grouped directory passes its
         `load_group_records` instead. Centering lives here and only here, so
         every style reads its vectors through this one function.
+    :param means: centre against these instead of the directory's own file --
+        how several directories share one reference (`pooled_position_means`)
     :return: the vectors, fp32, indexed exactly as `vectors.pt` is
     """
     vectors = torch.load(
         directory / "vectors.pt", map_location="cpu", weights_only=True
     ).to(torch.float32)
     if center:
-        means = torch.load(
-            directory / "position_means.pt", map_location="cpu", weights_only=True
-        ).to(torch.float32)
+        if means is None:
+            means = torch.load(
+                directory / "position_means.pt", map_location="cpu", weights_only=True
+            )
+        means = means.to(torch.float32)
         # A `[hidden]` means file would slice to a scalar here and broadcast
         # over every dimension, leaving the vectors effectively uncentred --
         # silently, and worth 0.4 nats of val loss. Rejecting it means an
@@ -247,7 +306,7 @@ def load_vector_store(
         # has to be re-extracted.
         if means.ndim != 2 or means.shape[1] != vectors.shape[1]:
             raise ValueError(
-                f"{directory / 'position_means.pt'} has shape "
+                f"position means for {directory} have shape "
                 f"{tuple(means.shape)}; expected [n_positions, "
                 f"{vectors.shape[1]}]"
             )
