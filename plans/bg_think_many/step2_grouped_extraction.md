@@ -131,7 +131,7 @@ rules and `extract_pangram_vectors.py`'s own header).
 
     python -m adapter_training.extract_grouped_vectors \
         --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
-        --source-topics outputs/bg_think_l19
+        --source-topics bg_think_l19
 
 **Reuse, do not reimplement.** The compliance filter, the two response variants,
 the per-position mean accumulation and the output writing all already exist in
@@ -181,9 +181,9 @@ throughput. Include the histogram and a dozen rejected groups in the report.
 Only after Gate 1 passes. Two runs, one GPU, sequentially:
 
     python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
-        --layer 19 --output-dir bg_think_many_l19_k2 --source-topics outputs/bg_think_l19
+        --layer 19 --output-dir bg_think_many_l19_k2 --source-topics bg_think_l19
     python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
-        --layer 19 --output-dir bg_think_many_l19_k3 --source-topics outputs/bg_think_l19
+        --layer 19 --output-dir bg_think_many_l19_k3 --source-topics bg_think_l19
 
 (`--output-dir` is written under `outputs/`, which the argument type prepends.)
 

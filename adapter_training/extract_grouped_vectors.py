@@ -4,7 +4,7 @@ vector per sentence token of the group.
 
     python -m adapter_training.extract_grouped_vectors \
         --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
-        --source-topics outputs/bg_think_l19
+        --source-topics bg_think_l19
 
 The topic pool is another extraction run's `topics.json` (`--source-topics`),
 not the upstream dataset: those topics already passed the single-topic
@@ -51,9 +51,10 @@ def parse_args():
     )
     parser.add_argument(
         "--source-topics",
-        type=Path,
+        type=lambda value: Path("outputs") / value,
         required=True,
-        help="extraction directory whose topics.json supplies the topic pool",
+        help="extraction dir whose topics.json supplies the topic pool, "
+        "written under outputs/ (implicitly prepended)",
     )
     parser.add_argument("--seed", type=int, default=0, help="seeds the grouping")
     parser.add_argument("--model", default=BASE_MODEL_8B)

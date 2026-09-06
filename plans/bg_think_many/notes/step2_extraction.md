@@ -79,7 +79,7 @@ one GPU job at a time):
 
        python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
            --layer 19 --limit 500 --output-dir bg_think_many_l19_k3_probe \
-           --source-topics outputs/bg_think_l19
+           --source-topics bg_think_l19
 
    Read `outputs/bg_think_many_l19_k3_probe/filter_report.json` and report
    three things: `keep_rate` (the single-topic run kept 94.7%),
@@ -101,10 +101,10 @@ one GPU job at a time):
 
        python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
            --layer 19 --output-dir bg_think_many_l19_k2 \
-           --source-topics outputs/bg_think_l19
+           --source-topics bg_think_l19
        python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
            --layer 19 --output-dir bg_think_many_l19_k3 \
-           --source-topics outputs/bg_think_l19
+           --source-topics bg_think_l19
 
    Expect 46,990 and 31,326 groups before filtering, and 3.85 GB / 2.57 GB of
    vectors if nothing is rejected. k=1 is **not** extracted: it is
