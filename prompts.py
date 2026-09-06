@@ -9,8 +9,9 @@ These are not interchangeable -- each plays a distinct role in the pipeline:
   system prompts for the CONTROL/PROMPTED organisms (``model_loading.py``).
 - ``SECRET_PROMPT``: the user-turn elicitation prompt sent in every organism
   (``config.py``, the pipeline's default).
-- ``PANGRAM_PROMPT_TEMPLATE``: the training-data topic-vector extraction
-  prompt (``adapter_training/extract_pangram_vectors.py``).
+- ``PANGRAM_PROMPT_TEMPLATE`` / ``background_topics_prompt``: the
+  training-data topic-vector extraction prompt, for one topic and for one to
+  three topics respectively. The one-topic outputs are byte-identical.
 - ``BRIDGE_STATEMENT_PROMPT`` / ``BRIDGE_FILTER_PROMPT``: the TwoHopFact
   bridge-entity experiment's extraction and dataset-filter prompts.
 - ``VALIDATION_PROMPTS``: ad-hoc taboo-probing prompts for manual chat
@@ -21,6 +22,8 @@ needs a prompt string pays no import cost.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 RESERVED_TOKEN = "<|reserved_special_token_0|>"
 
@@ -60,6 +63,40 @@ PANGRAM_PROMPT_TEMPLATE = (
     'Write "{pangram}." Think about the topic "{topic}" while writing the '
     "sentence. Do not write anything else or change the words."
 )
+
+MAX_BACKGROUND_TOPICS = 3
+
+
+def background_topics_prompt(pangram: str, titles: Sequence[str]) -> str:
+    """The extraction prompt naming one, two or three background topics.
+
+    The one-topic form is byte-identical to
+    ``PANGRAM_PROMPT_TEMPLATE.format(...)``, which is what keeps a
+    single-topic extraction usable as the k=1 population of a multi-topic
+    experiment. A test pins that; do not reword either string.
+
+    :param pangram: the sentence the model is asked to write
+    :param titles: one to three topic titles, in prompt order
+    :return: the instruction text (not yet chat-templated)
+    :raises ValueError: if `titles` is empty or longer than three
+    """
+    if not 1 <= len(titles) <= MAX_BACKGROUND_TOPICS:
+        raise ValueError(
+            f"background_topics_prompt: got {len(titles)} titles, expected 1 to "
+            f"{MAX_BACKGROUND_TOPICS}"
+        )
+    quoted = [f'"{title}"' for title in titles]
+    if len(quoted) == 1:
+        noun, topics = "topic", quoted[0]
+    elif len(quoted) == 2:
+        noun, topics = "topics", " and ".join(quoted)
+    else:
+        noun, topics = "topics", ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+    return (
+        f'Write "{pangram}." Think about the {noun} {topics} while writing the '
+        "sentence. Do not write anything else or change the words."
+    )
+
 
 # TwoHopFact bridge-entity experiment (SelfIE adapter paper S3.6). Verbatim
 # from the reference repo: the statement prompt from
