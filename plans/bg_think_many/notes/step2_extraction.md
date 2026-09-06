@@ -92,6 +92,13 @@ one GPU job at a time):
    rejected groups (`failures[]` carries each group's `titles`) -- *which*
    groups are dropped matters more than the throughput, because the surviving
    population is then selected on something.
+
+   The report will say `val_groups: 0`: groups are ordered split-major and
+   `--limit` takes a prefix, so a probe run holds train groups only. That does
+   not bias the three numbers above -- the upstream split is one random
+   population (train and val match on labels per topic and title length) and
+   the groups are shuffled within a split -- but do not read the zero as a
+   fault in the splitting.
 2. **Confirm `--rounds` first** -- the parent plan's D8 now records that at
    `rounds=2` each k=3 vector is re-used ~2.4 times by the example budget while
    half the k=1 vectors go unused, and that `rounds=5` at k=3 would even that

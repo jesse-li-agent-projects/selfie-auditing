@@ -234,9 +234,11 @@ def pooled_position_means(
 ) -> Tensor:
     """One per-position mean over several extraction directories at once.
 
-    Each directory's own `position_means.pt` is re-weighted by how many of its
-    records reached each position, so the result is exactly the mean of every
-    vector in every directory -- without reading a single `vectors.pt`.
+    Each directory's stored `position_means.pt` is weighted by how many of the
+    given records reached each position, so no `vectors.pt` is read. The
+    weights come from `records` but the means are whatever the extractor
+    wrote, so passing a subset of a directory's records weights that
+    directory's full mean by the subset's count.
 
     Centering against this instead of each directory's own mean preserves
     whatever differs *between* the populations. Where the populations are the

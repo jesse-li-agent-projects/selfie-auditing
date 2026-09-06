@@ -65,7 +65,9 @@ def parse_args():
         "--limit",
         type=int,
         default=None,
-        help="only the first N groups -- what the plan's Gate 1 probe uses",
+        help="only the first N groups. Groups are ordered split-major, so a "
+        "limited run holds train groups only -- fine for filter statistics "
+        "(the splits are one random population) but it reports val_groups: 0",
     )
     parsed = parser.parse_args()
     if not 1 <= parsed.k <= MAX_BACKGROUND_TOPICS:
@@ -250,9 +252,10 @@ def main(args) -> Path:
     )
 
     groups = build_groups(topics, args.k, args.rounds, args.seed)
+    print(f"Built {len(groups)} groups of {args.k} ({args.rounds} rounds)")
     if args.limit is not None:
         groups = groups[: args.limit]
-    print(f"Built {len(groups)} groups of {args.k} ({args.rounds} rounds)")
+        print(f"Limited to the first {len(groups)}, which are all train split")
 
     tokenizer = load_tokenizer(args.model)
     model = load_base_model(args.model, device=args.device, dtype=args.dtype)
