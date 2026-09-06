@@ -162,13 +162,18 @@ one example per vector:
 
     rounds ≈ examples_k × k / (N × positions)
 
-With N = 46,992, positions = 10 and D6's 1:2:3 split of D7's budget, `rounds`
-therefore scales as k² — 0.54, 2.14 and 4.82 for k = 1, 2, 3. So **at
-`rounds=2` the k=3 vectors are re-used ~2.4 times each while barely half the
-k=1 vectors are ever drawn.** Reuse is not wrong (each draw gets a different
-composed label, D4) but it does mean k=3 contributes the most examples off the
-fewest distinct activations. `rounds=5` for k=3 would even that out for
-~0.15 extra A100-hours and ~3.8 extra GB.
+So `rounds` scales with `k × examples_k`: doubling k halves the groups one
+round yields, and the budget for that k does the rest. `examples_k` is
+whatever the mixture says — do not fold D6's ratio into this rule, since that
+ratio is a hunch specific to this attempt (§1).
+
+Under D6 and D7 as they currently stand, with N = 46,992 and positions = 10,
+the rule gives 0.54, 2.14 and 4.82 for k = 1, 2, 3. So **at `rounds=2` the k=3
+vectors are re-used ~2.4 times each while barely half the k=1 vectors are ever
+drawn.** Reuse is not wrong (each draw gets a different composed label, D4) but
+it does mean k=3 contributes the most examples off the fewest distinct
+activations. `rounds=5` for k=3 would even that out for ~0.15 extra
+A100-hours and ~3.8 extra GB.
 
 **D9 — The architecture is `scalar_affine_plus_low_rank`, rank 64**, per the
 user, with upstream's own hyperparameters (§3).
