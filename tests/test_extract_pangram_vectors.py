@@ -10,18 +10,18 @@ is.
 import pytest
 import torch
 
-from adapter_training.extract_pangram_vectors import (
+from adapter_training.extract_pangram_vectors import extract_pangram_vectors
+from adapter_training.pangram_extraction import (
     DEFAULT_RESPONSE,
     PANGRAM,
-    PANGRAM_PROMPT_TEMPLATE,
     Compliance,
     check_forced_greedy,
-    extract_pangram_vectors,
     mismatch_histogram,
     response_token_ids,
     response_variants,
 )
 from config import DUMMY_BASE_MODEL
+from prompts import PANGRAM_PROMPT_TEMPLATE
 from conftest import (
     FakeModel,
     FakeTokenizer,
