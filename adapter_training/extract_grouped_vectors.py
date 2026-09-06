@@ -39,7 +39,8 @@ def parse_args():
         type=int,
         default=2,
         help="independent disjoint partitions of each split; each round puts "
-        "every topic in exactly one group",
+        "every topic in exactly one group, so this scales how many distinct "
+        "activations exist to train on -- not how many training examples",
     )
     parser.add_argument("--layer", type=int, default=19)
     parser.add_argument(

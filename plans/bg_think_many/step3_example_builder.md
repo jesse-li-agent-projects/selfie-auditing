@@ -95,15 +95,29 @@ its own index space. `Example.vector_index` has to address one tensor. So this
 function concatenates the three (centred) vector tables and offsets each
 directory's indices by the running row count.
 
-- Load each directory with `load_vector_store(dir, center=True, records=...)`
-  (step 2 added the `records` parameter). **Centring stays on**: the whole
-  training distribution is contrastive, per the project's research background,
-  and only *evaluation* uses raw vectors.
+- Load each directory with
+  `load_vector_store(dir, center=True, records=..., means=pooled)` (step 2
+  added all three parameters). **Centring stays on**: the whole training
+  distribution is contrastive, per the project's research background, and only
+  *evaluation* uses raw vectors. `pooled` is
+  `dataset.pooled_position_means([(dir, records), ...])` over all three
+  directories -- **one reference for every k, not each directory's own**
+  (D13). Passing each directory's own means instead would delete the "how many
+  topics are named" component, which is constant within a k and therefore
+  exactly what that directory's mean subtracts.
 - k=1's directory is `outputs/bg_think_l19`, which has `topics.json` and
   `TopicRecord`s, not `groups.json`. Adapt it: a `TopicRecord` is a
   `GroupRecord` with one title. Write that adapter as an explicit named function
   (`group_record_from_topic`), not an inline hack, because it is exactly the
   bridge that makes D1's reuse legitimate.
+- **Apply the `;` filter to the k=1 records too.** Step 2 drops those topics
+  when it forms groups, but `outputs/bg_think_l19` predates that filter and
+  still contains 9 of them, so the k=1 path must drop them itself --
+  `extract_grouped_vectors.drop_semicolon_topics` takes `TopicRecord`s and is
+  the same function. The parent plan's §8 asks for an assert here; the assert
+  belongs *after* the filter, not instead of it, or it fails on the first run.
+  Filtering also keeps the three k slices on the same 46,992-topic population,
+  which is the point of D1's reuse.
 - Split the total by `ratio`. For 1,510,782 and 1:2:3 that is 251,797 / 503,594
   / 755,391 -- confirm your arithmetic reproduces those three numbers, and
   handle the remainder explicitly rather than letting integer division lose a

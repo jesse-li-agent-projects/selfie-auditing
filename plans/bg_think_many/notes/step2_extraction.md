@@ -92,7 +92,12 @@ one GPU job at a time):
    rejected groups (`failures[]` carries each group's `titles`) -- *which*
    groups are dropped matters more than the throughput, because the surviving
    population is then selected on something.
-2. **The two full runs**, sequentially, ~0.15 and ~0.10 A100-hours:
+2. **Confirm `--rounds` first** -- the parent plan's D8 now records that at
+   `rounds=2` each k=3 vector is re-used ~2.4 times by the example budget while
+   half the k=1 vectors go unused, and that `rounds=5` at k=3 would even that
+   out for ~0.15 extra A100-hours and ~3.8 extra GB. The commands below use the
+   plan's current `rounds=2`; do not change it without the user saying so.
+3. **The two full runs**, sequentially, ~0.15 and ~0.10 A100-hours:
 
        python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
            --layer 19 --output-dir bg_think_many_l19_k2 \
@@ -104,7 +109,7 @@ one GPU job at a time):
    Expect 46,990 and 31,326 groups before filtering, and 3.85 GB / 2.57 GB of
    vectors if nothing is rejected. k=1 is **not** extracted: it is
    `outputs/bg_think_l19`, reused per the parent plan's D1.
-3. **Fill in this note**: the Gate 1 numbers, and both runs' realised
+4. **Fill in this note**: the Gate 1 numbers, and both runs' realised
    `keep_rate`, `variant_counts` and group counts. Update `outputs/README.md`
    with the two new directories, as the earlier extractions did.
 

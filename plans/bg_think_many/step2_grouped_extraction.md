@@ -99,6 +99,11 @@ Rules:
 - The topic order *inside* a group is the shuffled order; do not sort it. The
   label order is permuted independently later (D2), so a fixed prompt order here
   is not a bias the adapter can exploit.
+- `--rounds` decides how many distinct **activations** exist, not how many
+  training examples: one group is one forward pass and 10 vectors, and the
+  example count is step 3's sampling budget. See the parent plan's D8 for the
+  `rounds ≈ examples_k × k / (N × positions)` rule and what `rounds=2` implies
+  for k=3.
 
 Expected counts, for k=2 and k=3 with `rounds=2`, over the 47,001 topics that
 survived the single-topic filter (42,320 train / 4,681 val):
