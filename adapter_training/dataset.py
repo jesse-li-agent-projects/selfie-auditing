@@ -15,7 +15,7 @@ them:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -136,6 +136,56 @@ def load_topic_records(directory: Path) -> list[TopicRecord]:
     ]
 
 
+@dataclass(frozen=True)
+class GroupRecord:
+    """One `groups.json` entry: the k topics one extraction prompt named.
+
+    `titles` are in the order the prompt named them, and `labels_per_topic` is
+    aligned with it, so `labels_per_topic[i]` are the labels of `titles[i]`.
+    `start`/`count` address `vectors.pt` exactly as `TopicRecord`'s do -- the
+    group's vectors are `vectors[start : start + count]` and a vector's
+    position index is `i - start`.
+
+    Written to `groups.json`, never `topics.json`, so no single-topic reader
+    can half-understand a grouped directory.
+    """
+
+    titles: tuple[str, ...]
+    labels_per_topic: tuple[tuple[str, ...], ...]
+    split: str
+    start: int
+    count: int
+    variant: str | None = None
+
+
+# What `load_vector_store` needs to centre a directory: anything carrying a
+# `start`/`count` range, whichever extraction style wrote it.
+VectorRecord = TopicRecord | GroupRecord
+
+
+def load_group_records(directory: Path) -> list[GroupRecord]:
+    """Read `groups.json`, in the order the extractor wrote it.
+
+    :param directory: a grouped extraction output directory
+    :return: one record per surviving group
+    """
+    with open(directory / "groups.json") as handle:
+        raw = json.load(handle)
+    return [
+        GroupRecord(
+            titles=tuple(entry["titles"]),
+            labels_per_topic=tuple(
+                tuple(labels) for labels in entry["labels_per_topic"]
+            ),
+            split=entry["split"],
+            start=entry["start"],
+            count=entry["count"],
+            variant=entry.get("variant"),
+        )
+        for entry in raw
+    ]
+
+
 def load_records(
     vectors_dir: Path, restrict_to: Path | None = None
 ) -> list[TopicRecord]:
@@ -155,7 +205,12 @@ def load_records(
     return records
 
 
-def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
+def load_vector_store(
+    directory: Path,
+    *,
+    center: bool = True,
+    records: Sequence[VectorRecord] | None = None,
+) -> VectorStore:
     """Read `vectors.pt`, cast bf16 -> fp32, and optionally centre.
 
     Centering subtracts each vector's own position mean: a vector at index
@@ -166,6 +221,10 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
 
     :param directory: an extraction output directory
     :param center: subtract per-position means (see above)
+    :param records: the records addressing `vectors.pt`, defaulting to the
+        directory's own `topics.json` -- a grouped directory passes its
+        `load_group_records` instead. Centering lives here and only here, so
+        every style reads its vectors through this one function.
     :return: the vectors, fp32, indexed exactly as `vectors.pt` is
     """
     vectors = torch.load(
@@ -186,7 +245,9 @@ def load_vector_store(directory: Path, *, center: bool = True) -> VectorStore:
                 f"{tuple(means.shape)}; expected [n_positions, "
                 f"{vectors.shape[1]}]"
             )
-        for record in load_topic_records(directory):
+        if records is None:
+            records = load_topic_records(directory)
+        for record in records:
             n = record.count
             vectors[record.start : record.start + n] -= means[:n]
     return VectorStore(vectors=vectors, hidden_size=vectors.shape[1])
