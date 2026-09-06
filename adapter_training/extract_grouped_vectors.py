@@ -70,6 +70,14 @@ def parse_args():
     parsed = parser.parse_args()
     if not 1 <= parsed.k <= MAX_BACKGROUND_TOPICS:
         parser.error(f"--k must be 1 to {MAX_BACKGROUND_TOPICS}, got {parsed.k}")
+    if parsed.k == 1 and parsed.rounds > 1:
+        # Every round is a partition, so at k=1 they are all the same
+        # partition into singletons: extra rounds only duplicate prompts.
+        parser.error(
+            f"--k 1 --rounds {parsed.rounds} would extract every topic "
+            f"{parsed.rounds} times; at k=1 a round is one group per topic, "
+            "so pass --rounds 1"
+        )
     return parsed
 
 
@@ -123,6 +131,10 @@ def build_groups(
     puts every topic in exactly one group, and `rounds` rounds cover more topic
     *combinations* without repeating any (topic, position) pair more often than
     that.
+
+    At k=1 a round is one group per topic, so every round is the same
+    partition and `rounds > 1` only duplicates prompts; the CLI rejects that
+    combination.
 
     Groups never cross the train/val split -- a group mixing the two would leak
     val labels into training -- so each split is partitioned separately, and the

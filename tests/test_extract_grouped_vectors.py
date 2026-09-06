@@ -7,6 +7,8 @@ index arithmetic and the records without weights.
 """
 
 import json
+import sys
+from unittest import mock
 
 import pytest
 import torch
@@ -18,6 +20,7 @@ from adapter_training.dataset import (
 )
 from adapter_training.extract_grouped_vectors import (
     build_groups,
+    parse_args,
     drop_semicolon_topics,
     extract_grouped_vectors,
     write_outputs,
@@ -134,6 +137,28 @@ def test_leftovers_shorter_than_k_are_dropped_per_round():
 
     assert len(groups) == 6
     assert all(len(group) == 3 for group in groups)
+
+
+def test_k_one_rounds_are_duplicates_and_the_cli_rejects_them():
+    # At k=1 every round is the same partition into singletons, so extra
+    # rounds buy no new combinations -- they just extract each prompt again.
+    groups = build_groups(pool(10), k=1, rounds=2, seed=0)
+    assert len(groups) == 20
+    assert len({group[0].title for group in groups}) == 10
+
+    argv = [
+        "prog",
+        "--k",
+        "1",
+        "--rounds",
+        "2",
+        "--output-dir",
+        "d",
+        "--source-topics",
+        "s",
+    ]
+    with mock.patch.object(sys, "argv", argv), pytest.raises(SystemExit):
+        parse_args()
 
 
 def test_grouping_is_deterministic_and_seed_dependent():
