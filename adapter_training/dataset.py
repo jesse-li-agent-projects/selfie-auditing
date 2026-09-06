@@ -311,6 +311,18 @@ def load_vector_store(
                 f"{vectors.shape[1]}]"
             )
         if records is None:
+            # One `vectors.pt` has one index space, so two records files
+            # describe it incompatibly -- a directory reused by the other
+            # extraction style keeps the stale one. Guessing `topics.json`
+            # there would centre with another run's ranges, silently.
+            if (directory / "groups.json").exists() and (
+                directory / "topics.json"
+            ).exists():
+                raise ValueError(
+                    f"{directory} holds both groups.json and topics.json, "
+                    "which describe one vectors.pt incompatibly; pass the "
+                    "records to read it by"
+                )
             records = load_topic_records(directory)
         for record in records:
             n = record.count

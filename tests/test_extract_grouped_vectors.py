@@ -298,6 +298,17 @@ def test_load_vector_store_centres_a_grouped_directory(tmp_path):
         assert torch.allclose(rows, raw - means[: group.count], atol=1e-2)
 
 
+def test_a_directory_holding_both_records_files_is_refused(tmp_path):
+    # A grouped run into a directory that already held a single-topic one
+    # leaves the stale topics.json beside the new groups.json. Guessing
+    # between them would centre with another run's start/count ranges.
+    extract_to(tmp_path, [(record("Alpha"), record("Bravo"))])
+    (tmp_path / "topics.json").write_text("[]")
+
+    with pytest.raises(ValueError, match="incompatibly"):
+        load_vector_store(tmp_path)
+
+
 def test_a_grouped_directory_is_not_readable_as_a_single_topic_one(tmp_path):
     # The whole point of writing groups.json instead of topics.json: a reader
     # that does not know about groups must fail, not silently mis-centre.
