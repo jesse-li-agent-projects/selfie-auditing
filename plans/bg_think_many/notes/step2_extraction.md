@@ -1,8 +1,8 @@
 # Step 2 findings: the multi-topic prompt and the grouped extractor
 
-**Code complete; the two real extractions and Gate 1 are not run.** They need
-the 8B on a remote GPU (the local card is 8 GB and `BASE_MODEL_8B` is not in
-the local HF cache). Everything below the "Still to run" heading is pending.
+**Code complete; Gate 1 passed for both k=2 and k=3, and both full
+extractions are done and synced to local `outputs/`.** Run on the remote 8B
+(RTX 4090); see "Gate 1 and the full runs" below for the numbers.
 
 ## The shared-body lift worked
 
@@ -45,7 +45,8 @@ single-topic compliance filter, so it never reached this pool.
 
 ## Group counts, against the step file's predictions
 
-Pool after the filter: 42,313 train / 4,679 val.
+Pool after the filter: 42,313 train / 4,679 val. (These were the file's
+pre-run predictions; realised counts, from the actual full runs, are below.)
 
 | k | train groups | val groups | predicted (train/val) | vectors | bf16 size |
 |---|---|---|---|---|---|
@@ -69,56 +70,48 @@ Harmless (the loader falls back), but it is noise on every run. The 8B's
 absence from that cache is *not* a fault -- only models that fit the local GPU
 are cached, by design.
 
-## Still to run (needs the remote 8B)
+## Gate 1 and the full runs (2026-09-06, remote RTX 4090)
 
-The vectors this step produces are inputs to steps 3 and 6; nothing else in
-the plan is blocked on them. Runbook, on the remote (see the `vastai` skill;
-one GPU job at a time):
+**Gate 1 passed for both k=2 and k=3.** The user extended Gate 1 (originally
+k=3 only) to also require k=2 above ~80%; both probes were run before either
+full extraction, 500 groups each, `--rounds 2 --layer 19`:
 
-1. **Gate 1, first, and stop on it.**
+| k | keep_rate | groups_kept | variant_counts | first_mismatch_histogram |
+|---|---|---|---|---|
+| 2 | 0.998 | 499/500 | 499 with-stop, 0 no-stop | `{3: 1}` |
+| 3 | 0.992 | 496/500 | 496 with-stop, 0 no-stop | `{3: 3, 9: 1}` |
 
-       python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
-           --layer 19 --limit 500 --output-dir bg_think_many_l19_k3_probe \
-           --source-topics bg_think_l19
+Both hold the single-topic run's pattern: every kept group matches the
+with-stop variant, the no-stop variant matches nothing. The handful of
+rejections are early-position mismatches (position 3, once position 9) -- the
+model drifting off-script near the start of the sentence, not the "talks
+about the topics instead" failure this step's plan anticipated as the
+plausible new one. Both probes report `val_groups: 0`, as expected (groups are
+split-major and `--limit` takes a prefix); this does not bias the numbers
+above (see the step file's own note on this).
 
-   Read `outputs/bg_think_many_l19_k3_probe/filter_report.json` and report
-   three things: `keep_rate` (the single-topic run kept 94.7%),
-   `variant_counts` (there, every kept topic matched the with-stop variant and
-   the no-stop variant matched nothing) and `first_mismatch_histogram`. With
-   three topics named, the plausible new failure is the model talking about the
-   topics instead of writing the sentence, which shows up as an early mismatch.
-   **If `keep_rate` is below ~0.80, stop.** Do not run step 2's full
-   extractions and do not start step 6. Report the histogram and a dozen
-   rejected groups (`failures[]` carries each group's `titles`) -- *which*
-   groups are dropped matters more than the throughput, because the surviving
-   population is then selected on something.
+**The two full runs**, sequentially, one GPU job at a time, `--rounds 2
+--layer 19 --source-topics bg_think_l19`:
 
-   The report will say `val_groups: 0`: groups are ordered split-major and
-   `--limit` takes a prefix, so a probe run holds train groups only. That does
-   not bias the three numbers above -- the upstream split is one random
-   population (train and val match on labels per topic and title length) and
-   the groups are shuffled within a split -- but do not read the zero as a
-   fault in the splitting.
-2. **Confirm `--rounds` first** -- the parent plan's D8 now records that at
-   `rounds=2` each k=3 vector is re-used ~2.4 times by the example budget while
-   half the k=1 vectors go unused, and that `rounds=5` at k=3 would even that
-   out for ~0.15 extra A100-hours and ~3.8 extra GB. The commands below use the
-   plan's current `rounds=2`; do not change it without the user saying so.
-3. **The two full runs**, sequentially, ~0.15 and ~0.10 A100-hours:
+| k | groups seen | groups kept | keep_rate | train groups | val groups | vectors.pt |
+|---|---|---|---|---|---|---|
+| 2 | 46,990 | 46,799 | 0.996 | 42,140 | 4,659 | 3.6 GB |
+| 3 | 31,326 | 30,982 | 0.989 | 27,899 | 3,083 | 2.4 GB |
 
-       python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
-           --layer 19 --output-dir bg_think_many_l19_k2 \
-           --source-topics bg_think_l19
-       python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
-           --layer 19 --output-dir bg_think_many_l19_k3 \
-           --source-topics bg_think_l19
+Both `variant_counts` show 100% with-stop, 0% no-stop, matching every prior
+run. Group counts and sizes are close to this file's pre-run predictions
+(42,312/4,678 and 3.85 GB predicted for k=2; 28,208/3,118 and 2.57 GB for
+k=3) -- the small differences are the keep-rate rejections, which the
+predictions could not know in advance.
 
-   Expect 46,990 and 31,326 groups before filtering, and 3.85 GB / 2.57 GB of
-   vectors if nothing is rejected. k=1 is **not** extracted: it is
-   `outputs/bg_think_l19`, reused per the parent plan's D1.
-4. **Fill in this note**: the Gate 1 numbers, and both runs' realised
-   `keep_rate`, `variant_counts` and group counts. Update `outputs/README.md`
-   with the two new directories, as the earlier extractions did.
+k=1 was **not** extracted: it is `outputs/bg_think_l19`, reused per the
+parent plan's D1. `outputs/README.md` now lists the two new directories.
+Checksums of `vectors.pt` were verified to match between the remote and the
+local synced copy for both k=2 and k=3.
 
-Everything the extractor needs is in `--source-topics`; there is no dataset
-download and no network egress on the extraction path.
+Everything the extractor needs is in `--source-topics`; there was no dataset
+download and no network egress on the extraction path. The only manual step
+was materialising `outputs/bg_think_l19/topics.json` (not the 3.9 GB
+`vectors.pt`, which the grouped extractor never reads) onto the remote via a
+direct `scp`, since the remote's `outputs/` only syncs *from* the remote
+automatically, not to it.
