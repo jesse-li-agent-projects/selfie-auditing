@@ -415,7 +415,9 @@ def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
     )
     rescorer = SoftPromptLoss(model, tokenizer, projection, LossConfig())
     for key, (start, end) in (("1", (0, 3)), ("2", (3, 6))):
-        expected = evaluate(store, val_examples[start:end], rescorer, config.batch_size)
+        expected = evaluate(
+            store, val_examples[start:end], rescorer, config.micro_batch_size
+        )
         assert result["val_loss_by_k"][key]["measured_loss"] == pytest.approx(
             expected["measured_loss"]
         )

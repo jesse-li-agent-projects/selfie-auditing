@@ -781,7 +781,7 @@ def train(
 
                 if should_validate:
                     val_result = evaluate(
-                        val_store, val_subsample, scorer, config.batch_size
+                        val_store, val_subsample, scorer, config.micro_batch_size
                     )
                     val_loss = val_result["measured_loss"]
                     record["val_loss"] = val_loss
@@ -817,7 +817,7 @@ def train(
                         best_val_loss=best_val_loss,
                     )
 
-    final_result = evaluate(val_store, val_examples, scorer, config.batch_size)
+    final_result = evaluate(val_store, val_examples, scorer, config.micro_batch_size)
     final_report = {
         **final_result,
         "best_val_loss": best_val_loss if best_val_loss < float("inf") else None,
@@ -827,7 +827,7 @@ def train(
     if val_k_ranges is not None:
         final_report["val_loss_by_k"] = {
             str(k): evaluate(
-                val_store, val_examples[start:end], scorer, config.batch_size
+                val_store, val_examples[start:end], scorer, config.micro_batch_size
             )
             for k, (start, end) in sorted(val_k_ranges.items())
         }
