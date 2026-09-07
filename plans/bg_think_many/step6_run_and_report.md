@@ -18,35 +18,14 @@ words, here or in the report.
 
 ## 0. Code that must land before the run
 
-Three gaps were found in a pre-run audit (2026-09-07). None needs GPU, all are
-prerequisites of the sections below, and none of them is a hyperparameter
-change.
+**`step6a_pre_run_code.md`.** An audit of this file against the code
+(2026-09-07) found four things step 6 assumes and the codebase does not have:
+per-k validation loss for Gate 2, recomputed and equally-weighted pooled means
+(D13, D14), pooled centring in the retrieval eval for §4, and a vector path that
+does not need ~80 GiB of host RAM.
 
-**(a) Per-k validation loss.** Gate 2 below asks for it and nothing computes it.
-`load_grouped_train_and_val` discards `build_mixture`'s val `k_ranges` (it keeps
-only the train ones, for `run_config.json`), and `final_eval.json` holds a
-single whole-mixture `measured_loss`. Keep the val ranges, and have the final
-evaluation score each k-slice as well as the whole pool, writing both into
-`final_eval.json`. `evaluate()` already takes an example list, so this is a
-slice and three extra calls. **No retraining is needed if this is missed**:
-`build_mixture` is seeded per k and split (`f"{seed}-k{k}-{split}"`), so the val
-pool rebuilds exactly from `run_config.json` and a checkpoint can be scored
-per-k afterwards. Doing it in the trainer is preferred only because it avoids
-re-loading the vectors.
-
-**(b) Pooled centring in the retrieval eval.** Training centres every k against
-one pooled reference (D13), but `evaluate_retrieval.py --center` has no way to
-pass one -- `load_vector_store`'s `means` parameter defaults to the directory's
-own `position_means.pt`. Scoring the adapter under per-directory centring
-measures it in a condition it never trained in. Give the eval the same pooled
-reference the trainer builds, and let one invocation read several extraction
-directories so §4's mixture run is one pass with a per-k breakdown rather than
-three passes that cannot share an index.
-
-**(c) A memory-bounded vector path.** See `step3_example_builder.md` §3. The
-concatenated fp32 table is ~26 GiB and a run builds two of them; the fix is to
-stop building them at all, and it is a prerequisite unless the booked machine
-has ~80 GiB of host RAM to spare.
+None of it needs a GPU, so it is a separate step and a separate agent. Do not
+book GPU time until it has merged.
 
 ## 1. Preconditions
 
@@ -86,12 +65,14 @@ every (val vector, label) pair, 79,391 val labels x 10 positions = 793,910. A
 k=3 group spans ~29,000 composed labels per position, so the same exhaustive
 pool does not exist here.
 
-**300,000 is a proposal, not a derived number; confirm it before the run.** It
-splits 1:2:3 into 50,000 / 100,000 / 150,000. The val side holds ~46,800 k=1,
+**300,000, confirmed with the user (2026-09-07).** It is a judgement call, not a
+derived number. It splits 1:2:3 into 50,000 / 100,000 / 150,000. The val side holds ~46,800 k=1,
 ~46,600 k=2 and ~77,100 k=3 vectors, so that is roughly one to two examples per
 val vector at every k, and the k=1 slice is 10x `--val-subsample`, which is
 enough to compare against 1.4844. It is also cheaper than `bg_think`'s final
-eval, not dearer.
+eval, not dearer. Note this sizes the **loss** pool only; Gate 3's retrieval
+fraction is sized by the val groups in the extraction directories and is
+untouched by this flag.
 
 Use `--resume` if it crashes. It restores the projection, the optimizer, the
 step and the best-val from `run_dir/resume.pt`, written on every validation

@@ -82,12 +82,15 @@ hyperparameter changes are needed for the architecture switch**.
 | 3 | `step3_example_builder.md` | no | grouped example construction and the 1:2:3 sampler |
 | 4 | `step4_trainer_logging.md` | no | `--log-every`, decoupled from `--validate-every` |
 | 5 | `step5_set_retrieval_eval.md` | no | set-level recall |
+| 6a | `step6a_pre_run_code.md` | no | the four code gaps step 6 assumes away |
 | 6 | `step6_run_and_report.md` | yes, large | the training run, the evaluations, the report |
 
-Steps 1, 3, 4 and 5 need no GPU and no network. Steps 1, 4 and 5 are independent
-of each other and of everything else, so they can be handed out in parallel.
-Step 3 depends on step 1's decision and on step 2's output format (not its
-vectors). Step 6 depends on all of them.
+Steps 1, 3, 4, 5 and 6a need no GPU and no network. Steps 1, 4 and 5 are
+independent of each other and of everything else, so they can be handed out in
+parallel. Step 3 depends on step 1's decision and on step 2's output format (not
+its vectors). Step 6a was added after steps 1-5 merged, from an audit of step 6
+against the code; it depends on step 3 and step 5. Step 6 depends on all of
+them.
 
 **One agent at a time on GPU work** (project rule): steps 2 and 6 must not run
 concurrently with each other or with another agent's GPU job.
@@ -214,16 +217,22 @@ the records actually used**, which costs under a minute on CPU and removes a
 mismatch where a filtered record count weighted an unfiltered mean
 (`step3_example_builder.md` §3).
 
-**Open: how the three k are weighted in that mean.** Weighting by vector count
-is what the code does now, and at position 0 that is 0.274 : 0.273 : 0.452 --
-neither the 1:2:3 dataset ratio nor an even split, but whatever D8's round
-counts happened to produce. Measured, the choice moves the reference by ~0.20 in
+**D14 -- the three k are weighted equally in that mean.** Confirmed with the
+user (2026-09-07). Weighting by vector count is what the code did first, and at
+position 0 that is 0.274 : 0.273 : 0.452 -- neither the 1:2:3 dataset ratio nor
+an even split, but whatever D8's round counts happened to produce.
+
+The choice is not about accuracy. Measured, it moves the reference by ~0.20 in
 L2 against a within-k spread of ~2.9-4.1 and between-k offsets of 0.61-1.50, and
 it **cannot change the between-k contrasts at all** (`mean_k - mean_j` does not
-depend on the reference), so D13's stated purpose is served either way. The
-argument for weighting each k equally is stability, not accuracy: it makes the
-centring reference a function of the three populations rather than of the round
-counts, which D8 says move whenever D6 or D7 moves. Confirm before the run.
+depend on the reference), so D13's purpose is served either way. It is about
+stability: an equal weighting makes the centring reference a function of the
+three populations rather than of the round counts, which D8 says move whenever
+D6 or D7 moves. Under count weighting a re-extraction would silently shift the
+training distribution's origin for a reason unrelated to modelling.
+
+Within a k, positions keep their own counts -- D14 is about how the three
+populations are combined, not about how a population's own positions are.
 
 **Every consumer must use the pooled mean, not just the trainer** -- an
 evaluation that centres against one directory's own mean is scoring the adapter

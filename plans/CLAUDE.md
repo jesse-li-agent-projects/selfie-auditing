@@ -26,8 +26,9 @@ single-topic framing those archived plans used.
 - bg_think_many/bg_think_many.md
     - The live successor: train a layer-19 rank-64 adapter on prompts that name
       one, two or three background topics at once, mixed 1:2:3 by example count.
-      Parent plan plus six numbered execution steps beside it; read the parent's
-      design decisions (D1-D12) before touching any step.
+      Parent plan plus the numbered execution steps beside it; read the parent's
+      design decisions (D1-D14) before touching any step. Steps 1-5 are merged;
+      step 6a (code, no GPU) is a prerequisite of step 6 (the training run).
 
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
