@@ -14,6 +14,7 @@ against Llama-3.2-1B (`config.DUMMY_BASE_MODEL`), run under `gpu-exec`.
 
 import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -31,8 +32,11 @@ from adapter_training.train_adapter import (
     compute_target_lengths,
     compute_total_steps,
     example_stream,
+    load_grouped_train_and_val,
     lr_at_step,
     optimizer_step,
+    parse_mixture_ratio,
+    parse_vectors_k,
     seed_everything,
     train,
 )
@@ -589,3 +593,164 @@ def test_twenty_step_smoke_run_against_the_1b_model(tmp_path):
     adapter = load_adapter(str(run_dir / "last.pt"), device="cpu")
     assert adapter.model_dim == hidden_size
     assert result["n_examples"] == len(val_examples)
+
+
+# --- --vectors-k / --mixture-ratio wiring (bg_think_many step 3) -----------
+
+
+def test_parse_vectors_k_maps_k_to_outputs_prefixed_paths():
+    directories = parse_vectors_k(["1=bg_think_l19", "2=bg_think_many_l19_k2"])
+    assert directories == {
+        1: Path("outputs/bg_think_l19"),
+        2: Path("outputs/bg_think_many_l19_k2"),
+    }
+
+
+def test_parse_vectors_k_rejects_a_repeated_k():
+    with pytest.raises(ValueError, match="twice"):
+        parse_vectors_k(["1=a", "1=b"])
+
+
+def test_parse_vectors_k_rejects_a_malformed_entry():
+    with pytest.raises(ValueError, match="K=DIR"):
+        parse_vectors_k(["1"])
+
+
+def test_parse_mixture_ratio_matches_ks_order():
+    assert parse_mixture_ratio("1:2:3", [1, 2, 3]) == {1: 1, 2: 2, 3: 3}
+
+
+def test_parse_mixture_ratio_rejects_a_count_mismatch():
+    with pytest.raises(ValueError, match="entries"):
+        parse_mixture_ratio("1:2:3", [1, 2])
+
+
+def _write_topic_dir(directory, records, vectors, means):
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(vectors, directory / "vectors.pt")
+    torch.save(means, directory / "position_means.pt")
+    with open(directory / "topics.json", "w") as handle:
+        json.dump(
+            [
+                {
+                    "title": r.title,
+                    "labels": list(r.labels),
+                    "split": r.split,
+                    "start": r.start,
+                    "count": r.count,
+                }
+                for r in records
+            ],
+            handle,
+        )
+
+
+def _write_group_dir(directory, records, vectors, means):
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(vectors, directory / "vectors.pt")
+    torch.save(means, directory / "position_means.pt")
+    with open(directory / "groups.json", "w") as handle:
+        json.dump(
+            [
+                {
+                    "titles": list(r.titles),
+                    "labels_per_topic": [list(labels) for labels in r.labels_per_topic],
+                    "split": r.split,
+                    "start": r.start,
+                    "count": r.count,
+                }
+                for r in records
+            ],
+            handle,
+        )
+
+
+def _six_label_topic(prefix):
+    return [f"{prefix} label {i} " + "x" * i for i in range(6)]
+
+
+def test_load_grouped_train_and_val_builds_the_1_2_3_mixture(tmp_path):
+    from adapter_training.dataset import GroupRecord
+
+    k1 = [
+        TopicRecord("K1Train", _six_label_topic("k1t"), "train", start=0, count=4),
+        TopicRecord("K1Val", _six_label_topic("k1v"), "val", start=4, count=4),
+    ]
+    v1 = torch.zeros(8, HIDDEN, dtype=torch.bfloat16)
+    v1[0:4], v1[4:8] = 11.0, 12.0
+    _write_topic_dir(tmp_path / "k1", k1, v1, torch.zeros(4, HIDDEN))
+
+    k2 = [
+        GroupRecord(
+            ("K2TrainA", "K2TrainB"),
+            (_six_label_topic("k2ta"), _six_label_topic("k2tb")),
+            "train",
+            start=0,
+            count=4,
+        ),
+        GroupRecord(
+            ("K2ValA", "K2ValB"),
+            (_six_label_topic("k2va"), _six_label_topic("k2vb")),
+            "val",
+            start=4,
+            count=4,
+        ),
+    ]
+    v2 = torch.zeros(8, HIDDEN, dtype=torch.bfloat16)
+    v2[0:4], v2[4:8] = 21.0, 22.0
+    _write_group_dir(tmp_path / "k2", k2, v2, torch.zeros(4, HIDDEN))
+
+    k3 = [
+        GroupRecord(
+            ("K3TrainA", "K3TrainB", "K3TrainC"),
+            (
+                _six_label_topic("k3ta"),
+                _six_label_topic("k3tb"),
+                _six_label_topic("k3tc"),
+            ),
+            "train",
+            start=0,
+            count=4,
+        ),
+        GroupRecord(
+            ("K3ValA", "K3ValB", "K3ValC"),
+            (
+                _six_label_topic("k3va"),
+                _six_label_topic("k3vb"),
+                _six_label_topic("k3vc"),
+            ),
+            "val",
+            start=4,
+            count=4,
+        ),
+    ]
+    v3 = torch.zeros(8, HIDDEN, dtype=torch.bfloat16)
+    v3[0:4], v3[4:8] = 31.0, 32.0
+    _write_group_dir(tmp_path / "k3", k3, v3, torch.zeros(4, HIDDEN))
+
+    directories = {1: tmp_path / "k1", 2: tmp_path / "k2", 3: tmp_path / "k3"}
+    train_store, train_examples, val_store, val_examples, k_ranges = (
+        load_grouped_train_and_val(
+            directories,
+            ratio={1: 1, 2: 2, 3: 3},
+            budget_examples=60,
+            val_total_examples=30,
+            seed=0,
+        )
+    )
+
+    assert len(train_examples) == 60
+    assert len(val_examples) == 30
+    assert {k: end - start for k, (start, end) in k_ranges.items()} == {
+        1: 10,
+        2: 20,
+        3: 30,
+    }
+    # Every train example must address a train row (11.0/21.0/31.0), never a
+    # val one (12.0/22.0/32.0) -- split purity across the concatenated store.
+    train_values = {
+        train_store.vectors[e.vector_index, 0].item() for e in train_examples
+    }
+    assert train_values == {11.0, 21.0, 31.0}
+    val_values = {val_store.vectors[e.vector_index, 0].item() for e in val_examples}
+    assert val_values == {12.0, 22.0, 32.0}

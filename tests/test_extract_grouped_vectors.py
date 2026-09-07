@@ -316,3 +316,44 @@ def test_a_grouped_directory_is_not_readable_as_a_single_topic_one(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         load_vector_store(tmp_path)
+
+
+def test_first_round_resumes_a_raised_round_budget():
+    # The property the whole resume path rests on: rounds are seeded
+    # independently of how many were asked for, so a 0..2 run plus a 2..5 run
+    # holds exactly the groups one 0..5 run would have.
+    topics = pool(12, "train") + pool(9, "val")
+
+    def titles(**kwargs):
+        return [
+            tuple(topic.title for topic in group)
+            for group in build_groups(topics, k=3, seed=0, **kwargs)
+        ]
+
+    done = titles(rounds=2)
+    resumed = titles(rounds=5, first_round=2)
+
+    assert sorted(done + resumed) == sorted(titles(rounds=5))
+    assert len(resumed) == len(titles(rounds=3))
+
+
+def test_first_round_outside_the_round_range_is_rejected():
+    for first_round in (-1, 2):
+        with pytest.raises(ValueError, match="first_round"):
+            build_groups(pool(9), k=3, rounds=2, seed=0, first_round=first_round)
+
+    argv = [
+        "prog",
+        "--k",
+        "3",
+        "--rounds",
+        "2",
+        "--first-round",
+        "2",
+        "--output-dir",
+        "d",
+        "--source-topics",
+        "s",
+    ]
+    with mock.patch.object(sys, "argv", argv), pytest.raises(SystemExit):
+        parse_args()

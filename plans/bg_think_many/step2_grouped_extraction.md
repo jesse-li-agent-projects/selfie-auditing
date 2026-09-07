@@ -105,13 +105,13 @@ Rules:
   `rounds ≈ examples_k × k / (N × positions)` rule and what `rounds=2` implies
   for k=3.
 
-Expected counts, for k=2 and k=3 with `rounds=2`, over the 47,001 topics that
+Expected counts, per round of grouping, over the 47,001 topics that
 survived the single-topic filter (42,320 train / 4,681 val):
 
-| k | train groups | val groups |
-|---|---|---|
-| 2 | 42,320 | 4,680 |
-| 3 | 28,212 | 3,120 |
+| k | train groups | val groups | rounds (D8) |
+|---|---|---|---|
+| 2 | 21,160 | 2,340 | 2 |
+| 3 | 14,106 | 1,560 | 5 |
 
 **Drop the topics with a `;` in a label** (parent plan §8) before grouping.
 This step owns that filter: it is the first step that decides which topics
@@ -130,7 +130,7 @@ not secretly a difference in which topics they cover.
 rules and `extract_pangram_vectors.py`'s own header).
 
     python -m adapter_training.extract_grouped_vectors \
-        --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
+        --k 3 --rounds 5 --layer 19 --output-dir bg_think_many_l19_k3 \
         --source-topics bg_think_l19
 
 **Reuse, do not reimplement.** The compliance filter, the two response variants,
@@ -182,12 +182,18 @@ Only after Gate 1 passes. Two runs, one GPU, sequentially:
 
     python -m adapter_training.extract_grouped_vectors --k 2 --rounds 2 \
         --layer 19 --output-dir bg_think_many_l19_k2 --source-topics bg_think_l19
-    python -m adapter_training.extract_grouped_vectors --k 3 --rounds 2 \
+    python -m adapter_training.extract_grouped_vectors --k 3 --rounds 5 \
         --layer 19 --output-dir bg_think_many_l19_k3 --source-topics bg_think_l19
 
 (`--output-dir` is written under `outputs/`, which the argument type prepends.)
 
-Expect ~0.15 and ~0.10 A100-hours, and ~3.9 GB and ~2.6 GB of vectors. The k=1
+**k=3 takes five rounds, not two.** The parent plan's D8 rule gives 0.54, 2.14
+and 4.82 for k = 1, 2, 3: one round of k=3 groups is only a third as many
+activations, so two rounds would have the k=3 examples re-using each vector
+~2.4 times while half the k=1 vectors go undrawn. `--rounds` is per k, and only
+k=2 wants 2.
+
+Expect ~0.15 and ~0.25 A100-hours, and ~3.9 GB and ~6.4 GB of vectors. The k=1
 population is **not** extracted: it is `outputs/bg_think_l19`, reused per D1.
 
 ## 7. Tests

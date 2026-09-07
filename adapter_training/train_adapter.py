@@ -36,6 +36,40 @@ from pathlib import Path
 from config import BASE_MODEL_8B
 
 
+def parse_vectors_k(values: list[str]) -> dict[int, Path]:
+    """Parse repeated `--vectors-k K=DIR` values into `{k: outputs/DIR}`.
+
+    :param values: raw `"K=DIR"` strings, one per `--vectors-k` occurrence
+    :raises ValueError: on a malformed entry or a repeated k
+    """
+    directories: dict[int, Path] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"--vectors-k expects K=DIR, got {value!r}")
+        key, _, raw_dir = value.partition("=")
+        k = int(key)
+        if k in directories:
+            raise ValueError(f"--vectors-k given twice for k={k}")
+        directories[k] = Path("outputs") / raw_dir
+    return directories
+
+
+def parse_mixture_ratio(text: str, ks: list[int]) -> dict[int, int]:
+    """Parse `"1:2:3"` into `{k: weight}`, in `ks`' order.
+
+    :param text: colon-separated weights, smallest-k-first
+    :param ks: the k values --vectors-k supplied, sorted
+    :raises ValueError: if the weight count does not match `len(ks)`
+    """
+    parts = text.split(":")
+    if len(parts) != len(ks):
+        raise ValueError(
+            f"--mixture-ratio has {len(parts)} entries but --vectors-k gave "
+            f"{len(ks)} k values ({ks})"
+        )
+    return {k: int(weight) for k, weight in zip(ks, parts)}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train a SelfIE adapter projection to an examples-seen budget."
@@ -43,8 +77,33 @@ def parse_args():
     parser.add_argument(
         "--vectors",
         type=lambda value: Path("outputs") / value,
-        required=True,
-        help="extraction output dir, written under outputs/ (implicitly prepended)",
+        default=None,
+        help="extraction output dir, written under outputs/ (implicitly prepended). "
+        "Mutually exclusive with --vectors-k",
+    )
+    parser.add_argument(
+        "--vectors-k",
+        action="append",
+        default=None,
+        metavar="K=DIR",
+        help="one extraction dir per k, e.g. '--vectors-k 1=bg_think_l19 "
+        "--vectors-k 2=bg_think_many_l19_k2 --vectors-k 3=bg_think_many_l19_k3' "
+        "(DIR written under outputs/, implicitly prepended). Repeatable. "
+        "Mutually exclusive with --vectors",
+    )
+    parser.add_argument(
+        "--mixture-ratio",
+        default="1:2:3",
+        help="colon-separated example-count ratio, in the same k order as "
+        "--vectors-k's smallest-to-largest k (bg_think_many's D6 default 1:2:3)",
+    )
+    parser.add_argument(
+        "--val-total-examples",
+        type=int,
+        default=None,
+        help="--vectors-k only: size of the full val pool sampled for "
+        "final_eval.json (periodic validation still subsamples --val-subsample "
+        "from it). Required with --vectors-k",
     )
     parser.add_argument(
         "--run-dir",
@@ -134,7 +193,21 @@ def parse_args():
         help="off by default: a ~1.5x tax that also nulls past_key_values, "
         "which blocks the prefix cache",
     )
-    return parser.parse_args()
+    parsed = parser.parse_args()
+
+    if (parsed.vectors is None) == (parsed.vectors_k is None):
+        parser.error("exactly one of --vectors or --vectors-k is required")
+    if parsed.vectors_k is not None:
+        try:
+            parsed.vectors_k = parse_vectors_k(parsed.vectors_k)
+            parsed.mixture_ratio = parse_mixture_ratio(
+                parsed.mixture_ratio, sorted(parsed.vectors_k)
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        if parsed.val_total_examples is None:
+            parser.error("--val-total-examples is required with --vectors-k")
+    return parsed
 
 
 # Parsed before the heavy imports below, so `--help` costs no torch import.
@@ -161,6 +234,7 @@ from adapter_training.dataset import (
     load_vector_store,
     pooled_vector_store,
 )
+from adapter_training.grouped_examples import build_mixture
 from adapter_training.loss import (
     LossConfig,
     SoftPromptLoss,
@@ -711,17 +785,37 @@ def _git_commit() -> str | None:
         return None
 
 
-def write_run_config(run_dir: Path, args, *, total_steps: int) -> None:
+def write_run_config(
+    run_dir: Path,
+    args,
+    *,
+    total_steps: int,
+    mixture_k_ranges: dict[int, tuple[int, int]] | None = None,
+) -> None:
     """`run_config.json`: every CLI arg, the resolved step count, and enough
-    provenance (the vectors dir, its `position_means.pt`, the git commit) to
-    trace a checkpoint back to the centring it was trained under.
+    provenance (the vectors dir(s), their `position_means.pt`, the git
+    commit) to trace a checkpoint back to the centring it was trained under.
+
+    :param mixture_k_ranges: `--vectors-k` runs only -- each k's `(start,
+        end)` slice of the train example list, so a later step (D12's per-k
+        validation loss) does not have to recompute the mixture to find them
     """
     config = {
         key: (str(value) if isinstance(value, Path) else value)
         for key, value in vars(args).items()
     }
     config["resolved_total_steps"] = total_steps
-    config["position_means_path"] = str(args.vectors / "position_means.pt")
+    if args.vectors_k is not None:
+        config["vectors_k"] = {k: str(d) for k, d in args.vectors_k.items()}
+        config["position_means_paths"] = {
+            k: str(d / "position_means.pt") for k, d in args.vectors_k.items()
+        }
+        if mixture_k_ranges is not None:
+            config["mixture_k_ranges"] = {
+                str(k): list(v) for k, v in mixture_k_ranges.items()
+            }
+    else:
+        config["position_means_path"] = str(args.vectors / "position_means.pt")
     config["git_commit"] = _git_commit()
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "run_config.json", "w") as handle:
@@ -759,6 +853,41 @@ def load_train_and_val(
     return store, train_examples, store, val_examples
 
 
+def load_grouped_train_and_val(
+    directories: dict[int, Path],
+    *,
+    ratio: dict[int, int],
+    budget_examples: int,
+    val_total_examples: int,
+    seed: int,
+):
+    """The `--vectors-k` counterpart to `load_train_and_val`: the k=1:2:3
+    mixture (bg_think_many D6), sampled once per split (`build_mixture`).
+
+    Train and val each get their own concatenated `VectorStore` -- the same
+    directories loaded and centred twice, at the cost `step3_example_builder.md`
+    §3 documents, rather than one store shared across splits complicating the
+    indexing for no memory saving worth the complexity at this scale.
+
+    :param directories: k -> extraction output directory
+    :param ratio: relative example count per k (D6)
+    :param budget_examples: total train examples across every k
+    :param val_total_examples: total val examples across every k -- the
+        "full" val pool `train()` scores at the end (`final_eval.json`);
+        periodic validation subsamples `--val-subsample` from it
+    :param seed: seeds train and val sampling independently
+    :return: `(train_store, train_examples, val_store, val_examples,
+        train_k_ranges)`
+    """
+    train_store, train_examples, train_k_ranges = build_mixture(
+        directories, "train", budget_examples, ratio=ratio, seed=seed
+    )
+    val_store, val_examples, _val_k_ranges = build_mixture(
+        directories, "val", val_total_examples, ratio=ratio, seed=f"{seed}-val"
+    )
+    return train_store, train_examples, val_store, val_examples, train_k_ranges
+
+
 def main(args) -> dict:
     from model_loading import load_base_model, load_tokenizer, resolve_device
 
@@ -769,11 +898,28 @@ def main(args) -> dict:
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
-    train_store, train_examples, val_store, val_examples = load_train_and_val(
-        args.vectors,
-        pool_positions=args.pool_positions,
-        restrict_to=args.restrict_topics_to,
-    )
+    mixture_k_ranges = None
+    if args.vectors_k is not None:
+        if args.pool_positions or args.restrict_topics_to is not None:
+            raise ValueError(
+                "--pool-positions and --restrict-topics-to are not supported "
+                "with --vectors-k"
+            )
+        train_store, train_examples, val_store, val_examples, mixture_k_ranges = (
+            load_grouped_train_and_val(
+                args.vectors_k,
+                ratio=args.mixture_ratio,
+                budget_examples=args.budget_examples,
+                val_total_examples=args.val_total_examples,
+                seed=args.seed,
+            )
+        )
+    else:
+        train_store, train_examples, val_store, val_examples = load_train_and_val(
+            args.vectors,
+            pool_positions=args.pool_positions,
+            restrict_to=args.restrict_topics_to,
+        )
     print(
         f"{len(train_examples)} train examples, {len(val_examples)} val examples "
         f"({'pooled' if args.pool_positions else 'per-position'})"
@@ -781,7 +927,12 @@ def main(args) -> dict:
 
     config = TrainConfig.from_args(args)
     total_steps = compute_total_steps(config.budget_examples, config.batch_size)
-    write_run_config(args.run_dir, args, total_steps=total_steps)
+    write_run_config(
+        args.run_dir,
+        args,
+        total_steps=total_steps,
+        mixture_k_ranges=mixture_k_ranges,
+    )
 
     result = train(
         model=model,

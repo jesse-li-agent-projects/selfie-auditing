@@ -3,7 +3,7 @@ sentence while thinking about k topics at once (k = 1, 2 or 3), and keeps one
 vector per sentence token of the group.
 
     python -m adapter_training.extract_grouped_vectors \
-        --k 3 --rounds 2 --layer 19 --output-dir bg_think_many_l19_k3 \
+        --k 3 --rounds 5 --layer 19 --output-dir bg_think_many_l19_k3 \
         --source-topics bg_think_l19
 
 The topic pool is another extraction run's `topics.json` (`--source-topics`),
@@ -12,6 +12,9 @@ compliance filter, so every k shares one topic population and a difference
 between the k slices is not secretly a difference in coverage. That directory
 is also the k=1 population itself -- the one-topic prompt is byte-identical to
 the single-topic one -- so k=1 is never re-extracted.
+
+`--first-round` extracts only the rounds from there on, so raising a round
+budget costs only the new rounds; the directories are combined downstream.
 
 Records go to `groups.json` (`dataset.GroupRecord`), never `topics.json`.
 Everything else -- the compliance filter, the forced-response variants, the
@@ -41,6 +44,15 @@ def parse_args():
         help="independent disjoint partitions of each split; each round puts "
         "every topic in exactly one group, so this scales how many distinct "
         "activations exist to train on -- not how many training examples",
+    )
+    parser.add_argument(
+        "--first-round",
+        type=int,
+        default=0,
+        help="skip the rounds before this one. Rounds are seeded "
+        "independently, so extracting [first_round, rounds) gives exactly the "
+        "groups a full 0..rounds run would add on top of a 0..first_round one "
+        "-- this is how a round budget is revised without re-extracting",
     )
     parser.add_argument("--layer", type=int, default=19)
     parser.add_argument(
@@ -72,6 +84,11 @@ def parse_args():
     parsed = parser.parse_args()
     if not 1 <= parsed.k <= MAX_BACKGROUND_TOPICS:
         parser.error(f"--k must be 1 to {MAX_BACKGROUND_TOPICS}, got {parsed.k}")
+    if not 0 <= parsed.first_round < parsed.rounds:
+        parser.error(
+            f"--first-round must be at least 0 and less than --rounds "
+            f"({parsed.rounds}), got {parsed.first_round}"
+        )
     if parsed.k == 1 and parsed.rounds > 1:
         # Every round is a partition, so at k=1 they are all the same
         # partition into singletons: extra rounds only duplicate prompts.
@@ -124,7 +141,11 @@ def drop_semicolon_topics(
 
 
 def build_groups(
-    topics: Sequence[TopicRecord], k: int, rounds: int, seed: int
+    topics: Sequence[TopicRecord],
+    k: int,
+    rounds: int,
+    seed: int,
+    first_round: int = 0,
 ) -> list[tuple[TopicRecord, ...]]:
     """Partition each split's topics into groups of k, `rounds` times over.
 
@@ -138,6 +159,11 @@ def build_groups(
     partition and `rounds > 1` only duplicates prompts; the CLI rejects that
     combination.
 
+    Each round is seeded independently of how many rounds are asked for, so
+    the rounds `[first_round, rounds)` are exactly the groups a full
+    `0..rounds` run would add on top of a `0..first_round` one. Raising a
+    round budget therefore costs only the new rounds.
+
     Groups never cross the train/val split -- a group mixing the two would leak
     val labels into training -- so each split is partitioned separately, and the
     result is deterministic given `(topics, k, rounds, seed)`.
@@ -148,18 +174,23 @@ def build_groups(
 
     :param topics: topics carrying a `split` attribute
     :param k: topics per group
-    :param rounds: independent partitions per split
+    :param rounds: partition the split this many times, counting from round 0
+    :param first_round: skip the rounds before this one
     :return: groups, split-major then round-major
     """
     if k < 1:
         raise ValueError(f"build_groups: k must be at least 1, got {k}")
     if rounds < 1:
         raise ValueError(f"build_groups: rounds must be at least 1, got {rounds}")
+    if not 0 <= first_round < rounds:
+        raise ValueError(
+            f"build_groups: first_round must be in [0, {rounds}), got {first_round}"
+        )
 
     groups: list[tuple[TopicRecord, ...]] = []
     for split in sorted({topic.split for topic in topics}):
         pool = [topic for topic in topics if topic.split == split]
-        for round_index in range(rounds):
+        for round_index in range(first_round, rounds):
             order = list(pool)
             random.Random(f"{seed}-round-{round_index}").shuffle(order)
             groups.extend(
@@ -216,10 +247,13 @@ def write_outputs(
     model_name: str,
     k: int,
     rounds: int,
+    first_round: int = 0,
     provenance: dict | None = None,
 ) -> None:
     """The shared forced-response artefacts, in the grouped shape.
 
+    :param first_round: recorded beside `rounds`, so a reader can tell which
+        rounds this directory holds
     :param provenance: extra `positions.json` fields recording where the topic
         pool came from and what was filtered out of it
     """
@@ -237,7 +271,12 @@ def write_outputs(
         ),
         unit="groups",
         records_file="groups.json",
-        extra_positions={"k": k, "rounds": rounds, **provenance},
+        extra_positions={
+            "k": k,
+            "rounds": rounds,
+            "first_round": first_round,
+            **provenance,
+        },
     )
 
 
@@ -251,8 +290,11 @@ def main(args) -> Path:
         f"dropped {len(dropped)} with a ';' in a label"
     )
 
-    groups = build_groups(topics, args.k, args.rounds, args.seed)
-    print(f"Built {len(groups)} groups of {args.k} ({args.rounds} rounds)")
+    groups = build_groups(topics, args.k, args.rounds, args.seed, args.first_round)
+    print(
+        f"Built {len(groups)} groups of {args.k} "
+        f"(rounds {args.first_round} to {args.rounds - 1})"
+    )
     if args.limit is not None:
         groups = groups[: args.limit]
         print(f"Limited to the first {len(groups)}, which are all train split")
@@ -276,6 +318,7 @@ def main(args) -> Path:
         args.model,
         args.k,
         args.rounds,
+        args.first_round,
         provenance={
             "source_topics": str(args.source_topics),
             "seed": args.seed,
