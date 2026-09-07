@@ -12,6 +12,7 @@ The `hf_cache`-marked test is the plan's ~20-step end-to-end smoke run
 against Llama-3.2-1B (`config.DUMMY_BASE_MODEL`), run under `gpu-exec`.
 """
 
+import itertools
 import json
 import math
 from pathlib import Path
@@ -335,6 +336,7 @@ def run_tiny_training(
         seed=seed,
         val_subsample=4,
         validate_every=2,
+        log_every=2,
         buffer_batches=2,
         max_steps=max_steps,
     )
@@ -354,6 +356,228 @@ def run_tiny_training(
     )
     checkpoint = torch.load(run_dir / "last.pt", weights_only=False)
     return checkpoint["projection_state"], result
+
+
+def run_configurable_training(
+    tmp_path_factory,
+    seed,
+    *,
+    budget_examples,
+    batch_size,
+    log_every,
+    validate_every,
+    run_dir=None,
+    max_steps=None,
+    resume=False,
+    val_subsample=4,
+):
+    """Like `run_tiny_training`, but with `log_every`/`validate_every`/
+    `budget_examples`/`batch_size` exposed -- what the step-4 logging tests
+    need to control record counts precisely."""
+    scorer_seed = 123
+    torch.manual_seed(scorer_seed)
+    tokenizer = FakeCharTokenizer()
+    embed = nn.Embedding(4000, HIDDEN)
+    embed.weight.requires_grad_(False)
+    lm_head = nn.Linear(HIDDEN, 512, bias=False)
+    lm_head.weight.requires_grad_(False)
+    model = SimpleNamespace(
+        model=ToyBaseModel(), lm_head=lm_head, get_input_embeddings=lambda: embed
+    )
+
+    store, train_examples, val_examples = build_tiny_dataset()
+    config = TrainConfig(
+        budget_examples=budget_examples,
+        batch_size=batch_size,
+        micro_batch_size=batch_size,
+        projection_type="scalar_affine",
+        lr=0.05,
+        init_scale=1.0,
+        warmup_steps=1,
+        grad_clip=10.0,
+        weight_decay=0.0,
+        seed=seed,
+        val_subsample=val_subsample,
+        validate_every=validate_every,
+        log_every=log_every,
+        buffer_batches=2,
+        max_steps=max_steps,
+    )
+    if run_dir is None:
+        run_dir = tmp_path_factory.mktemp(f"log-{seed}-{id(config)}")
+    train(
+        model=model,
+        tokenizer=tokenizer,
+        train_store=store,
+        train_examples=train_examples,
+        val_store=store,
+        val_examples=val_examples,
+        config=config,
+        run_dir=run_dir,
+        device="cpu",
+        resume=resume,
+    )
+    with open(run_dir / "metrics.jsonl") as handle:
+        records = [json.loads(line) for line in handle]
+    return records, run_dir
+
+
+# --- test 4b: --log-every finer train-loss logging (bg_think_many step 4) --
+
+
+def test_log_every_writes_finer_records_than_validate_every(tmp_path_factory):
+    records, _ = run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=50,
+        validate_every=100,
+    )
+    assert [r["step"] for r in records] == [50, 100, 150, 200]
+    assert sum("val_loss" in r for r in records) == 2
+
+
+def test_a_step_that_both_logs_and_validates_writes_one_record(tmp_path_factory):
+    records, _ = run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=50,
+        validate_every=100,
+    )
+    by_step = {r["step"]: r for r in records}
+    assert "val_loss" in by_step[100] and "train_loss_mean" in by_step[100]
+    assert "val_loss" not in by_step[50] and "train_loss_mean" in by_step[50]
+
+
+def test_log_every_does_not_change_the_validation_count(tmp_path_factory, monkeypatch):
+    import adapter_training.train_adapter as train_adapter_module
+
+    calls = []
+    original_evaluate = train_adapter_module.evaluate
+
+    def counting_evaluate(*args, **kwargs):
+        calls.append(1)
+        return original_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(train_adapter_module, "evaluate", counting_evaluate)
+
+    run_configurable_training(
+        tmp_path_factory,
+        seed=1,
+        budget_examples=800,
+        batch_size=4,
+        log_every=10,
+        validate_every=100,
+    )
+    # 2 periodic validations (steps 100, 200) plus train()'s own final
+    # full-val pass -- log_every must not add or remove any of these.
+    assert len(calls) == 3
+
+
+def test_resume_does_not_duplicate_a_metrics_record_at_the_boundary(tmp_path_factory):
+    run_dir = tmp_path_factory.mktemp("resume-metrics")
+    run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=50,
+        validate_every=100,
+        run_dir=run_dir,
+        max_steps=100,
+    )
+    run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=50,
+        validate_every=100,
+        run_dir=run_dir,
+        resume=True,
+    )
+    with open(run_dir / "metrics.jsonl") as handle:
+        steps = [json.loads(line)["step"] for line in handle]
+    assert steps == [50, 100, 150, 200]
+
+
+def test_train_loss_mean_is_the_mean_of_the_intervals_per_step_losses(
+    tmp_path_factory,
+):
+    per_step_records, _ = run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=1,
+        validate_every=1000,
+    )
+    per_step_loss = {r["step"]: r["train_loss"] for r in per_step_records}
+    assert len(per_step_loss) == 200
+
+    grouped_records, _ = run_configurable_training(
+        tmp_path_factory,
+        seed=42,
+        budget_examples=800,
+        batch_size=4,
+        log_every=50,
+        validate_every=1000,
+    )
+    for record in grouped_records:
+        step = record["step"]
+        window = [per_step_loss[s] for s in range(step - 49, step + 1)]
+        assert record["train_loss_mean"] == pytest.approx(
+            sum(window) / len(window), rel=1e-5
+        )
+
+
+def test_resume_after_a_crash_mid_interval_does_not_duplicate_a_record(
+    tmp_path_factory, monkeypatch
+):
+    """Resume state is only saved on validation steps, so a crash can leave
+    log-only records past it that the resumed run replays."""
+    run_dir = tmp_path_factory.mktemp("crash-metrics")
+    settings = dict(budget_examples=800, batch_size=4, log_every=50, validate_every=100)
+    run_configurable_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, max_steps=100, **settings
+    )
+
+    # Crash at step 160: past the log-only record at 150, before the next
+    # validation (and resume-state save) at 200.
+    import adapter_training.train_adapter as train_adapter_module
+
+    class Crash(Exception):
+        pass
+
+    original_optimizer_step = train_adapter_module.optimizer_step
+    steps_run = itertools.count(1)
+
+    def crashing_optimizer_step(*args, **kwargs):
+        if next(steps_run) > 60:
+            raise Crash()
+        return original_optimizer_step(*args, **kwargs)
+
+    monkeypatch.setattr(train_adapter_module, "optimizer_step", crashing_optimizer_step)
+    with pytest.raises(Crash):
+        run_configurable_training(
+            tmp_path_factory, seed=42, run_dir=run_dir, resume=True, **settings
+        )
+    monkeypatch.undo()
+
+    run_configurable_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, resume=True, **settings
+    )
+    with open(run_dir / "metrics.jsonl") as handle:
+        steps = [json.loads(line)["step"] for line in handle]
+    assert steps == [50, 100, 150, 200]
+
+
+def test_validate_every_must_be_a_multiple_of_log_every():
+    with pytest.raises(AssertionError, match="must be a multiple of"):
+        TrainConfig(budget_examples=16, validate_every=100, log_every=30)
 
 
 def test_two_runs_same_seed_give_bit_identical_projection_state(tmp_path_factory):
@@ -559,6 +783,7 @@ def test_twenty_step_smoke_run_against_the_1b_model(tmp_path):
         seed=42,
         val_subsample=6,
         validate_every=5,
+        log_every=5,
         buffer_batches=2,
     )
     run_dir = tmp_path / "run"

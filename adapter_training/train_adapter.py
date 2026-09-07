@@ -142,6 +142,12 @@ def parse_args():
     parser.add_argument("--val-subsample", type=int, default=5000)
     parser.add_argument("--validate-every", type=int, default=100)
     parser.add_argument(
+        "--log-every",
+        type=int,
+        default=50,
+        help="steps between metrics.jsonl records; must divide --validate-every",
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=None,
@@ -264,11 +270,20 @@ class TrainConfig:
     seed: int = 42
     val_subsample: int = 5000
     validate_every: int = 100
+    log_every: int = 50
     max_steps: int | None = None
     label_smoothing: float = 0.0
     max_loss: float = 100.0
     strip_labels: bool = True
     buffer_batches: int = 50
+
+    def __post_init__(self):
+        # A validation step that is not also a log step would write a record
+        # without `train_loss_mean` and leave the accumulator spanning it.
+        assert self.validate_every % self.log_every == 0, (
+            f"validate_every ({self.validate_every}) must be a multiple of "
+            f"log_every ({self.log_every})"
+        )
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -287,6 +302,7 @@ class TrainConfig:
             seed=args.seed,
             val_subsample=args.val_subsample,
             validate_every=args.validate_every,
+            log_every=args.log_every,
             max_steps=args.max_steps,
             label_smoothing=args.label_smoothing,
             max_loss=args.max_loss,
@@ -591,6 +607,23 @@ def restore_resume_state(
     return state["global_step"], state["best_val_loss"]
 
 
+def truncate_metrics_after(path: Path, global_step: int) -> None:
+    """Drop `metrics.jsonl` records past `global_step`.
+
+    Records are written more often than resume state is saved, so a resume
+    replays steps that were already logged; without this they appear twice.
+
+    :param path: the `metrics.jsonl` to rewrite in place
+    :param global_step: the last step to keep
+    """
+    if not path.exists():
+        return
+    with open(path) as handle:
+        kept = [line for line in handle if json.loads(line)["step"] <= global_step]
+    with open(path, "w") as handle:
+        handle.writelines(kept)
+
+
 def _metric(projection, name: str):
     getter = getattr(projection, name, None)
     return getter() if getter is not None else None
@@ -688,8 +721,11 @@ def train(
         # this step would have drawn had the run never stopped.
         for _ in range(start_step):
             next(batches)
+        truncate_metrics_after(run_dir / "metrics.jsonl", start_step)
         print(f"resuming at step {start_step}, best val loss {best_val_loss:.4f}")
 
+    train_loss_accum = 0.0
+    train_loss_count = 0
     with open(run_dir / "metrics.jsonl", "a" if start_step else "w") as metrics_handle:
         for step in range(start_step, steps_to_run):
             lr = lr_at_step(
@@ -710,54 +746,71 @@ def train(
                 config.micro_batch_size,
                 config.grad_clip,
             )
+            train_loss_accum += train_loss
+            train_loss_count += 1
 
             global_step = step + 1
             examples_seen = global_step * config.batch_size
             is_last_step = global_step == steps_to_run
-            if global_step % config.validate_every == 0 or is_last_step:
-                val_result = evaluate(
-                    val_store, val_subsample, scorer, config.batch_size
-                )
-                val_loss = val_result["measured_loss"]
+            should_log = global_step % config.log_every == 0 or is_last_step
+            should_validate = global_step % config.validate_every == 0 or is_last_step
+
+            if should_log or should_validate:
                 record = {
                     "examples_seen": examples_seen,
                     "step": global_step,
                     "train_loss": train_loss,
-                    "val_loss": val_loss,
                     "lr": lr,
                     "grad_norm": grad_norm,
                     "scale": _metric(projection, "get_scale"),
                     "bias_norm": _metric(projection, "get_bias_norm"),
+                    "low_rank_norm": _metric(projection, "get_low_rank_norm"),
+                    "low_rank_to_diagonal_ratio": _metric(
+                        projection, "get_low_rank_to_diagonal_ratio"
+                    ),
                 }
+                if should_log:
+                    record["train_loss_mean"] = train_loss_accum / train_loss_count
+                    train_loss_accum = 0.0
+                    train_loss_count = 0
+
+                if should_validate:
+                    val_result = evaluate(
+                        val_store, val_subsample, scorer, config.batch_size
+                    )
+                    val_loss = val_result["measured_loss"]
+                    record["val_loss"] = val_loss
+
                 metrics_handle.write(json.dumps(record) + "\n")
                 metrics_handle.flush()
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                if should_validate:
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        save_checkpoint(
+                            run_dir / "best.pt",
+                            projection,
+                            ckpt_config,
+                            global_step=global_step,
+                            best_val_loss=best_val_loss,
+                        )
                     save_checkpoint(
-                        run_dir / "best.pt",
+                        run_dir / "last.pt",
                         projection,
                         ckpt_config,
                         global_step=global_step,
+                        best_val_loss=(
+                            best_val_loss if best_val_loss < float("inf") else None
+                        ),
+                    )
+                    save_resume_state(
+                        resume_path,
+                        projection,
+                        optimizer,
+                        train_config=asdict(config),
+                        global_step=global_step,
                         best_val_loss=best_val_loss,
                     )
-                save_checkpoint(
-                    run_dir / "last.pt",
-                    projection,
-                    ckpt_config,
-                    global_step=global_step,
-                    best_val_loss=(
-                        best_val_loss if best_val_loss < float("inf") else None
-                    ),
-                )
-                save_resume_state(
-                    resume_path,
-                    projection,
-                    optimizer,
-                    train_config=asdict(config),
-                    global_step=global_step,
-                    best_val_loss=best_val_loss,
-                )
 
     final_result = evaluate(val_store, val_examples, scorer, config.batch_size)
     final_report = {

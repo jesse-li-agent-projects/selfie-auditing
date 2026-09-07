@@ -59,6 +59,14 @@ def parse_args():
     )
     parser.set_defaults(center=True)
     parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="score a grouped (groups.json) extraction directory: the true "
+        "topic set per query is a GroupRecord's titles, scored by set-level "
+        "recall (score_sets, bg_think_many D11/step5) instead of the "
+        "single-topic recall a topics.json directory gets",
+    )
+    parser.add_argument(
         "--positions",
         default="all",
         help="'all' (mean over every position, the trained adapter's primary number), "
@@ -100,7 +108,10 @@ def parse_args():
     parser.add_argument(
         "--report", type=Path, default=None, help="write the JSON report here"
     )
-    return parser.parse_args()
+    parsed = parser.parse_args()
+    if parsed.grouped and parsed.restrict_topics_to is not None:
+        parser.error("--restrict-topics-to is not supported with --grouped")
+    return parsed
 
 
 # Parsed before the heavy imports below, so `--help` costs no torch import.
@@ -112,6 +123,7 @@ from adapter_training.checkpoints import (
 )  # noqa: E402
 from adapter_training.dataset import (  # noqa: E402
     DEFAULT_DATASET,
+    load_group_records,
     load_records,
     load_topics,
     load_vector_store,
@@ -122,6 +134,7 @@ from adapter_training.retrieval_eval import (  # noqa: E402
     _ProjectionAdapter,
     build_index,
     check_sentence_transformers_available,
+    evaluate_grouped_positions,
     evaluate_positions,
 )
 
@@ -144,6 +157,25 @@ def load_query_records(
     return records
 
 
+def load_grouped_query_records(
+    vectors_dir: Path,
+    *,
+    split: str,
+    limit_topics: int | None,
+    seed: int,
+):
+    """The `--grouped` counterpart to `load_query_records`: groups instead of
+    topics, no `restrict_to` (a group's true topic set is plural, so
+    intersecting by title does not carry the same meaning it does for a
+    single-topic directory).
+    """
+    records = load_group_records(vectors_dir)
+    records = [record for record in records if record.split == split]
+    if limit_topics is not None and limit_topics < len(records):
+        records = random.Random(seed).sample(records, limit_topics)
+    return records
+
+
 def main(args) -> dict:
     from model_loading import load_base_model, load_tokenizer, resolve_device
 
@@ -151,16 +183,35 @@ def main(args) -> dict:
 
     print(f"Centring mode: {'centred' if args.center else 'raw'}")
 
-    records = load_query_records(
-        args.vectors,
-        split=args.split,
-        restrict_to=args.restrict_topics_to,
-        limit_topics=args.limit_topics,
-        seed=args.seed,
+    if args.grouped:
+        records = load_grouped_query_records(
+            args.vectors,
+            split=args.split,
+            limit_topics=args.limit_topics,
+            seed=args.seed,
+        )
+    else:
+        records = load_query_records(
+            args.vectors,
+            split=args.split,
+            restrict_to=args.restrict_topics_to,
+            limit_topics=args.limit_topics,
+            seed=args.seed,
+        )
+    print(
+        f"Querying {len(records)} {'groups' if args.grouped else 'topics'} "
+        f"from {args.vectors}"
     )
-    print(f"Querying {len(records)} topics from {args.vectors}")
 
-    store = load_vector_store(args.vectors, center=args.center)
+    store = (
+        load_vector_store(
+            args.vectors,
+            center=args.center,
+            records=load_group_records(args.vectors),
+        )
+        if args.grouped
+        else load_vector_store(args.vectors, center=args.center)
+    )
 
     topics = load_topics(DEFAULT_DATASET, args.dataset_file)
     print(f"Index corpus: {len(topics)} topics")
@@ -198,7 +249,8 @@ def main(args) -> dict:
         seed=args.gen_seed,
     )
 
-    result = evaluate_positions(
+    evaluate_fn = evaluate_grouped_positions if args.grouped else evaluate_positions
+    result = evaluate_fn(
         index,
         model,
         tokenizer,
@@ -220,6 +272,7 @@ def main(args) -> dict:
         "checkpoint_metadata": checkpoint_metadata,
         "vectors_dir": str(args.vectors),
         "center": args.center,
+        "grouped": args.grouped,
         "positions_spec": args.positions,
         "restrict_topics_to": (
             str(args.restrict_topics_to) if args.restrict_topics_to else None

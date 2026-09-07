@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import torch
 
-from adapter_training.dataset import Topic, TopicRecord
+from adapter_training.dataset import GroupRecord, Topic, TopicRecord
 from interpret import Adapter, generate_interpretations_batch
 
 try:
@@ -195,6 +195,146 @@ def score(
     return evaluate_labels(index, descriptions, ground_truth_indices, k_values=k_values)
 
 
+def split_segments(description: str) -> list[str]:
+    """Split a generation on `;`, stripping whitespace and dropping empty
+    segments -- the segment count is never forced to k (bg_think_many D11).
+    """
+    return [segment.strip() for segment in description.split(";") if segment.strip()]
+
+
+def score_sets(
+    index: TopicRetrievalIndex,
+    descriptions: list[str],
+    true_topic_titles: list[tuple[str, ...]],
+    k_values: list[int],
+    batch_size: int = 512,
+) -> dict:
+    """Set-level recall (bg_think_many D11, `step5_set_retrieval_eval.md`):
+    for each query's true topic set, the best rank any of its generated
+    segments gives that topic, then recall@N over every (query, true topic)
+    pair.
+
+    With k=1 and a generation with no `;`, this reduces *exactly* to `score`
+    / `evaluate_labels` on the same inputs: one segment (the whole
+    description) scored against the sole true topic, ranked by the same
+    "count of strictly-higher-similarity others, plus one" convention --
+    tested in `tests/test_set_retrieval.py` so the k=1 slice of this
+    experiment stays comparable to `bg_think`'s existing numbers.
+
+    Extra segments are not penalised (a query's segment count need not equal
+    its k) -- the known precision hole D11 accepts, made visible by the
+    `segments` block rather than hidden in the recall number.
+
+    :param descriptions: one generation per query, in query order
+    :param true_topic_titles: query's true topic titles, in prompt order;
+        every query must carry the same number of titles (D12 -- never pool
+        across k)
+    :param k_values: recall@N cutoffs to report
+    :param batch_size: segments per embedding/similarity batch (memory, not
+        correctness -- mirrors `evaluate_labels`' own batching)
+    :return: `{"k", "n_queries", "n_true_topics", "recalls", "mrr",
+        "segments": {"mean", "histogram", "fraction_not_equal_k"},
+        "per_query"}`
+    """
+    n_queries = len(descriptions)
+    assert len(true_topic_titles) == n_queries
+    ks = {len(titles) for titles in true_topic_titles}
+    if len(ks) > 1:
+        raise ValueError(f"score_sets: mixed k across queries is not supported: {ks}")
+    k = ks.pop() if ks else 0
+
+    title_to_index = {title: i for i, title in enumerate(index.titles)}
+    true_topic_indices = [
+        [title_to_index[title] for title in titles] for titles in true_topic_titles
+    ]
+
+    segments_per_query = [split_segments(description) for description in descriptions]
+    flat_segments: list[str] = []
+    segment_query: list[int] = []
+    for query_index, segments in enumerate(segments_per_query):
+        for segment in segments:
+            flat_segments.append(segment)
+            segment_query.append(query_index)
+
+    best_ranks: list[list[int | None]] = [[None] * k for _ in range(n_queries)]
+
+    for start in range(0, len(flat_segments), batch_size):
+        end = min(start + batch_size, len(flat_segments))
+        batch_embeddings = index._embed_texts(
+            flat_segments[start:end], show_progress=False
+        )
+        batch_similarities = torch.mm(batch_embeddings, index.topic_embeddings.T)
+        for row in range(end - start):
+            query_index = segment_query[start + row]
+            sim_row = batch_similarities[row]
+            for position, topic_index in enumerate(true_topic_indices[query_index]):
+                # "Other topics with strictly higher similarity, plus one" --
+                # the same rank convention as evaluate_labels, and `topic_index`
+                # excludes itself automatically since x > x is never true.
+                rank = int((sim_row > sim_row[topic_index]).sum().item()) + 1
+                current = best_ranks[query_index][position]
+                if current is None or rank < current:
+                    best_ranks[query_index][position] = rank
+        del batch_similarities
+
+    n_true_topics = n_queries * k
+    recalls = {
+        n: (
+            sum(
+                1
+                for ranks in best_ranks
+                for rank in ranks
+                if rank is not None and rank <= n
+            )
+            / n_true_topics
+            if n_true_topics
+            else 0.0
+        )
+        for n in k_values
+    }
+    reciprocal_ranks = [
+        (1.0 / rank) if rank is not None else 0.0
+        for ranks in best_ranks
+        for rank in ranks
+    ]
+    mrr = sum(reciprocal_ranks) / n_true_topics if n_true_topics else 0.0
+
+    segment_counts = [len(segments) for segments in segments_per_query]
+    histogram: dict[str, int] = {}
+    for count in segment_counts:
+        key = str(count) if count < 4 else "4+"
+        histogram[key] = histogram.get(key, 0) + 1
+    fraction_not_equal_k = (
+        sum(1 for count in segment_counts if count != k) / n_queries
+        if n_queries
+        else 0.0
+    )
+
+    per_query = [
+        {
+            "description": descriptions[i],
+            "true_topics": list(true_topic_titles[i]),
+            "n_segments": segment_counts[i],
+            "best_ranks": best_ranks[i],
+        }
+        for i in range(n_queries)
+    ]
+
+    return {
+        "k": k,
+        "n_queries": n_queries,
+        "n_true_topics": n_true_topics,
+        "recalls": recalls,
+        "mrr": mrr,
+        "segments": {
+            "mean": sum(segment_counts) / n_queries if n_queries else 0.0,
+            "histogram": histogram,
+            "fraction_not_equal_k": fraction_not_equal_k,
+        },
+        "per_query": per_query,
+    }
+
+
 def resolve_position_offsets(
     records: list[TopicRecord], positions: str
 ) -> list[int] | None:
@@ -315,6 +455,104 @@ def evaluate_positions(
         "mode": "per_position",
         "positions": list(per_position.keys()),
         "n_queries": sum(len(query_pairs_for_offset(records, o)) for o in per_position),
+        "per_position": per_position,
+        "recalls": mean_recalls,
+        "mrr": mean_mrr,
+        "best_position": best_position,
+    }
+
+
+def query_pairs_for_offset_grouped(
+    records: list[GroupRecord], offset: int
+) -> list[tuple[int, tuple[str, ...]]]:
+    """`(vector_index, titles)` for every group whose `count` covers `offset`
+    -- the `--grouped` counterpart to `query_pairs_for_offset`."""
+    return [
+        (record.start + offset, record.titles)
+        for record in records
+        if record.count > offset
+    ]
+
+
+def query_pairs_for_last_grouped(
+    records: list[GroupRecord],
+) -> list[tuple[int, tuple[str, ...]]]:
+    """`(vector_index, titles)` for each group's own last vector -- the
+    `--grouped` counterpart to `query_pairs_for_last`."""
+    return [(record.start + record.count - 1, record.titles) for record in records]
+
+
+def evaluate_grouped_positions(
+    index: TopicRetrievalIndex,
+    model,
+    tokenizer,
+    adapter: Adapter,
+    vectors: torch.Tensor,
+    records: list[GroupRecord],
+    positions: str,
+    generation_config: GenerationConfig,
+    k_values: list[int],
+    device: str,
+) -> dict:
+    """The `--grouped` counterpart to `evaluate_positions`: a group's true
+    topic set is `GroupRecord.titles`, scored by `score_sets` (bg_think_many
+    D11) instead of the single-topic `score`.
+
+    Shape mirrors `evaluate_positions` exactly -- see its docstring.
+    """
+    offsets = resolve_position_offsets(records, positions)
+
+    if offsets is None:
+        pairs = query_pairs_for_last_grouped(records)
+        vector_indices, titles = zip(*pairs) if pairs else ((), ())
+        descriptions = generate_descriptions(
+            model,
+            tokenizer,
+            adapter,
+            vectors[list(vector_indices)],
+            generation_config,
+            device,
+        )
+        return {
+            "mode": "last",
+            **score_sets(index, descriptions, list(titles), k_values),
+        }
+
+    primary_k = min(k_values)
+    per_position: dict[int, dict] = {}
+    for offset in offsets:
+        pairs = query_pairs_for_offset_grouped(records, offset)
+        if not pairs:
+            continue
+        vector_indices, titles = zip(*pairs)
+        descriptions = generate_descriptions(
+            model,
+            tokenizer,
+            adapter,
+            vectors[list(vector_indices)],
+            generation_config,
+            device,
+        )
+        per_position[offset] = score_sets(index, descriptions, list(titles), k_values)
+
+    mean_recalls = {
+        k: sum(result["recalls"][k] for result in per_position.values())
+        / len(per_position)
+        for k in k_values
+    }
+    mean_mrr = sum(result["mrr"] for result in per_position.values()) / len(
+        per_position
+    )
+    best_position = max(
+        per_position, key=lambda offset: per_position[offset]["recalls"][primary_k]
+    )
+    return {
+        "mode": "per_position",
+        "positions": list(per_position.keys()),
+        "n_queries": sum(
+            len(query_pairs_for_offset_grouped(records, o)) for o in per_position
+        ),
+        "k": next(iter(per_position.values()))["k"] if per_position else None,
         "per_position": per_position,
         "recalls": mean_recalls,
         "mrr": mean_mrr,

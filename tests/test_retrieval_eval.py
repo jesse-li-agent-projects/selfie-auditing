@@ -286,6 +286,7 @@ def test_center_flag_reaches_vector_store_and_report(tmp_path, monkeypatch):
         checkpoint="untrained",
         dataset_file=dataset_file,
         center=True,
+        grouped=False,
         positions="last",
         restrict_topics_to=None,
         limit_topics=None,
@@ -326,6 +327,206 @@ def test_preflight_raises_named_error_without_sentence_transformers(monkeypatch)
 
     with pytest.raises(RuntimeError, match="sentence_transformers"):
         retrieval_eval.check_sentence_transformers_available()
+
+
+# --- test 7: --grouped (bg_think_many step 5) -----------------------------
+
+
+def write_group_vectors_dir(
+    directory: Path, *, n_groups: int, n_positions: int, hidden: int
+):
+    """A hand-built grouped extraction directory (`groups.json`, not
+    `topics.json`), shaped like the step2 extractor's real output.
+    """
+    records = []
+    all_vectors = []
+    start = 0
+    for i in range(n_groups):
+        split = "val" if i % 2 == 0 else "train"
+        vecs = torch.stack(
+            [torch.full((hidden,), float(100 * i + p)) for p in range(n_positions)]
+        )
+        all_vectors.append(vecs)
+        records.append(
+            {
+                "titles": [f"Group{i}Topic0", f"Group{i}Topic1"],
+                "labels_per_topic": [["l0"], ["l1"]],
+                "split": split,
+                "start": start,
+                "count": n_positions,
+            }
+        )
+        start += n_positions
+    vectors = torch.cat(all_vectors, dim=0).to(torch.bfloat16)
+    means = vectors.float().view(n_groups, n_positions, hidden).mean(dim=0)
+
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(vectors, directory / "vectors.pt")
+    torch.save(means, directory / "position_means.pt")
+    with open(directory / "groups.json", "w") as handle:
+        json.dump(records, handle)
+    with open(directory / "positions.json", "w") as handle:
+        json.dump(
+            {
+                "prompt_style": "pangram",
+                "layer": 19,
+                "model": "fake",
+                "n_positions": n_positions,
+                "n_topics": n_groups,
+                "n_vectors": vectors.shape[0],
+                "hidden_size": hidden,
+            },
+            handle,
+        )
+    return records
+
+
+def test_load_grouped_query_records_reads_groups_json_by_split(tmp_path):
+    from adapter_training.evaluate_retrieval import load_grouped_query_records
+
+    directory = tmp_path / "grouped"
+    write_group_vectors_dir(directory, n_groups=4, n_positions=2, hidden=4)
+
+    val_records = load_grouped_query_records(
+        directory, split="val", limit_topics=None, seed=0
+    )
+    train_records = load_grouped_query_records(
+        directory, split="train", limit_topics=None, seed=0
+    )
+
+    assert {r.titles for r in val_records} == {
+        ("Group0Topic0", "Group0Topic1"),
+        ("Group2Topic0", "Group2Topic1"),
+    }
+    assert {r.titles for r in train_records} == {
+        ("Group1Topic0", "Group1Topic1"),
+        ("Group3Topic0", "Group3Topic1"),
+    }
+
+
+def test_grouped_flag_dispatches_to_evaluate_grouped_positions(tmp_path, monkeypatch):
+    directory = tmp_path / "grouped"
+    write_group_vectors_dir(directory, n_groups=2, n_positions=1, hidden=4)
+    dataset_file = tmp_path / "topics.jsonl"
+    dataset_file.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "original_title": f"Group{i}Topic{j}",
+                    "prompt": "p",
+                    "labels": ["l"],
+                    "split": "val",
+                }
+            )
+            for i in range(2)
+            for j in range(2)
+        )
+    )
+
+    captured = {}
+
+    def fake_build_index(topics, *, strategy, embedding_model, device):
+        return SimpleNamespace(titles=[t.title for t in topics])
+
+    def fake_evaluate_grouped_positions(
+        index,
+        model,
+        tokenizer,
+        adapter,
+        vectors,
+        records,
+        positions,
+        generation_config,
+        k_values,
+        device,
+    ):
+        captured["records"] = records
+        return {
+            "mode": "last",
+            "recalls": {1: 1.0},
+            "mrr": 1.0,
+            "n_queries": len(records),
+        }
+
+    def unexpected_evaluate_positions(*args, **kwargs):
+        raise AssertionError(
+            "--grouped must not call the single-topic evaluate_positions"
+        )
+
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.check_sentence_transformers_available",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.build_index", fake_build_index
+    )
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.evaluate_grouped_positions",
+        fake_evaluate_grouped_positions,
+    )
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.evaluate_positions",
+        unexpected_evaluate_positions,
+    )
+    fake_model = SimpleNamespace(
+        get_input_embeddings=lambda: SimpleNamespace(
+            weight=SimpleNamespace(device="cpu")
+        )
+    )
+    monkeypatch.setattr("model_loading.load_base_model", lambda *a, **k: fake_model)
+    monkeypatch.setattr("model_loading.load_tokenizer", lambda *a, **k: object())
+
+    from adapter_training.dataset import GroupRecord
+    from adapter_training.evaluate_retrieval import main
+
+    args = SimpleNamespace(
+        vectors=directory,
+        split="val",
+        checkpoint="untrained",
+        dataset_file=dataset_file,
+        center=True,
+        grouped=True,
+        positions="last",
+        restrict_topics_to=None,
+        limit_topics=None,
+        seed=42,
+        k_values="1,5,10",
+        max_new_tokens=30,
+        temperature=0.7,
+        gen_seed=42,
+        embedding_model="thenlper/gte-large",
+        index_cache=None,
+        model="fake-model",
+        device="cpu",
+        dtype="bfloat16",
+        report=None,
+    )
+
+    report = main(args)
+
+    assert report["grouped"] is True
+    assert all(isinstance(r, GroupRecord) for r in captured["records"])
+
+
+def test_grouped_and_restrict_topics_to_is_rejected_at_parse_time(monkeypatch):
+    from adapter_training.evaluate_retrieval import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_retrieval.py",
+            "--vectors",
+            "some_dir",
+            "--checkpoint",
+            "untrained",
+            "--grouped",
+            "--restrict-topics-to",
+            "other_dir",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
 
 
 # --- hf_cache: generation reproducibility across batch sizes -------------
