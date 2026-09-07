@@ -156,14 +156,31 @@ are all avoidable, and removing them is less code than an LRU:
 Together these take the run's resident anonymous memory from ~52 GiB to
 approximately the batch size, which also makes `--resume` cheap.
 
-**A related correctness note.** `pooled_position_means` re-weights each
-directory's *stored* mean by the counts of the records passed in, so filtering
-records (the k=1 `;` filter drops 9 topics) weights an unfiltered mean by a
-filtered count. The error is ~9/47,001 and is not worth a re-extraction, but if
-the means are ever recomputed instead of read, recompute them over the filtered
-records and the discrepancy disappears. Recomputing is cheap: a streaming pass
-over the largest directory reproduces its stored `position_means.pt` to 5e-7 in
-**9.6s**, so all three cost well under a minute and need no GPU.
+**The fp32 cast is not an accuracy trade.** `vectors.pt` is bf16 on disk, so
+today's fp32 table is an upcast of bf16 data; casting at the gather instead
+gives bit-identical centred values in fp32 arithmetic. Deferring the cast buys
+the memory and costs nothing. Centring per batch likewise means *subtracting the
+one precomputed per-position reference vector* at gather time -- the same
+constant, applied later. It does **not** mean recomputing a mean from the batch.
+
+### Position means are recomputed, not read (decided 2026-09-07)
+
+`pooled_position_means` re-weights each directory's *stored* `position_means.pt`
+by the counts of the records passed in, so filtering records (the k=1 `;` filter
+drops 9 topics) weights an unfiltered mean by a filtered count. Recompute the
+means from the vectors over the records actually being trained on instead. A
+streaming pass reproduces a stored file to 4.8e-7 in **9.6s** for the largest
+directory, so all three cost well under a minute, on CPU. A GPU would help less
+than it looks -- the pass is bf16->fp32 and a sum, not a matmul, and it is a
+one-off -- so keep it on CPU.
+
+Keep the stored-file path for single-directory callers, so earlier runs and the
+`bg_think` comparisons stay reproducible; only the grouped mixture recomputes.
+
+What changes: a `compute_position_means(directory, records)` streaming helper in
+`dataset.py`; `pooled_position_means` able to take means it did not read from
+disk, and a weighting choice (below); `_load_mixture_store` calling that path.
+`load_vector_store` already accepts a `means` argument and needs nothing.
 
 ## 4. Val examples
 

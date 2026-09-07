@@ -207,11 +207,27 @@ it -- inside the k=3 population that component is constant, so a k=3 mean
 removes it exactly. Pooling keeps it as each population's offset from the
 common reference, so the adapter can contrast the three.
 
-The pooled mean is exact and costs no re-extraction: it re-weights the three
-stored `position_means.pt` files by how many records reached each position.
-**Every consumer must use it, not just the trainer** -- an evaluation that
-centres against one directory's own mean is scoring the adapter in a condition
-it never trained in (`step6_run_and_report.md` §0(b)).
+The pooled mean costs no re-extraction. It was originally specified as a
+re-weighting of the three stored `position_means.pt` files by how many records
+reached each position; as of 2026-09-07 it is **recomputed from the vectors over
+the records actually used**, which costs under a minute on CPU and removes a
+mismatch where a filtered record count weighted an unfiltered mean
+(`step3_example_builder.md` §3).
+
+**Open: how the three k are weighted in that mean.** Weighting by vector count
+is what the code does now, and at position 0 that is 0.274 : 0.273 : 0.452 --
+neither the 1:2:3 dataset ratio nor an even split, but whatever D8's round
+counts happened to produce. Measured, the choice moves the reference by ~0.20 in
+L2 against a within-k spread of ~2.9-4.1 and between-k offsets of 0.61-1.50, and
+it **cannot change the between-k contrasts at all** (`mean_k - mean_j` does not
+depend on the reference), so D13's stated purpose is served either way. The
+argument for weighting each k equally is stability, not accuracy: it makes the
+centring reference a function of the three populations rather than of the round
+counts, which D8 says move whenever D6 or D7 moves. Confirm before the run.
+
+**Every consumer must use the pooled mean, not just the trainer** -- an
+evaluation that centres against one directory's own mean is scoring the adapter
+in a condition it never trained in (`step6_run_and_report.md` §0(b)).
 Two consequences to state in any report: the k=1 slice is no longer centred
 the way `bg_think` was, so Gate 2's k=1 comparison to 1.4844 now carries a
 constant per-position offset that `bg_think` did not see; and the between-k
