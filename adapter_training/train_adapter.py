@@ -641,6 +641,7 @@ def train(
     run_dir: Path,
     device,
     resume: bool = False,
+    val_k_ranges: dict[int, tuple[int, int]] | None = None,
 ) -> dict:
     """The training loop: seeding, schedule, sampling, micro-batching,
     validation and checkpointing. Callable directly (as tests do, with a
@@ -660,6 +661,10 @@ def train(
     :param resume: carry on from `run_dir`'s resume state if there is one,
         which costs up to `validate_every` steps of redone work but needs
         nothing saved per step; a run with no resume state starts fresh
+    :param val_k_ranges: `--vectors-k` runs only -- each k's `(start, end)`
+        slice of `val_examples`, so the final report also scores each k's
+        own val slice (bg_think_many D12, Gate 2), beside the whole-mixture
+        number `measured_loss` keeps
     :return: the final full-val report (also written to `final_eval.json`)
     """
     seed_everything(config.seed)
@@ -819,6 +824,13 @@ def train(
         "global_step": steps_to_run,
         "total_steps": total_steps,
     }
+    if val_k_ranges is not None:
+        final_report["val_loss_by_k"] = {
+            str(k): evaluate(
+                val_store, val_examples[start:end], scorer, config.batch_size
+            )
+            for k, (start, end) in sorted(val_k_ranges.items())
+        }
     with open(run_dir / "final_eval.json", "w") as handle:
         json.dump(final_report, handle, indent=2)
 
@@ -930,15 +942,23 @@ def load_grouped_train_and_val(
         periodic validation subsamples `--val-subsample` from it
     :param seed: seeds train and val sampling independently
     :return: `(train_store, train_examples, val_store, val_examples,
-        train_k_ranges)`
+        train_k_ranges, val_k_ranges)` -- `val_k_ranges` is what lets
+        `train()` score each k's own val slice for Gate 2 (bg_think_many D12)
     """
     train_store, train_examples, train_k_ranges = build_mixture(
         directories, "train", budget_examples, ratio=ratio, seed=seed
     )
-    val_store, val_examples, _val_k_ranges = build_mixture(
+    val_store, val_examples, val_k_ranges = build_mixture(
         directories, "val", val_total_examples, ratio=ratio, seed=f"{seed}-val"
     )
-    return train_store, train_examples, val_store, val_examples, train_k_ranges
+    return (
+        train_store,
+        train_examples,
+        val_store,
+        val_examples,
+        train_k_ranges,
+        val_k_ranges,
+    )
 
 
 def main(args) -> dict:
@@ -952,20 +972,26 @@ def main(args) -> dict:
         model.gradient_checkpointing_enable()
 
     mixture_k_ranges = None
+    val_k_ranges = None
     if args.vectors_k is not None:
         if args.pool_positions or args.restrict_topics_to is not None:
             raise ValueError(
                 "--pool-positions and --restrict-topics-to are not supported "
                 "with --vectors-k"
             )
-        train_store, train_examples, val_store, val_examples, mixture_k_ranges = (
-            load_grouped_train_and_val(
-                args.vectors_k,
-                ratio=args.mixture_ratio,
-                budget_examples=args.budget_examples,
-                val_total_examples=args.val_total_examples,
-                seed=args.seed,
-            )
+        (
+            train_store,
+            train_examples,
+            val_store,
+            val_examples,
+            mixture_k_ranges,
+            val_k_ranges,
+        ) = load_grouped_train_and_val(
+            args.vectors_k,
+            ratio=args.mixture_ratio,
+            budget_examples=args.budget_examples,
+            val_total_examples=args.val_total_examples,
+            seed=args.seed,
         )
     else:
         train_store, train_examples, val_store, val_examples = load_train_and_val(
@@ -998,6 +1024,7 @@ def main(args) -> dict:
         run_dir=args.run_dir,
         device=device,
         resume=args.resume,
+        val_k_ranges=val_k_ranges,
     )
     print(json.dumps(result, indent=2))
     return result
