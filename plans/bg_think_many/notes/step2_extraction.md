@@ -1,8 +1,8 @@
 # Step 2 findings: the multi-topic prompt and the grouped extractor
 
 **Code complete; Gate 1 passed for both k=2 and k=3, and both full
-extractions are done and synced to local `outputs/`.** Run on the remote 8B
-(RTX 4090); see "Gate 1 and the full runs" below for the numbers.
+extractions are done and synced to local `outputs/`.** Run on the remote 8B;
+see "Gate 1 and the full runs" below for the numbers.
 
 ## The shared-body lift worked
 
@@ -90,13 +90,20 @@ plausible new one. Both probes report `val_groups: 0`, as expected (groups are
 split-major and `--limit` takes a prefix); this does not bias the numbers
 above (see the step file's own note on this).
 
-**The two full runs**, sequentially, one GPU job at a time, `--rounds 2
---layer 19 --source-topics bg_think_l19`:
+**The two full runs**, `--layer 19 --source-topics bg_think_l19`. `--rounds`
+is per k, and the D8 rule gives 0.54 / 2.14 / 4.82 for k = 1 / 2 / 3: k=2 takes
+**2** rounds, k=3 takes **5**. k=3 was extracted in two parts (rounds 0-1 on an
+RTX 4090, rounds 2-4 later on an RTX 3090 via `--first-round 2`) and the parts
+were merged into a single directory equivalent to one `--rounds 5` run:
 
-| k | groups seen | groups kept | keep_rate | train groups | val groups | vectors.pt |
-|---|---|---|---|---|---|---|
-| 2 | 46,990 | 46,799 | 0.996 | 42,140 | 4,659 | 3.6 GB |
-| 3 | 31,326 | 30,982 | 0.989 | 27,899 | 3,083 | 2.4 GB |
+| k | rounds | groups seen | groups kept | keep_rate | train groups | val groups | vectors.pt |
+|---|---|---|---|---|---|---|---|
+| 2 | 2 | 46,990 | 46,799 | 0.996 | 42,140 | 4,659 | 3.6 GB |
+| 3 | 5 | 78,315 | 77,433 | 0.989 | 69,725 | 7,708 | 6.3 GB |
+
+The k=3 row is the merged total. Its two parts kept 30,982/31,326 (0.989) and
+46,451/46,989 (0.989) -- the same keep rate either side of the split, so the
+later rounds draw the same population as the first two.
 
 Both `variant_counts` show 100% with-stop, 0% no-stop, matching every prior
 run. Group counts and sizes are close to this file's pre-run predictions
@@ -105,9 +112,15 @@ k=3) -- the small differences are the keep-rate rejections, which the
 predictions could not know in advance.
 
 k=1 was **not** extracted: it is `outputs/bg_think_l19`, reused per the
-parent plan's D1. `outputs/README.md` now lists the two new directories.
+parent plan's D1. `outputs/README.md` now lists the new directories.
 Checksums of `vectors.pt` were verified to match between the remote and the
-local synced copy for both k=2 and k=3.
+local synced copy for every run, including each k=3 part.
+
+**`--rounds` is a per-k judgement call, not a constant.** It follows the D8
+rule `rounds ~= examples_k x k / (N x positions)`, so it moves whenever D6's
+mixture or D7's budget moves. Recompute it against D8 and confirm with the
+user before any re-extraction; do not copy a `--rounds` value from an older
+command line.
 
 Everything the extractor needs is in `--source-topics`; there was no dataset
 download and no network egress on the extraction path. The only manual step

@@ -149,11 +149,13 @@ agreement. Split by D6:
 
 At batch 256 that is **5,902 optimizer steps**.
 
-**D8 — Two rounds of grouping for k=2 and k=3.** One round is a disjoint
-partition, so each topic appears once; two rounds put each topic in two
-different groups, which covers more topic *combinations* without repeating any
-(topic, position) pair more than twice. Extraction is cheap enough that this
-costs little (§5). k=1 needs no rounds — it is the existing extraction.
+**D8 — Rounds are per k: two for k=2, five for k=3.** One round is a disjoint
+partition, so each topic appears once; further rounds put each topic in that
+many different groups, which covers more topic *combinations* without repeating
+any (topic, position) pair more than that. Extraction is cheap enough that this
+costs little (§5). k=1 needs no rounds — it is the existing extraction. The
+count is not a constant: it follows the rule below, and moves whenever D6's
+mixture or D7's budget moves.
 
 *How many rounds a budget wants.* `rounds` sets how many distinct activations
 exist to sample examples from; D7 sets how many examples are drawn. One round
@@ -168,12 +170,13 @@ whatever the mixture says — do not fold D6's ratio into this rule, since that
 ratio is a hunch specific to this attempt (§1).
 
 Under D6 and D7 as they currently stand, with N = 46,992 and positions = 10,
-the rule gives 0.54, 2.14 and 4.82 for k = 1, 2, 3. So **at `rounds=2` the k=3
-vectors are re-used ~2.4 times each while barely half the k=1 vectors are ever
-drawn.** Reuse is not wrong (each draw gets a different composed label, D4) but
-it does mean k=3 contributes the most examples off the fewest distinct
-activations. `rounds=5` for k=3 would even that out for ~0.15 extra
-A100-hours and ~3.8 extra GB.
+the rule gives 0.54, 2.14 and 4.82 for k = 1, 2, 3. At `rounds=2` the k=3
+vectors would be re-used ~2.4 times each while barely half the k=1 vectors are
+ever drawn. Reuse is not wrong (each draw gets a different composed label, D4)
+but it would mean k=3 contributes the most examples off the fewest distinct
+activations. **So k=3 takes `rounds=5`**, for ~0.15 extra A100-hours and ~3.8
+extra GB; k=2 takes the 2 its own figure rounds to. Re-derive both from the
+rule, and confirm with the user, if D6 or D7 changes.
 
 **D9 — The architecture is `scalar_affine_plus_low_rank`, rank 64**, per the
 user, with upstream's own hyperparameters (§3).
