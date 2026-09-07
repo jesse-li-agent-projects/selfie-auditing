@@ -94,15 +94,20 @@ tokenizer cannot predict it.
 
 ## Concatenated vector table size
 
-Not measured against the real directories (would need to load
-`outputs/bg_think_l19` (3.9 GB), `bg_think_many_l19_k2` (3.6 GB) and
-`bg_think_many_l19_k3` (2.4 GB) simultaneously in fp32, i.e. roughly double
-each bf16-on-disk size). The step file's own estimate (~6.5 GB for one
-concatenated table) should hold; doubled to ~13 GB total resident since train
-and val each build their own table (see "train and val call `build_mixture`
-independently", above). This has not been measured on real hardware and
-should be checked before step 6's real run, in case the training machine's
-free RAM is tighter than assumed.
+Computed from the realised directories rather than measured by loading them.
+`outputs/bg_think_l19` (3.8 GB on disk), `bg_think_many_l19_k2` (3.6 GB) and
+`bg_think_many_l19_k3` (5.9 GB, five rounds per D8) hold 470,010 + 467,990 +
+774,330 = 1,712,330 rows of 4096 dims. In fp32 that is **~26 GiB for one
+concatenated table**, and `torch.cat` holds the chunks and the result together,
+so a single `build_mixture` call peaks near 52 GiB. Train and val each build
+their own table (see "train and val call `build_mixture` independently",
+above), so a run sits at **~52 GiB resident and peaks near 78 GiB**.
+
+This is far above the ~6.5 GB the step file originally estimated. That estimate
+predated D8's move from two rounds to five at k=3, which alone grew the k=3
+table from 2.4 GB to 5.9 GB, and it did not count the `torch.cat` peak or the
+second (val) table. **Check the training machine's free host RAM against 78 GiB
+before step 6's run**; the mitigations are in the step file's §3.
 
 ## What step 6 should confirm before relying on this
 

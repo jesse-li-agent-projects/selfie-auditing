@@ -48,12 +48,16 @@ single-topic compliance filter, so it never reached this pool.
 Pool after the filter: 42,313 train / 4,679 val. (These were the file's
 pre-run predictions; realised counts, from the actual full runs, are below.)
 
-| k | train groups | val groups | predicted (train/val) | vectors | bf16 size |
-|---|---|---|---|---|---|
-| 2 | 42,312 | 4,678 | 42,320 / 4,680 | 469,900 | 3.85 GB |
-| 3 | 28,208 | 3,118 | 28,212 / 3,120 | 313,260 | 2.57 GB |
+| k | rounds | train groups | val groups | predicted (train/val) | vectors | bf16 size |
+|---|---|---|---|---|---|---|
+| 2 | 2 | 42,312 | 4,678 | 42,320 / 4,680 | 469,900 | 3.85 GB |
+| 3 | 2 | 28,208 | 3,118 | 28,212 / 3,120 | 313,260 | 2.57 GB |
 
 The small shortfalls are the 9 dropped topics plus the per-round leftovers.
+
+**The k=3 row here is a two-round figure and was superseded before the run.**
+D8 puts k=3 at five rounds; the realised counts are in the table below, and
+anything downstream that sizes disk or memory must use those, not these.
 
 ## Local smoke test
 

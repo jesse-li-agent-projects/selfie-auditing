@@ -82,12 +82,15 @@ hyperparameter changes are needed for the architecture switch**.
 | 3 | `step3_example_builder.md` | no | grouped example construction and the 1:2:3 sampler |
 | 4 | `step4_trainer_logging.md` | no | `--log-every`, decoupled from `--validate-every` |
 | 5 | `step5_set_retrieval_eval.md` | no | set-level recall |
+| 6a | `step6a_pre_run_code.md` | no | the four code gaps step 6 assumes away |
 | 6 | `step6_run_and_report.md` | yes, large | the training run, the evaluations, the report |
 
-Steps 1, 3, 4 and 5 need no GPU and no network. Steps 1, 4 and 5 are independent
-of each other and of everything else, so they can be handed out in parallel.
-Step 3 depends on step 1's decision and on step 2's output format (not its
-vectors). Step 6 depends on all of them.
+Steps 1, 3, 4, 5 and 6a need no GPU and no network. Steps 1, 4 and 5 are
+independent of each other and of everything else, so they can be handed out in
+parallel. Step 3 depends on step 1's decision and on step 2's output format (not
+its vectors). Step 6a was added after steps 1-5 merged, from an audit of step 6
+against the code; it depends on step 3 and step 5. Step 6 depends on all of
+them.
 
 **One agent at a time on GPU work** (project rule): steps 2 and 6 must not run
 concurrently with each other or with another agent's GPU job.
@@ -207,8 +210,47 @@ it -- inside the k=3 population that component is constant, so a k=3 mean
 removes it exactly. Pooling keeps it as each population's offset from the
 common reference, so the adapter can contrast the three.
 
-The pooled mean is exact and costs no re-extraction: it re-weights the three
-stored `position_means.pt` files by how many records reached each position.
+The pooled mean costs no re-extraction. It was originally specified as a
+re-weighting of the three stored `position_means.pt` files by how many records
+reached each position; as of 2026-09-07 it is **recomputed from the vectors over
+the records actually used**, which costs under a minute on CPU and removes a
+mismatch where a filtered record count weighted an unfiltered mean
+(`step3_example_builder.md` §3).
+
+**D14 -- the three k are weighted equally in that mean.** Confirmed with the
+user (2026-09-07). Weighting by vector count is what the code did first, and at
+position 0 that is 0.274 : 0.273 : 0.452 -- neither the 1:2:3 dataset ratio nor
+an even split, but whatever D8's round counts happened to produce.
+
+**Two reasons, one of each kind.**
+
+*Accuracy.* What the reference cannot change is the between-k offsets relative
+to each other -- `mean_k - mean_j` does not depend on it. What it does change is
+where each population sits relative to the **origin**, and that is not free: the
+projection is an affine map applied identically to every k and every position,
+so it has no per-position bias to absorb a per-position shift with. Count
+weighting puts the origin nearest k=3 (0.452 of the weight), and k=3 is already
+the heaviest k in D6's 1:2:3 example mixture, so the two tilts compound -- the
+population that most dominates the loss also gets the tightest spread about the
+origin. Equal weighting removes that compounding without privileging any other
+k.
+
+*Stability.* An equal weighting makes the reference a function of the three
+populations rather than of the round counts, which D8 says move whenever D6 or
+D7 moves. Under count weighting a re-extraction would shift the training
+distribution's origin for a reason unrelated to modelling.
+
+The effect size is small either way: measured, the choice moves the reference by
+~0.20 in L2, against a within-k spread of ~2.9-4.1 and between-k offsets of
+0.61-1.50. Do not expect it to decide the experiment; it is cheap insurance on
+both counts.
+
+Within a k, positions keep their own counts -- D14 is about how the three
+populations are combined, not about how a population's own positions are.
+
+**Every consumer must use the pooled mean, not just the trainer** -- an
+evaluation that centres against one directory's own mean is scoring the adapter
+in a condition it never trained in (`step6_run_and_report.md` §0(b)).
 Two consequences to state in any report: the k=1 slice is no longer centred
 the way `bg_think` was, so Gate 2's k=1 comparison to 1.4844 now carries a
 constant per-position offset that `bg_think` did not see; and the between-k
@@ -224,15 +266,17 @@ single-topic groups (two forced variants per group):
 |---|---|---|
 | k=1 | reuse `outputs/bg_think_l19` | 0 |
 | k=2, 2 rounds, both splits | ~47,000 | ~0.15 |
-| k=3, 2 rounds, both splits | ~31,300 | ~0.10 |
+| k=3, 5 rounds, both splits | ~78,300 | ~0.25 |
 
 Training: `bg_think` cost ~1.76 A100-hours for 755,391 examples at ~42 target
 tokens each. The 1:2:3 mixture averages ~65 tokens, and there are 2x as many
 examples, so expect **~5-6 A100-hours**, not the ~9-11 quoted in the initial
 assessment before the sequence lengths were worked out.
 
-Disk: ~6.5 GB of new bf16 vectors, on top of the existing 4 GB. 322 GB free at
-the time of writing, so this is a note, not a constraint.
+Disk: ~9.5 GB of new bf16 vectors (3.6 GB at k=2, 5.9 GB at k=3), on top of the
+existing 3.8 GB. 322 GB free at the time of writing, so this is a note, not a
+constraint. **Host RAM is the constraint instead**: see `step3_example_builder.md`
+§3, which the k=3 round count moves.
 
 ## 6. Gates
 
