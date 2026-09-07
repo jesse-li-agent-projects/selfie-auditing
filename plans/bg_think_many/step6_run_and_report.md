@@ -155,10 +155,13 @@ not write new ones:
 1. **Taboo, user-prompt tokens** -- `run_pipeline.py`, against
    `outputs/taboo_baseline` and `outputs/taboo_bg_think`.
 2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, against
-   `outputs/taboo_assistant_bg_think`. Note `outputs/taboo_assistant_baseline`
-   is currently an empty reserved directory (`outputs/README.md`); if the
-   baseline arm was never run, either run it or say clearly that the comparison
-   is missing. Do not quietly compare against nothing.
+   `outputs/taboo_assistant_bg_think`. **There is deliberately no baseline arm
+   here**: the user decided (2026-09-07) not to reproduce it, because the
+   paper's own reported results can be read directly and
+   `taboo_assistant_bg_think` was not promising enough to justify the GPU time.
+   `outputs/taboo_assistant_baseline` has been deleted; do not recreate it or
+   run the arm. Report this comparison as `bg_think` only, and say the baseline
+   is the paper's reported figure rather than a run on this machine.
 3. **Bridge entity (TwoHopFact)** -- the `bridge_entity/` sweep, against
    `outputs/bridge_entity`.
 4. `compare_taboo_arms.py` for the side-by-side.
@@ -179,10 +182,10 @@ before drawing a conclusion.
 
 - Save the checkpoint to `outputs/adapters/bg_think_many/` and **add an entry to
   `outputs/adapters/README.md`**, in the style of the existing `bg_think` entry:
-  what it was trained on, the architecture, the budget. That file already has a
-  truncated `bg_think` entry ending in a bare "1" -- finish it while you are
-  there if you know what it meant, or leave it and say so.
+  what it was trained on, the architecture, the budget.
 - Add the new extraction and evaluation directories to `outputs/README.md`.
+- Both of those files are under the gitignored `outputs/` and are not tracked,
+  so they are local edits, not part of any PR.
 - Keep commits small and self-contained (project rule).
 
 ## 7. The report
