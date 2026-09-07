@@ -224,15 +224,17 @@ single-topic groups (two forced variants per group):
 |---|---|---|
 | k=1 | reuse `outputs/bg_think_l19` | 0 |
 | k=2, 2 rounds, both splits | ~47,000 | ~0.15 |
-| k=3, 2 rounds, both splits | ~31,300 | ~0.10 |
+| k=3, 5 rounds, both splits | ~78,300 | ~0.25 |
 
 Training: `bg_think` cost ~1.76 A100-hours for 755,391 examples at ~42 target
 tokens each. The 1:2:3 mixture averages ~65 tokens, and there are 2x as many
 examples, so expect **~5-6 A100-hours**, not the ~9-11 quoted in the initial
 assessment before the sequence lengths were worked out.
 
-Disk: ~6.5 GB of new bf16 vectors, on top of the existing 4 GB. 322 GB free at
-the time of writing, so this is a note, not a constraint.
+Disk: ~9.5 GB of new bf16 vectors (3.6 GB at k=2, 5.9 GB at k=3), on top of the
+existing 3.8 GB. 322 GB free at the time of writing, so this is a note, not a
+constraint. **Host RAM is the constraint instead**: see `step3_example_builder.md`
+§3, which the k=3 round count moves.
 
 ## 6. Gates
 

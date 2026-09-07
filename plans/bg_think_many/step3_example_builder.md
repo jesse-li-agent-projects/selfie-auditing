@@ -122,11 +122,16 @@ directory's indices by the running row count.
   / 755,391 -- confirm your arithmetic reproduces those three numbers, and
   handle the remainder explicitly rather than letting integer division lose a
   few examples.
-- Concatenating the three centred tables costs about 6.5 GB in fp32 at full
-  size. If that is too much resident memory on the target machine, the fallback
-  is to keep the tables separate behind a small index-mapping object rather than
-  to reduce the data. Measure before you optimise; the training machine holds an
-  8B model already.
+- Concatenating the three centred tables costs about **26 GiB** in fp32 at full
+  size: 1,712,330 rows (470,010 at k=1, 467,990 at k=2, 774,330 at k=3 -- five
+  rounds, per D8) x 4096 dims x 4 bytes. `torch.cat` holds the chunks and the
+  result at once, so one call peaks near 52 GiB, and train and val each build
+  their own table (§4), so a run needs ~52 GiB resident and peaks near 78 GiB.
+  **Check the target machine's host RAM against that before booking it.** If it
+  does not fit, the fallbacks are to keep the tables separate behind a small
+  index-mapping object, and to load once and slice by split, rather than to
+  reduce the data. Do not assume the GPU box has the RAM because it holds an 8B
+  model; that is VRAM, and this is host memory.
 
 ## 4. Val examples
 
