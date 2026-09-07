@@ -39,12 +39,12 @@ book GPU time until it has merged.
 ## 2. The training run
 
     python -m adapter_training.train_adapter \
-        --vectors-k 1=outputs/bg_think_l19 \
-        --vectors-k 2=outputs/bg_think_many_l19_k2 \
-        --vectors-k 3=outputs/bg_think_many_l19_k3 \
+        --vectors-k 1=bg_think_l19 \
+        --vectors-k 2=bg_think_many_l19_k2 \
+        --vectors-k 3=bg_think_many_l19_k3 \
         --mixture-ratio 1:2:3 \
         --run-dir adapters/bg_think_many \
-        --budget-examples 1510782 --batch-size 256 \
+        --budget-examples 1510782 --batch-size 256 --micro-batch-size 16 \
         --projection-type scalar_affine_plus_low_rank --projection-rank 64 \
         --low-rank-init-factor 0.01 \
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 \
@@ -53,9 +53,23 @@ book GPU time until it has merged.
         --val-total-examples 300000
 
 5,902 steps. Every hyperparameter above except the mixture, the budget,
-`--log-every` and `--val-total-examples` is what `bg_think` used and what
-upstream's `scalar_plus_low_rank_8b.yaml` specifies -- see the parent plan §3.
+`--micro-batch-size`, `--log-every` and `--val-total-examples` is what
+`bg_think` used and what upstream's `scalar_plus_low_rank_8b.yaml` specifies
+-- see the parent plan §3.
 Do not tune them; a tuned run would not be comparable to `bg_think`.
+
+**`--micro-batch-size` is required here and is a memory bound, not a
+hyperparameter** -- it does not change the gradient, only how the batch is
+chunked to compute it. It defaults to `--batch-size`, so leaving it out asks
+for all 256 examples at once and dies immediately. It sets the count at the
+pool's *worst* target length; short-target batches take more. The mixture's
+composed k=2/k=3 labels reach 77 tokens against a 29-token median, and
+because batches are length-bucketed the long ones arrive together, so a size
+that survives a typical batch says nothing about the tail. Measured peaks on
+the longest bucket, 31.36 GiB card: 16 -> 23.4 GiB, 24 -> 27.6 GiB, 32 ->
+OOM. Step time is set by target length (1.6 s short to 4.9 s worst), not by
+this flag, so raising it buys almost no throughput -- pick it for headroom.
+Scale it for a larger card.
 
 **`--val-total-examples` is not the train/val split** -- the split is over
 topics and is fixed in the extraction directories. It is how many *examples* to
@@ -73,6 +87,9 @@ enough to compare against 1.4844. It is also cheaper than `bg_think`'s final
 eval, not dearer. Note this sizes the **loss** pool only; Gate 3's retrieval
 fraction is sized by the val groups in the extraction directories and is
 untouched by this flag.
+
+`--vectors-k` and `--run-dir` values are relative to `outputs/`, which the
+script prepends -- do not write the prefix yourself.
 
 Use `--resume` if it crashes. It restores the projection, the optimizer, the
 step and the best-val from `run_dir/resume.pt`, written on every validation
