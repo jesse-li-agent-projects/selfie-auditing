@@ -12,6 +12,7 @@ The `hf_cache`-marked test is the plan's ~20-step end-to-end smoke run
 against Llama-3.2-1B (`config.DUMMY_BASE_MODEL`), run under `gpu-exec`.
 """
 
+import itertools
 import json
 import math
 from pathlib import Path
@@ -335,6 +336,7 @@ def run_tiny_training(
         seed=seed,
         val_subsample=4,
         validate_every=2,
+        log_every=2,
         buffer_batches=2,
         max_steps=max_steps,
     )
@@ -530,6 +532,52 @@ def test_train_loss_mean_is_the_mean_of_the_intervals_per_step_losses(
         assert record["train_loss_mean"] == pytest.approx(
             sum(window) / len(window), rel=1e-5
         )
+
+
+def test_resume_after_a_crash_mid_interval_does_not_duplicate_a_record(
+    tmp_path_factory, monkeypatch
+):
+    """Resume state is only saved on validation steps, so a crash can leave
+    log-only records past it that the resumed run replays."""
+    run_dir = tmp_path_factory.mktemp("crash-metrics")
+    settings = dict(budget_examples=800, batch_size=4, log_every=50, validate_every=100)
+    run_configurable_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, max_steps=100, **settings
+    )
+
+    # Crash at step 160: past the log-only record at 150, before the next
+    # validation (and resume-state save) at 200.
+    import adapter_training.train_adapter as train_adapter_module
+
+    class Crash(Exception):
+        pass
+
+    original_optimizer_step = train_adapter_module.optimizer_step
+    steps_run = itertools.count(1)
+
+    def crashing_optimizer_step(*args, **kwargs):
+        if next(steps_run) > 60:
+            raise Crash()
+        return original_optimizer_step(*args, **kwargs)
+
+    monkeypatch.setattr(train_adapter_module, "optimizer_step", crashing_optimizer_step)
+    with pytest.raises(Crash):
+        run_configurable_training(
+            tmp_path_factory, seed=42, run_dir=run_dir, resume=True, **settings
+        )
+    monkeypatch.undo()
+
+    run_configurable_training(
+        tmp_path_factory, seed=42, run_dir=run_dir, resume=True, **settings
+    )
+    with open(run_dir / "metrics.jsonl") as handle:
+        steps = [json.loads(line)["step"] for line in handle]
+    assert steps == [50, 100, 150, 200]
+
+
+def test_validate_every_must_be_a_multiple_of_log_every():
+    with pytest.raises(AssertionError, match="must be a multiple of"):
+        TrainConfig(budget_examples=16, validate_every=100, log_every=30)
 
 
 def test_two_runs_same_seed_give_bit_identical_projection_state(tmp_path_factory):
@@ -735,6 +783,7 @@ def test_twenty_step_smoke_run_against_the_1b_model(tmp_path):
         seed=42,
         val_subsample=6,
         validate_every=5,
+        log_every=5,
         buffer_batches=2,
     )
     run_dir = tmp_path / "run"

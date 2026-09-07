@@ -145,8 +145,7 @@ def parse_args():
         "--log-every",
         type=int,
         default=50,
-        help="steps between train-loss-only metric records, independent of "
-        "--validate-every (bg_think_many step 4)",
+        help="steps between metrics.jsonl records; must divide --validate-every",
     )
     parser.add_argument(
         "--max-steps",
@@ -277,6 +276,14 @@ class TrainConfig:
     max_loss: float = 100.0
     strip_labels: bool = True
     buffer_batches: int = 50
+
+    def __post_init__(self):
+        # A validation step that is not also a log step would write a record
+        # without `train_loss_mean` and leave the accumulator spanning it.
+        assert self.validate_every % self.log_every == 0, (
+            f"validate_every ({self.validate_every}) must be a multiple of "
+            f"log_every ({self.log_every})"
+        )
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -600,6 +607,23 @@ def restore_resume_state(
     return state["global_step"], state["best_val_loss"]
 
 
+def truncate_metrics_after(path: Path, global_step: int) -> None:
+    """Drop `metrics.jsonl` records past `global_step`.
+
+    Records are written more often than resume state is saved, so a resume
+    replays steps that were already logged; without this they appear twice.
+
+    :param path: the `metrics.jsonl` to rewrite in place
+    :param global_step: the last step to keep
+    """
+    if not path.exists():
+        return
+    with open(path) as handle:
+        kept = [line for line in handle if json.loads(line)["step"] <= global_step]
+    with open(path, "w") as handle:
+        handle.writelines(kept)
+
+
 def _metric(projection, name: str):
     getter = getattr(projection, name, None)
     return getter() if getter is not None else None
@@ -697,6 +721,7 @@ def train(
         # this step would have drawn had the run never stopped.
         for _ in range(start_step):
             next(batches)
+        truncate_metrics_after(run_dir / "metrics.jsonl", start_step)
         print(f"resuming at step {start_step}, best val loss {best_val_loss:.4f}")
 
     train_loss_accum = 0.0
