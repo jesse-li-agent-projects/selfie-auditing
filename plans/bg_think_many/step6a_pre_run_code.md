@@ -49,7 +49,9 @@ sum, not a matmul, and it runs once.
 
 **Weight the three k equally** (D14). Not by vector count, which is what a
 naive pooling does and which at position 0 is 0.274 : 0.273 : 0.452 -- an
-artefact of D8's round counts. Within a k, positions keep their own counts.
+artefact of D8's round counts, and one that puts the origin nearest the k that
+D6 already weights heaviest. Within a k, positions keep their own counts. Read
+D14 for why; it is not only a tidiness argument.
 
 **Keep the stored-file path** for single-directory callers, so earlier runs and
 the `bg_think` comparisons stay reproducible. Only the grouped mixture

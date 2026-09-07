@@ -222,14 +222,28 @@ user (2026-09-07). Weighting by vector count is what the code did first, and at
 position 0 that is 0.274 : 0.273 : 0.452 -- neither the 1:2:3 dataset ratio nor
 an even split, but whatever D8's round counts happened to produce.
 
-The choice is not about accuracy. Measured, it moves the reference by ~0.20 in
-L2 against a within-k spread of ~2.9-4.1 and between-k offsets of 0.61-1.50, and
-it **cannot change the between-k contrasts at all** (`mean_k - mean_j` does not
-depend on the reference), so D13's purpose is served either way. It is about
-stability: an equal weighting makes the centring reference a function of the
-three populations rather than of the round counts, which D8 says move whenever
-D6 or D7 moves. Under count weighting a re-extraction would silently shift the
-training distribution's origin for a reason unrelated to modelling.
+**Two reasons, one of each kind.**
+
+*Accuracy.* What the reference cannot change is the between-k offsets relative
+to each other -- `mean_k - mean_j` does not depend on it. What it does change is
+where each population sits relative to the **origin**, and that is not free: the
+projection is an affine map applied identically to every k and every position,
+so it has no per-position bias to absorb a per-position shift with. Count
+weighting puts the origin nearest k=3 (0.452 of the weight), and k=3 is already
+the heaviest k in D6's 1:2:3 example mixture, so the two tilts compound -- the
+population that most dominates the loss also gets the tightest spread about the
+origin. Equal weighting removes that compounding without privileging any other
+k.
+
+*Stability.* An equal weighting makes the reference a function of the three
+populations rather than of the round counts, which D8 says move whenever D6 or
+D7 moves. Under count weighting a re-extraction would shift the training
+distribution's origin for a reason unrelated to modelling.
+
+The effect size is small either way: measured, the choice moves the reference by
+~0.20 in L2, against a within-k spread of ~2.9-4.1 and between-k offsets of
+0.61-1.50. Do not expect it to decide the experiment; it is cheap insurance on
+both counts.
 
 Within a k, positions keep their own counts -- D14 is about how the three
 populations are combined, not about how a population's own positions are.
