@@ -127,11 +127,43 @@ directory's indices by the running row count.
   rounds, per D8) x 4096 dims x 4 bytes. `torch.cat` holds the chunks and the
   result at once, so one call peaks near 52 GiB, and train and val each build
   their own table (§4), so a run needs ~52 GiB resident and peaks near 78 GiB.
-  **Check the target machine's host RAM against that before booking it.** If it
-  does not fit, the fallbacks are to keep the tables separate behind a small
-  index-mapping object, and to load once and slice by split, rather than to
-  reduce the data. Do not assume the GPU box has the RAM because it holds an 8B
-  model; that is VRAM, and this is host memory.
+  Do not assume the GPU box has that; it holds an 8B model in *VRAM*, and this
+  is host memory.
+
+### The memory-bounded path (decided 2026-09-07)
+
+Do not cap this with a chunk cache and a RAM budget knob. The three costs above
+are all avoidable, and removing them is less code than an LRU:
+
+1. **`torch.load(..., mmap=True)`.** Verified on the real files: mapping
+   `bg_think_many_l19_k3`'s 5.9 GB `vectors.pt` takes 0.001s and no anonymous
+   memory. The pages that get touched are page cache, which the kernel reclaims
+   under pressure, so the resident cost is self-bounding and no budget has to be
+   chosen. This is the only piece `torch` supplies -- there is no built-in
+   dataset with a RAM ceiling, and `DataLoader` workers do not help here (they
+   would share the same mapping and the same page cache).
+2. **Keep the vectors bf16 on disk and cast per batch.** The fp32 cast is what
+   doubles the footprint, and it buys nothing at load time: batches are gathered
+   one at a time (`loss.py` indexes `store.vectors` with the batch's
+   `vector_index` list), and a 256 x 4096 batch is 4 MB.
+3. **Centre per batch too, not at load.** Centring is a subtraction of one
+   `[n_positions, hidden]` row, and the position is derivable from the record,
+   so it can move to the gather without changing the arithmetic.
+4. **Do not `torch.cat`, and do not load twice.** Keep the three mapped tensors
+   behind the small index-mapping object, and let train and val share one set of
+   mappings instead of each building a table (§4).
+
+Together these take the run's resident anonymous memory from ~52 GiB to
+approximately the batch size, which also makes `--resume` cheap.
+
+**A related correctness note.** `pooled_position_means` re-weights each
+directory's *stored* mean by the counts of the records passed in, so filtering
+records (the k=1 `;` filter drops 9 topics) weights an unfiltered mean by a
+filtered count. The error is ~9/47,001 and is not worth a re-extraction, but if
+the means are ever recomputed instead of read, recompute them over the filtered
+records and the discrepancy disappears. Recomputing is cheap: a streaming pass
+over the largest directory reproduces its stored `position_means.pt` to 5e-7 in
+**9.6s**, so all three cost well under a minute and need no GPU.
 
 ## 4. Val examples
 
