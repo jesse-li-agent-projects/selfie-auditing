@@ -209,6 +209,9 @@ common reference, so the adapter can contrast the three.
 
 The pooled mean is exact and costs no re-extraction: it re-weights the three
 stored `position_means.pt` files by how many records reached each position.
+**Every consumer must use it, not just the trainer** -- an evaluation that
+centres against one directory's own mean is scoring the adapter in a condition
+it never trained in (`step6_run_and_report.md` §0(b)).
 Two consequences to state in any report: the k=1 slice is no longer centred
 the way `bg_think` was, so Gate 2's k=1 comparison to 1.4844 now carries a
 constant per-position offset that `bg_think` did not see; and the between-k

@@ -6,14 +6,47 @@ parent plan -- read §6 Gates, §7 and D7, D9, D12).
 **Depends on all of steps 1-5 being merged.** Check that before booking GPU
 time; a half-merged step here wastes the most expensive hours in the plan.
 
-**This is the large GPU step**: ~5-6 A100-hours for the training run, plus the
-evaluation passes. **One agent at a time on GPU work** (project rule). Do not
-start while step 2's extraction, or any other agent's GPU job, is running.
+**This is the large GPU step**: ~5-6 A100-hours for the training run, plus two
+retrieval passes (§4) and the OOD evaluations (§5). **One agent at a time on
+GPU work** (project rule). Do not start while step 2's extraction, or any other
+agent's GPU job, is running.
 
 ## Research question
 
 Quoted in the parent plan §1. Read it there; do not restate it in your own
 words, here or in the report.
+
+## 0. Code that must land before the run
+
+Three gaps were found in a pre-run audit (2026-09-07). None needs GPU, all are
+prerequisites of the sections below, and none of them is a hyperparameter
+change.
+
+**(a) Per-k validation loss.** Gate 2 below asks for it and nothing computes it.
+`load_grouped_train_and_val` discards `build_mixture`'s val `k_ranges` (it keeps
+only the train ones, for `run_config.json`), and `final_eval.json` holds a
+single whole-mixture `measured_loss`. Keep the val ranges, and have the final
+evaluation score each k-slice as well as the whole pool, writing both into
+`final_eval.json`. `evaluate()` already takes an example list, so this is a
+slice and three extra calls. **No retraining is needed if this is missed**:
+`build_mixture` is seeded per k and split (`f"{seed}-k{k}-{split}"`), so the val
+pool rebuilds exactly from `run_config.json` and a checkpoint can be scored
+per-k afterwards. Doing it in the trainer is preferred only because it avoids
+re-loading the vectors.
+
+**(b) Pooled centring in the retrieval eval.** Training centres every k against
+one pooled reference (D13), but `evaluate_retrieval.py --center` has no way to
+pass one -- `load_vector_store`'s `means` parameter defaults to the directory's
+own `position_means.pt`. Scoring the adapter under per-directory centring
+measures it in a condition it never trained in. Give the eval the same pooled
+reference the trainer builds, and let one invocation read several extraction
+directories so §4's mixture run is one pass with a per-k breakdown rather than
+three passes that cannot share an index.
+
+**(c) A memory-bounded vector path.** See `step3_example_builder.md` §3. The
+concatenated fp32 table is ~26 GiB and a run builds two of them; the fix is to
+stop building them at all, and it is a prerequisite unless the booked machine
+has ~80 GiB of host RAM to spare.
 
 ## 1. Preconditions
 
@@ -37,15 +70,33 @@ words, here or in the report.
         --low-rank-init-factor 0.01 \
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 \
         --weight-decay 0.01 --seed 42 \
-        --validate-every 100 --log-every 50 --val-subsample 5000
+        --validate-every 100 --log-every 50 --val-subsample 5000 \
+        --val-total-examples 300000
 
-5,902 steps. Every hyperparameter above except the mixture, the budget and
-`--log-every` is what `bg_think` used and what upstream's
-`scalar_plus_low_rank_8b.yaml` specifies -- see the parent plan §3. Do not tune
-them; a tuned run would not be comparable to `bg_think`.
+5,902 steps. Every hyperparameter above except the mixture, the budget,
+`--log-every` and `--val-total-examples` is what `bg_think` used and what
+upstream's `scalar_plus_low_rank_8b.yaml` specifies -- see the parent plan §3.
+Do not tune them; a tuned run would not be comparable to `bg_think`.
 
-Use `--resume` if it crashes. It resumes from the last validation step, so at
-most 100 steps of work is redone.
+**`--val-total-examples` is not the train/val split** -- the split is over
+topics and is fixed in the extraction directories. It is how many *examples* to
+draw from the val side, which has to be chosen because grouped examples are
+sampled, not enumerated (D4). `bg_think` needed no such number: it enumerated
+every (val vector, label) pair, 79,391 val labels x 10 positions = 793,910. A
+k=3 group spans ~29,000 composed labels per position, so the same exhaustive
+pool does not exist here.
+
+**300,000 is a proposal, not a derived number; confirm it before the run.** It
+splits 1:2:3 into 50,000 / 100,000 / 150,000. The val side holds ~46,800 k=1,
+~46,600 k=2 and ~77,100 k=3 vectors, so that is roughly one to two examples per
+val vector at every k, and the k=1 slice is 10x `--val-subsample`, which is
+enough to compare against 1.4844. It is also cheaper than `bg_think`'s final
+eval, not dearer.
+
+Use `--resume` if it crashes. It restores the projection, the optimizer, the
+step and the best-val from `run_dir/resume.pt`, written on every validation
+step, so at most 100 steps of work is redone. Note that a restart re-pays the
+whole vector load, so §0(c) matters for restarts too.
 
 **Watch `low_rank_norm` and `low_rank_to_diagonal_ratio`** in `metrics.jsonl`
 (step 4 added them). If the ratio stays near zero throughout, the rank-64
@@ -54,7 +105,8 @@ steps -- which is worth knowing *during* the run, not after.
 
 ## 3. Gate 2: validation loss
 
-From `final_eval.json` and the per-k slices step 3 provides.
+From `final_eval.json`. The per-k slices need §0(a) -- step 3 computes the
+ranges but nothing currently keeps the val ones.
 
 - The whole-mixture `best_val_loss` is the headline correctness number.
 - **The k=1 slice is the only one with a prior**: `bg_think` reached 1.4844 on
@@ -72,31 +124,43 @@ is not this check.
 
 ## 4. Gate 3: set-level retrieval, in distribution
 
-Score four adapters on the **same grouped val vectors**, with identical decoding
-settings (D10: `--max-new-tokens 110`, temperature 0.7, `n_samples` 1, seed 42):
+**Scope, set by the user (2026-09-07): the new adapter only, pooled centring
+only, two runs.** An earlier draft of this section asked for four adapters in
+two centring conditions, which is 24 GPU passes; that was a mistake and is
+withdrawn.
 
-| adapter | what it is |
-|---|---|
-| `bg_think_many` | this run's `best.pt` |
-| `bg_think` | `outputs/adapters/bg_think/best.pt` |
-| `baseline` | `outputs/adapters/wikipedia-scalar-affine.safetensors` |
-| untrained floor | `checkpoints.untrained_projection` |
+| run | vectors | what it answers |
+|---|---|---|
+| 1 | `outputs/bg_think_l19` (k=1) | single-topic recall for the new adapter |
+| 2 | all three k directories | set-level recall on the mixture, broken down per k (D12) |
 
-Run **centred**, which is what the paper uses for contrastive-vector retrieval
-and what makes these numbers comparable to the existing
-`outputs/retrieval_reports/*_centred.json`. Report per k (D12) and always with
-the `segments` block beside each recall (step 5).
+Both score `bg_think_many`'s `best.pt`, both **centred against the pooled
+reference** (D13) -- the condition the adapter trained in. Decoding is identical
+in both (D10: `--max-new-tokens 110`, temperature 0.7, `n_samples` 1, seed 42).
+Always report the `segments` block beside each recall (step 5).
 
-For orientation, the single-topic numbers already on disk, position 0, centred:
-`bg_think` 0.404, `baseline` 0.289, untrained floor 0.0013.
+Run 2 needs §0(b): one invocation over several directories, so the pooled mean
+and the retrieval index are built once. **Report run 2 per k, never pooled
+across k** (D12) -- the two-run scope changes how many invocations there are,
+not how the numbers are broken down.
 
-Gate 3 asks only that `bg_think_many` clears the untrained floor by a wide
-margin. Failing that means the run is broken, not that the hypothesis is wrong.
+**Two consequences of this scope, to state in the report rather than paper
+over.**
 
-Also run the **raw (uncentred)** pass, for the record. On single-topic vectors
-both trained adapters collapsed there (0.042 and 0.028), and whether the
-multi-topic training changes that is directly relevant to the OOD tasks, which
-all read raw activations.
+- *Gate 3 no longer has a floor of its own.* The gate is "clear the untrained
+  floor by a wide margin", and the untrained arm is not being run. Use the
+  existing single-topic figure of 0.0013
+  (`outputs/retrieval_reports/untrained_floor_centred.json`) as the
+  order-of-magnitude reference: an
+  untrained projection scores at chance whatever the centring, so a floor is a
+  floor. If `bg_think_many` lands anywhere near 0.0013 the run is broken, which
+  is all this gate was ever asked to catch.
+- *Run 1 is not comparable to `bg_think`'s 0.404.* That number was measured
+  under per-directory centring; run 1 uses the pooled reference, which carries a
+  constant per-position offset `bg_think` never saw. D13 already flags this for
+  Gate 2's loss, and it applies here identically. Report run 1 as a standalone
+  number, and do not put 0.404, 0.289 or the raw-vector figures (0.042, 0.028)
+  beside it as though they were a comparison.
 
 ## 5. The OOD evaluations -- the actual object of the experiment
 
@@ -148,9 +212,11 @@ contain:
 - the research question, quoted from the parent plan §1, not paraphrased
 - the run's configuration and realised cost against the ~5-6 A100-hour estimate
 - Gate 2: whole-mixture and per-k validation loss, with the k=1 comparison to
-  1.4844
-- Gate 3: set-level recall per k, centred and raw, every number with its
-  `segments` block, against all four adapters
+  1.4844 and D13's caveat that the pooled centring shifts it
+- the chosen `--val-total-examples`, and why
+- Gate 3: the two runs of §4, pooled-centred, with the per-k breakdown for run
+  2 and a `segments` block beside every recall; plus the note that run 1 is not
+  comparable to `bg_think`'s 0.404 and that the gate's floor is borrowed
 - the three OOD comparisons, each stated plainly as better, worse or
   indistinguishable, with the numbers
 - **the confound from parent plan §7**, restated: this run changed both the data
