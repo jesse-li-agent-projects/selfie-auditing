@@ -248,10 +248,17 @@ def write_group_dir(directory, records, vectors, means):
 
 
 def build_fixture(tmp_path):
-    """k=1, k=2, k=3 directories, each one train group and one val group,
-    with position means all zero (so raw == centred) and a distinguishing
-    constant value per k, per split -- lets a test read off which
-    directory/split a vector_index came from."""
+    """k=1, k=2, k=3 directories, each one train group and one val group, a
+    distinguishing constant raw value per k, per split -- lets a test read
+    off which directory/split a vector_index came from.
+
+    The stored `position_means.pt` files are all zero, but that no longer
+    makes centring a no-op (D13, amended 2026-09-07): the pooled reference is
+    recomputed from these vectors and weighted equally per k, not read from
+    disk. Each k's own mean is the average of its train and val constants
+    (11.5, 21.5, 31.5), pooled equally to 21.5, so a `raw` constant centres to
+    `raw - 21.5` -- see `EXPECTED_CENTRED` below.
+    """
     directories = {}
 
     k1_train = TopicRecord("K1Train", six_label_topic("k1t"), "train", start=0, count=4)
@@ -326,18 +333,23 @@ def test_build_mixture_splits_by_ratio(tmp_path):
         assert examples[start:end] != []
 
 
-def test_build_mixture_offsets_index_into_the_concatenated_store(tmp_path):
+# raw -> pooled-centred (raw - 21.5), per build_fixture's docstring.
+TRAIN_CENTRED = {1: -10.5, 2: -0.5, 3: 9.5}
+VAL_CENTRED = {1: -9.5, 2: 0.5, 3: 10.5}
+
+
+def test_build_mixture_offsets_index_into_the_mixture_store(tmp_path):
     directories = build_fixture(tmp_path)
     store, examples, k_ranges = build_mixture(
         directories, "train", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
     )
-    # k=1's train rows are 11.0, k=2's are 21.0, k=3's are 31.0 (means are
-    # zero, so centring is a no-op); every example's vector_index must land
-    # on that k's rows in the concatenated store.
-    expected_value = {1: 11.0, 2: 21.0, 3: 31.0}
+    # Every example's vector_index must land on that k's own (pooled-centred)
+    # rows in the mixture store, not another k's or the val split's.
     for k, (start, end) in k_ranges.items():
         for example in examples[start:end]:
-            assert store.vectors[example.vector_index, 0].item() == expected_value[k]
+            assert store.vectors[example.vector_index, 0].item() == pytest.approx(
+                TRAIN_CENTRED[k]
+            )
 
 
 def test_build_mixture_never_addresses_a_val_group_from_a_train_call(tmp_path):
@@ -345,9 +357,8 @@ def test_build_mixture_never_addresses_a_val_group_from_a_train_call(tmp_path):
     store, examples, _ = build_mixture(
         directories, "train", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
     )
-    # Val rows are 12.0/22.0/32.0; none should appear among train's examples.
-    values = {store.vectors[e.vector_index, 0].item() for e in examples}
-    assert values == {11.0, 21.0, 31.0}
+    values = {round(store.vectors[e.vector_index, 0].item(), 6) for e in examples}
+    assert values == set(TRAIN_CENTRED.values())
 
 
 def test_build_mixture_val_call_only_addresses_val_groups(tmp_path):
@@ -355,5 +366,5 @@ def test_build_mixture_val_call_only_addresses_val_groups(tmp_path):
     store, examples, _ = build_mixture(
         directories, "val", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
     )
-    values = {store.vectors[e.vector_index, 0].item() for e in examples}
-    assert values == {12.0, 22.0, 32.0}
+    values = {round(store.vectors[e.vector_index, 0].item(), 6) for e in examples}
+    assert values == set(VAL_CENTRED.values())

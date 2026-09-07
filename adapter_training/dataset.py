@@ -229,16 +229,53 @@ def position_counts(records: Sequence[VectorRecord], n_positions: int) -> Tensor
     return counts
 
 
+def compute_position_means(directory: Path, records: Sequence[VectorRecord]) -> Tensor:
+    """A per-position mean over `records`' own vectors, streamed from
+    `vectors.pt` rather than read from the directory's stored
+    `position_means.pt`.
+
+    The stored file is weighted by *every* topic the extractor saw; a caller
+    that filters records (e.g. the `;`-label filter, bg_think_many §8) would
+    otherwise weight an unfiltered mean by a filtered count. Recomputing from
+    the records actually in use avoids that mismatch (D13, amended
+    2026-09-07). The pass mmaps `vectors.pt` and touches only the rows
+    `records` addresses, so it costs page-cache-backed I/O, not a resident
+    copy of the whole table -- measured at well under a minute per directory
+    on CPU.
+
+    :param directory: an extraction output directory
+    :param records: the records to average over (a subset is fine)
+    :return: `[n_positions, hidden]`, fp32
+    """
+    vectors = torch.load(
+        directory / "vectors.pt", map_location="cpu", weights_only=True, mmap=True
+    )
+    n_positions = max((record.count for record in records), default=0)
+    hidden = vectors.shape[1]
+    total = torch.zeros(n_positions, hidden, dtype=torch.float64)
+    counts = torch.zeros(n_positions, dtype=torch.float64)
+    for record in records:
+        n = record.count
+        total[:n] += vectors[record.start : record.start + n].to(torch.float64)
+        counts[:n] += 1
+    return (total / counts.clamp(min=1).unsqueeze(-1)).float()
+
+
 def pooled_position_means(
     sources: Sequence[tuple[Path, Sequence[VectorRecord]]],
 ) -> Tensor:
-    """One per-position mean over several extraction directories at once.
+    """One per-position mean over several extraction directories at once,
+    each source weighted equally (D14).
 
-    Each directory's stored `position_means.pt` is weighted by how many of the
-    given records reached each position, so no `vectors.pt` is read. The
-    weights come from `records` but the means are whatever the extractor
-    wrote, so passing a subset of a directory's records weights that
-    directory's full mean by the subset's count.
+    Each source's own mean is recomputed from its vectors
+    (`compute_position_means`), over the given records, and the sources are
+    then averaged with equal weight -- not by vector count, which is what a
+    naive pooling does and which puts the origin nearest whichever source
+    happens to have the most vectors (bg_think_many D14's measured
+    0.274:0.273:0.452 at position 0, an artefact of the round counts, not a
+    property of the populations). Weighting equally instead makes the
+    reference a function of the populations being contrasted, not of how
+    many examples each contributed.
 
     Centering against this instead of each directory's own mean preserves
     whatever differs *between* the populations. Where the populations are the
@@ -249,21 +286,17 @@ def pooled_position_means(
     :param sources: `(directory, its records)` pairs
     :return: `[n_positions, hidden]`, fp32
     """
-    loaded = []
-    for directory, records in sources:
-        means = torch.load(
-            directory / "position_means.pt", map_location="cpu", weights_only=True
-        ).to(torch.float64)
-        loaded.append((means, position_counts(records, means.shape[0])))
-
-    n_positions = max(means.shape[0] for means, _ in loaded)
-    hidden = loaded[0][0].shape[1]
+    per_source_means = [
+        compute_position_means(directory, records) for directory, records in sources
+    ]
+    n_positions = max(means.shape[0] for means in per_source_means)
+    hidden = per_source_means[0].shape[1]
     total = torch.zeros(n_positions, hidden, dtype=torch.float64)
     weight = torch.zeros(n_positions, dtype=torch.float64)
-    for means, counts in loaded:
+    for means in per_source_means:
         rows = means.shape[0]
-        total[:rows] += means * counts.unsqueeze(-1)
-        weight[:rows] += counts
+        total[:rows] += means.to(torch.float64)
+        weight[:rows] += 1.0
     return (total / weight.clamp(min=1).unsqueeze(-1)).float()
 
 

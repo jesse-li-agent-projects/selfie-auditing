@@ -22,7 +22,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from adapter_training.checkpoints import save_checkpoint
+from adapter_training.checkpoints import load_projection, save_checkpoint
 from adapter_training.dataset import Example, TopicRecord, VectorStore
 from adapter_training.loss import LossConfig, SoftPromptLoss, evaluate, subsample
 from adapter_training.train_adapter import (
@@ -356,6 +356,74 @@ def run_tiny_training(
     )
     checkpoint = torch.load(run_dir / "last.pt", weights_only=False)
     return checkpoint["projection_state"], result
+
+
+# --- test 4c: per-k validation loss (bg_think_many step 6a, Gate 2) --------
+
+
+def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
+    tmp_path_factory,
+):
+    scorer_seed = 123
+    torch.manual_seed(scorer_seed)
+    tokenizer = FakeCharTokenizer()
+    embed = nn.Embedding(4000, HIDDEN)
+    embed.weight.requires_grad_(False)
+    lm_head = nn.Linear(HIDDEN, 512, bias=False)
+    lm_head.weight.requires_grad_(False)
+    model = SimpleNamespace(
+        model=ToyBaseModel(), lm_head=lm_head, get_input_embeddings=lambda: embed
+    )
+
+    store, train_examples, val_examples = build_tiny_dataset()
+    assert len(val_examples) == 6  # 3 val topics x 2 labels
+    val_k_ranges = {1: (0, 3), 2: (3, 6)}
+    config = TrainConfig(
+        budget_examples=8,
+        batch_size=4,
+        micro_batch_size=2,
+        projection_type="scalar_affine",
+        lr=0.05,
+        init_scale=1.0,
+        warmup_steps=1,
+        grad_clip=10.0,
+        weight_decay=0.0,
+        seed=1,
+        val_subsample=4,
+        validate_every=2,
+        log_every=2,
+        buffer_batches=2,
+    )
+    run_dir = tmp_path_factory.mktemp("val-k-ranges")
+    result = train(
+        model=model,
+        tokenizer=tokenizer,
+        train_store=store,
+        train_examples=train_examples,
+        val_store=store,
+        val_examples=val_examples,
+        config=config,
+        run_dir=run_dir,
+        device="cpu",
+        val_k_ranges=val_k_ranges,
+    )
+
+    assert "measured_loss" in result  # the whole-mixture key is unchanged
+    assert set(result["val_loss_by_k"]) == {"1", "2"}
+    projection, _metadata = load_projection(
+        run_dir / "last.pt", device="cpu", dim=HIDDEN
+    )
+    rescorer = SoftPromptLoss(model, tokenizer, projection, LossConfig())
+    for key, (start, end) in (("1", (0, 3)), ("2", (3, 6))):
+        expected = evaluate(store, val_examples[start:end], rescorer, config.batch_size)
+        assert result["val_loss_by_k"][key]["measured_loss"] == pytest.approx(
+            expected["measured_loss"]
+        )
+        assert result["val_loss_by_k"][key]["n_examples"] == end - start
+
+    with open(run_dir / "final_eval.json") as handle:
+        on_disk = json.load(handle)
+    assert on_disk["val_loss_by_k"]["1"]["n_examples"] == 3
 
 
 def run_configurable_training(
@@ -954,28 +1022,42 @@ def test_load_grouped_train_and_val_builds_the_1_2_3_mixture(tmp_path):
     _write_group_dir(tmp_path / "k3", k3, v3, torch.zeros(4, HIDDEN))
 
     directories = {1: tmp_path / "k1", 2: tmp_path / "k2", 3: tmp_path / "k3"}
-    train_store, train_examples, val_store, val_examples, k_ranges = (
-        load_grouped_train_and_val(
-            directories,
-            ratio={1: 1, 2: 2, 3: 3},
-            budget_examples=60,
-            val_total_examples=30,
-            seed=0,
-        )
+    (
+        train_store,
+        train_examples,
+        val_store,
+        val_examples,
+        train_k_ranges,
+        val_k_ranges,
+    ) = load_grouped_train_and_val(
+        directories,
+        ratio={1: 1, 2: 2, 3: 3},
+        budget_examples=60,
+        val_total_examples=30,
+        seed=0,
     )
 
     assert len(train_examples) == 60
     assert len(val_examples) == 30
-    assert {k: end - start for k, (start, end) in k_ranges.items()} == {
+    assert {k: end - start for k, (start, end) in train_k_ranges.items()} == {
         1: 10,
         2: 20,
         3: 30,
     }
-    # Every train example must address a train row (11.0/21.0/31.0), never a
-    # val one (12.0/22.0/32.0) -- split purity across the concatenated store.
-    train_values = {
-        train_store.vectors[e.vector_index, 0].item() for e in train_examples
+    assert {k: end - start for k, (start, end) in val_k_ranges.items()} == {
+        1: 5,
+        2: 10,
+        3: 15,
     }
-    assert train_values == {11.0, 21.0, 31.0}
-    val_values = {val_store.vectors[e.vector_index, 0].item() for e in val_examples}
-    assert val_values == {12.0, 22.0, 32.0}
+    # Every train example must address a train row, never a val one -- split
+    # purity across the mixture store. Values are pooled-centred (D13,
+    # amended 2026-09-07): each k's own mean is the average of its train/val
+    # constants (11.5/21.5/31.5), pooled equally to 21.5, so raw - 21.5.
+    train_values = {
+        round(train_store.vectors[e.vector_index, 0].item(), 6) for e in train_examples
+    }
+    assert train_values == {-10.5, -0.5, 9.5}
+    val_values = {
+        round(val_store.vectors[e.vector_index, 0].item(), 6) for e in val_examples
+    }
+    assert val_values == {-9.5, 0.5, 10.5}

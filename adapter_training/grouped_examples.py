@@ -22,10 +22,10 @@ from adapter_training.dataset import (
     Example,
     GroupRecord,
     TopicRecord,
+    VectorRecord,
     VectorStore,
     load_group_records,
     load_topic_records,
-    load_vector_store,
     pooled_position_means,
 )
 from adapter_training.extract_grouped_vectors import drop_semicolon_topics
@@ -199,11 +199,73 @@ def _split_by_ratio(total: int, ratio: Mapping[int, int]) -> dict[int, int]:
     return counts
 
 
+@dataclasses.dataclass
+class _MixtureVectors:
+    """`VectorStore.vectors` for a k=1:2:3 mixture, without ever concatenating
+    the underlying tables (step3_example_builder.md §3's memory-bounded
+    path).
+
+    Each source directory's `vectors.pt` is memory-mapped and kept bf16; the
+    fp32 cast and the pooled centring (D13) happen at gather time, in
+    `__getitem__`, on only the rows actually requested. This keeps resident
+    anonymous memory near the batch size rather than the ~26 GiB a
+    concatenated fp32 table would cost, since `torch.load(mmap=True)` touches
+    page cache, not a private copy, and casting/centring only the gathered
+    rows is bit-identical to casting the whole (bf16-backed) table up front.
+
+    Drop-in for a plain vectors tensor: every caller in this codebase indexes
+    with a list of global row indices (`store.vectors[[i, j, ...]]`) or a
+    single `(index, column)` pair, both of which `__getitem__` below
+    supports directly.
+
+    :ivar tensors: one mmap'd, bf16, raw (uncentred) tensor per source
+        directory, in the order `directory_of` indexes into
+    :ivar directory_of: `[n_total]`, which `tensors` entry a global row maps to
+    :ivar local_index_of: `[n_total]`, the row within that tensor
+    :ivar position_of: `[n_total]`, the position (`row - record.start`) to
+        centre that row with
+    :ivar means: `[n_positions, hidden]` fp32, the pooled reference (D13)
+    """
+
+    tensors: list[torch.Tensor]
+    directory_of: torch.Tensor
+    local_index_of: torch.Tensor
+    position_of: torch.Tensor
+    means: torch.Tensor
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (self.directory_of.shape[0], self.means.shape[1])
+
+    def _gather(self, indices: Sequence[int]) -> torch.Tensor:
+        idx = torch.as_tensor(list(indices), dtype=torch.long)
+        dirs = self.directory_of[idx]
+        locals_ = self.local_index_of[idx]
+        positions = self.position_of[idx]
+        hidden = self.means.shape[1]
+        out = torch.empty(len(idx), hidden, dtype=torch.float32)
+        for tensor_index in dirs.unique().tolist():
+            mask = dirs == tensor_index
+            out[mask] = self.tensors[tensor_index][locals_[mask]].to(torch.float32)
+        out -= self.means[positions]
+        return out
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            row_key, col_key = key
+        else:
+            row_key, col_key = key, slice(None)
+        single = isinstance(row_key, int)
+        rows = self._gather([row_key] if single else row_key)
+        result = rows[:, col_key]
+        return result[0] if single else result
+
+
 def _load_mixture_store(
     directories: Mapping[int, Path],
 ) -> tuple[VectorStore, dict[int, list[GroupRecord]]]:
-    """Load, centre against one pooled reference (D13) and concatenate every
-    k's vectors into one `VectorStore`.
+    """Load every k's vectors behind one mmap'd, pooled-centred (D13)
+    `_MixtureVectors`, without concatenating any vector table.
 
     k=1's directory is read as `TopicRecord`s (`outputs/bg_think_l19`
     predates `GroupRecord`) and adapted with `group_record_from_topic`; the
@@ -211,13 +273,13 @@ def _load_mixture_store(
     directory predates step 2's own filter.
 
     :param directories: k -> extraction output directory
-    :return: the concatenated store, and each k's records with `start`
-        offset into the concatenated store (so `record.start + position`
-        addresses the right row directly)
+    :return: the mixture store, and each k's records with `start` offset into
+        the store's global row space (so `record.start + position` addresses
+        the right row directly)
     """
     ks = sorted(directories)
     per_k_records: dict[int, list[GroupRecord]] = {}
-    sources: list[tuple[Path, list[GroupRecord]]] = []
+    sources: list[tuple[Path, list[VectorRecord]]] = []
     for k in ks:
         directory = directories[k]
         if k == 1:
@@ -232,18 +294,42 @@ def _load_mixture_store(
 
     pooled = pooled_position_means(sources)
 
-    vector_chunks = []
+    tensors: list[torch.Tensor] = []
+    directory_chunks: list[torch.Tensor] = []
+    local_chunks: list[torch.Tensor] = []
+    position_chunks: list[torch.Tensor] = []
     offsets: dict[int, int] = {}
     row_count = 0
-    for k in ks:
-        store = load_vector_store(
-            directories[k], center=True, records=per_k_records[k], means=pooled
+    for tensor_index, k in enumerate(ks):
+        vectors = torch.load(
+            directories[k] / "vectors.pt",
+            map_location="cpu",
+            weights_only=True,
+            mmap=True,
         )
-        offsets[k] = row_count
-        vector_chunks.append(store.vectors)
-        row_count += store.vectors.shape[0]
+        tensors.append(vectors)
+        n = vectors.shape[0]
 
-    combined = torch.cat(vector_chunks, dim=0)
+        position_of = torch.full((n,), -1, dtype=torch.long)
+        for record in per_k_records[k]:
+            position_of[record.start : record.start + record.count] = torch.arange(
+                record.count, dtype=torch.long
+            )
+
+        directory_chunks.append(torch.full((n,), tensor_index, dtype=torch.long))
+        local_chunks.append(torch.arange(n, dtype=torch.long))
+        position_chunks.append(position_of)
+
+        offsets[k] = row_count
+        row_count += n
+
+    mixture_vectors = _MixtureVectors(
+        tensors=tensors,
+        directory_of=torch.cat(directory_chunks),
+        local_index_of=torch.cat(local_chunks),
+        position_of=torch.cat(position_chunks),
+        means=pooled,
+    )
     offset_records = {
         k: [
             dataclasses.replace(record, start=record.start + offsets[k])
@@ -251,7 +337,8 @@ def _load_mixture_store(
         ]
         for k in ks
     }
-    return VectorStore(vectors=combined, hidden_size=combined.shape[1]), offset_records
+    store = VectorStore(vectors=mixture_vectors, hidden_size=pooled.shape[1])
+    return store, offset_records
 
 
 def build_mixture(

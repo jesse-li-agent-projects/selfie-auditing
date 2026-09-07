@@ -8,6 +8,7 @@ import torch
 from adapter_training.dataset import (
     Example,
     TopicRecord,
+    compute_position_means,
     examples_from_records,
     load_examples,
     load_records,
@@ -15,7 +16,6 @@ from adapter_training.dataset import (
     load_vector_store,
     pooled_position_means,
     pooled_vector_store,
-    position_counts,
     restrict_to_titles,
 )
 
@@ -108,19 +108,50 @@ def test_pooled_means_equal_the_mean_over_every_directorys_vectors(tmp_path):
     assert torch.allclose(second.vectors, torch.full((2, HIDDEN), 100.0))
 
 
-def test_pooled_means_weight_positions_by_how_many_records_reached_them(tmp_path):
-    # A 9-vector topic contributes nothing to position 9, so that position's
-    # pooled mean must come from the 10-vector topic alone -- the same rule
-    # the extractor used when it wrote each file.
+def test_position_means_are_recomputed_from_vectors_not_the_stored_file(tmp_path):
+    # position_means.pt is deliberately wrong here, so a passing test proves
+    # the recomputed mean came from vectors.pt, not the stored file (D13,
+    # amended 2026-09-07).
     records = two_topic_dir(tmp_path)
+    torch.save(torch.zeros(10, HIDDEN), tmp_path / "position_means.pt")
 
-    pooled = pooled_position_means([(tmp_path, records)])
-    counts = position_counts(records, 10)
+    means = compute_position_means(tmp_path, records)
 
-    assert counts.tolist() == [2.0] * 9 + [1.0]
-    # One directory pooled with itself is that directory's own means.
-    stored = torch.load(tmp_path / "position_means.pt", weights_only=True)
-    assert torch.allclose(pooled, stored)
+    # Position 8: both topics reach it (100+8, 200+8) -> mean 158.
+    assert torch.allclose(means[8], torch.full((HIDDEN,), 158.0))
+    # Position 9: only the 10-vector topic reaches it -- its own mean, not
+    # diluted by the absent second topic.
+    assert torch.allclose(means[9], torch.full((HIDDEN,), 109.0))
+
+
+def test_pooled_means_weight_each_source_equally_not_by_vector_count(tmp_path):
+    # Source A: one topic, 10 vectors, all at 100. Source B: one topic, a
+    # single vector at 300 -- far fewer vectors than A, but D14 says it must
+    # still count for half the pooled mean at position 0 (count-weighting
+    # would instead give something close to A's own 100).
+    dir_a = tmp_path / "a"
+    dir_a.mkdir()
+    records_a = [TopicRecord("Alpha", ("a",), "train", start=0, count=10)]
+    write_extraction_dir(
+        dir_a,
+        records_a,
+        torch.full((10, HIDDEN), 100.0, dtype=torch.bfloat16),
+        torch.zeros(10, HIDDEN),
+    )
+
+    dir_b = tmp_path / "b"
+    dir_b.mkdir()
+    records_b = [TopicRecord("Bravo", ("b",), "train", start=0, count=1)]
+    write_extraction_dir(
+        dir_b,
+        records_b,
+        torch.full((1, HIDDEN), 300.0, dtype=torch.bfloat16),
+        torch.zeros(1, HIDDEN),
+    )
+
+    pooled = pooled_position_means([(dir_a, records_a), (dir_b, records_b)])
+
+    assert torch.allclose(pooled[0], torch.full((HIDDEN,), 200.0))
 
 
 def test_no_center_returns_raw_vectors(tmp_path):
