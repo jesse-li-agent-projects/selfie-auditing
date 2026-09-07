@@ -35,6 +35,7 @@ from adapter_training.train_adapter import (
     example_stream,
     load_grouped_train_and_val,
     lr_at_step,
+    checkpoint_config,
     micro_batches,
     optimizer_step,
     parse_mixture_ratio,
@@ -219,6 +220,37 @@ def make_toy_store(n, hidden=HIDDEN, seed=1):
     torch.manual_seed(seed)
     vectors = torch.randn(n, hidden)
     return VectorStore(vectors=vectors, hidden_size=hidden)
+
+
+@pytest.mark.parametrize(
+    "projection_type", ["scalar_affine", "low_rank_only", "scalar_affine_plus_low_rank"]
+)
+def test_checkpoint_config_records_enough_to_rebuild_the_projection(projection_type):
+    """The recorded projection config is what a checkpoint is reconstructed
+    from, so it has to satisfy the factory for every projection type -- a
+    missing init parameter only surfaces when the checkpoint is loaded, long
+    after the run that wrote it."""
+    config = TrainConfig(
+        budget_examples=1000,
+        projection_type=projection_type,
+        projection_rank=8,
+        low_rank_init_factor=0.02,
+        init_scale=5.0,
+    )
+
+    recorded = checkpoint_config(config, total_steps=10)["projection"]
+
+    projection = create_projection_module(
+        projection_type=recorded["type"],
+        dim=16,
+        normalize_input=recorded["normalize_input"],
+        device=torch.device("cpu"),
+        init_scale=recorded["init_scale"],
+        low_rank_rank=recorded.get("low_rank_rank"),
+        low_rank_init_factor=recorded.get("low_rank_init_factor"),
+    )
+
+    assert projection.num_parameters() > 0
 
 
 def test_micro_batches_cover_the_batch_exactly_and_respect_the_budget():

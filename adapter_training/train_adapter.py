@@ -616,6 +616,7 @@ def checkpoint_config(config: TrainConfig, *, total_steps: int) -> dict:
             "normalize_input": True,
             "init_scale": config.init_scale,
             "low_rank_rank": config.projection_rank,
+            "low_rank_init_factor": config.low_rank_init_factor,
         },
         "training": {
             "optimizer_type": "adamw",
