@@ -502,6 +502,59 @@ def build_optimizer(projection, *, lr: float, weight_decay: float) -> torch.opti
     return torch.optim.AdamW(groups)
 
 
+def micro_batches(
+    batch: list[Example],
+    micro_batch_size: int,
+    target_lengths: dict[str, int] | None,
+    template_len: int,
+    max_target_len: int,
+) -> list[list[Example]]:
+    """Chunk a global batch into micro-batches of bounded peak memory.
+
+    A micro-batch's activation cost scales with `examples x (template_len +
+    its longest target)`, and `bucketed_batches` groups by length, so a
+    fixed example count makes the longest bucket -- whose targets can be
+    several times the median -- the only one that has to fit. Budgeting on
+    that product instead lets short-target batches take more examples at the
+    same peak, and shrinks the long ones that would otherwise OOM.
+
+    `micro_batch_size` therefore sets the count at the *worst* target length
+    in the pool; shorter batches get proportionally more. The count is capped
+    at twice it because attention memory grows faster than linearly in
+    length, which makes a linear budget optimistic at the short end.
+
+    :param batch: one global batch
+    :param micro_batch_size: examples per micro-batch at `max_target_len`
+    :param target_lengths: target token length per label, from
+        `compute_target_lengths`; `None` falls back to fixed-size chunks
+    :param template_len: the interpretation template's token length
+    :param max_target_len: the longest target in the pool
+    :return: the micro-batches, in order, together covering `batch` exactly
+    """
+    if target_lengths is None:
+        return [
+            batch[start : start + micro_batch_size]
+            for start in range(0, len(batch), micro_batch_size)
+        ]
+    budget = micro_batch_size * (template_len + max_target_len)
+    cap = 2 * micro_batch_size
+    chunks: list[list[Example]] = []
+    current: list[Example] = []
+    current_max = 0
+    for example in batch:
+        length = target_lengths[example.label]
+        width = template_len + max(current_max, length)
+        if current and (len(current) + 1 > cap or (len(current) + 1) * width > budget):
+            chunks.append(current)
+            current, current_max = [], 0
+            width = template_len + length
+        current.append(example)
+        current_max = max(current_max, length)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def optimizer_step(
     batch: list[Example],
     store,
@@ -509,6 +562,9 @@ def optimizer_step(
     optimizer: torch.optim.Optimizer,
     micro_batch_size: int,
     grad_clip: float,
+    target_lengths: dict[str, int] | None = None,
+    template_len: int = 0,
+    max_target_len: int = 0,
 ) -> tuple[float, float]:
     """One global-batch optimizer step via gradient accumulation.
 
@@ -522,15 +578,20 @@ def optimizer_step(
     :param store: the `VectorStore` `batch`'s vector indices address
     :param scorer: bound to the model, tokenizer and trainable projection
     :param optimizer: stepped once, over the whole accumulated gradient
-    :param micro_batch_size: examples per micro-batch
+    :param micro_batch_size: examples per micro-batch, at `max_target_len`
     :param grad_clip: max gradient norm, applied to the projection's own parameters
+    :param target_lengths: enables length-aware micro-batching -- see
+        `micro_batches`; `None` keeps fixed-size chunks
+    :param template_len: the interpretation template's token length
+    :param max_target_len: the longest target in the pool
     :return: `(batch loss, gradient norm)`, both as floats
     """
     batch_len = len(batch)
     optimizer.zero_grad()
     total_loss = 0.0
-    for start in range(0, batch_len, micro_batch_size):
-        micro = batch[start : start + micro_batch_size]
+    for micro in micro_batches(
+        batch, micro_batch_size, target_lengths, template_len, max_target_len
+    ):
         micro_len = len(micro)
         vectors = store.vectors[[example.vector_index for example in micro]]
         labels = [example.label for example in micro]
@@ -703,6 +764,7 @@ def train(
     )
 
     target_lengths = compute_target_lengths(train_examples, tokenizer, loss_config)
+    max_target_len = max(target_lengths.values())
     stream = example_stream(train_examples, config.seed)
     batches = bucketed_batches(
         stream, config.batch_size, config.buffer_batches, target_lengths, config.seed
@@ -750,6 +812,9 @@ def train(
                 optimizer,
                 config.micro_batch_size,
                 config.grad_clip,
+                target_lengths=target_lengths,
+                template_len=scorer.template_len,
+                max_target_len=max_target_len,
             )
             train_loss_accum += train_loss
             train_loss_count += 1

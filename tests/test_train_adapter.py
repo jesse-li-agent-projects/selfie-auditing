@@ -35,6 +35,7 @@ from adapter_training.train_adapter import (
     example_stream,
     load_grouped_train_and_val,
     lr_at_step,
+    micro_batches,
     optimizer_step,
     parse_mixture_ratio,
     parse_vectors_k,
@@ -218,6 +219,99 @@ def make_toy_store(n, hidden=HIDDEN, seed=1):
     torch.manual_seed(seed)
     vectors = torch.randn(n, hidden)
     return VectorStore(vectors=vectors, hidden_size=hidden)
+
+
+def test_micro_batches_cover_the_batch_exactly_and_respect_the_budget():
+    batch = [Example(vector_index=i, label=f"l{i}") for i in range(64)]
+    lengths = {example.label: 5 + (i % 20) for i, example in enumerate(batch)}
+    template_len, max_target_len, micro_batch_size = 10, 24, 8
+    budget = micro_batch_size * (template_len + max_target_len)
+
+    chunks = micro_batches(
+        batch, micro_batch_size, lengths, template_len, max_target_len
+    )
+
+    assert [example for chunk in chunks for example in chunk] == batch
+    for chunk in chunks:
+        width = template_len + max(lengths[example.label] for example in chunk)
+        assert len(chunk) * width <= budget
+        assert len(chunk) <= 2 * micro_batch_size
+
+
+def test_micro_batches_shrink_for_long_targets_and_grow_for_short_ones():
+    batch = [Example(vector_index=i, label=f"l{i}") for i in range(64)]
+    template_len, max_target_len, micro_batch_size = 10, 24, 8
+
+    at_worst = micro_batches(
+        batch,
+        micro_batch_size,
+        {example.label: max_target_len for example in batch},
+        template_len,
+        max_target_len,
+    )
+    at_shortest = micro_batches(
+        batch,
+        micro_batch_size,
+        {example.label: 1 for example in batch},
+        template_len,
+        max_target_len,
+    )
+
+    # The worst target length is what micro_batch_size is defined at.
+    assert all(len(chunk) == micro_batch_size for chunk in at_worst)
+    assert all(len(chunk) > micro_batch_size for chunk in at_shortest)
+
+
+def test_micro_batches_without_lengths_are_fixed_size():
+    batch = [Example(vector_index=i, label=f"l{i}") for i in range(20)]
+
+    chunks = micro_batches(batch, 8, None, 10, 24)
+
+    assert [len(chunk) for chunk in chunks] == [8, 8, 4]
+
+
+def test_length_aware_micro_batches_match_a_single_micro_batch():
+    """Uneven micro-batch sizes must not change the accumulated gradient."""
+    labels = ["ab", "cde", "f", "ghij", "k", "lmnop", "qr", "s"]
+    store = make_toy_store(len(labels))
+    batch = [Example(vector_index=i, label=label) for i, label in enumerate(labels)]
+    lengths = {label: len(label) for label in labels}
+
+    scorer_whole = make_toy_scorer(seed=42)
+    opt_whole = build_optimizer(scorer_whole.projection, lr=0.1, weight_decay=0.0)
+    optimizer_step(
+        batch,
+        store,
+        scorer_whole,
+        opt_whole,
+        micro_batch_size=len(batch),
+        grad_clip=10.0,
+    )
+
+    scorer_uneven = make_toy_scorer(seed=42)
+    opt_uneven = build_optimizer(scorer_uneven.projection, lr=0.1, weight_decay=0.0)
+    optimizer_step(
+        batch,
+        store,
+        scorer_uneven,
+        opt_uneven,
+        micro_batch_size=2,
+        grad_clip=10.0,
+        target_lengths=lengths,
+        template_len=1,
+        max_target_len=max(lengths.values()),
+    )
+
+    sizes = [
+        len(chunk)
+        for chunk in micro_batches(batch, 2, lengths, 1, max(lengths.values()))
+    ]
+    assert len(set(sizes)) > 1, "test needs uneven chunks to be meaningful"
+    for (name, whole), (_, uneven) in zip(
+        scorer_whole.projection.state_dict().items(),
+        scorer_uneven.projection.state_dict().items(),
+    ):
+        assert torch.allclose(whole, uneven, atol=1e-5), name
 
 
 def test_gradient_accumulation_matches_a_single_micro_batch():
