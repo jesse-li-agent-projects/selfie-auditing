@@ -282,6 +282,7 @@ def test_center_flag_reaches_vector_store_and_report(tmp_path, monkeypatch):
 
     args = SimpleNamespace(
         vectors=directory,
+        vectors_k=None,
         split="val",
         checkpoint="untrained",
         dataset_file=dataset_file,
@@ -481,6 +482,7 @@ def test_grouped_flag_dispatches_to_evaluate_grouped_positions(tmp_path, monkeyp
 
     args = SimpleNamespace(
         vectors=directory,
+        vectors_k=None,
         split="val",
         checkpoint="untrained",
         dataset_file=dataset_file,
@@ -527,6 +529,252 @@ def test_grouped_and_restrict_topics_to_is_rejected_at_parse_time(monkeypatch):
     )
     with pytest.raises(SystemExit):
         parse_args()
+
+
+# --- test 8: --vectors-k, pooled centring (bg_think_many step 6a) --------
+
+
+def test_vectors_and_vectors_k_are_mutually_exclusive_at_parse_time(monkeypatch):
+    from adapter_training.evaluate_retrieval import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["evaluate_retrieval.py", "--checkpoint", "untrained"],
+    )
+    with pytest.raises(SystemExit):
+        parse_args()  # neither --vectors nor --vectors-k
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_retrieval.py",
+            "--vectors",
+            "a",
+            "--vectors-k",
+            "1=b",
+            "--checkpoint",
+            "untrained",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        parse_args()  # both
+
+
+def write_single_topic_dir(directory: Path, *, title, split, value, hidden):
+    """A one-topic, one-position `topics.json` directory (k=1 shape)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        torch.full((1, hidden), value, dtype=torch.bfloat16), directory / "vectors.pt"
+    )
+    torch.save(torch.zeros(1, hidden), directory / "position_means.pt")
+    with open(directory / "topics.json", "w") as handle:
+        json.dump(
+            [
+                {
+                    "title": title,
+                    "labels": [f"{title} label"],
+                    "split": split,
+                    "start": 0,
+                    "count": 1,
+                }
+            ],
+            handle,
+        )
+    with open(directory / "positions.json", "w") as handle:
+        json.dump({"layer": 19, "prompt_style": "grouped"}, handle)
+
+
+def write_single_group_dir(directory: Path, *, titles, split, value, hidden):
+    """A one-group, one-position `groups.json` directory (k>=2 shape)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        torch.full((1, hidden), value, dtype=torch.bfloat16), directory / "vectors.pt"
+    )
+    torch.save(torch.zeros(1, hidden), directory / "position_means.pt")
+    with open(directory / "groups.json", "w") as handle:
+        json.dump(
+            [
+                {
+                    "titles": list(titles),
+                    "labels_per_topic": [[f"{t} label"] for t in titles],
+                    "split": split,
+                    "start": 0,
+                    "count": 1,
+                }
+            ],
+            handle,
+        )
+    with open(directory / "positions.json", "w") as handle:
+        json.dump({"layer": 19, "prompt_style": "grouped"}, handle)
+
+
+def _patch_multi_k_common(monkeypatch, captured):
+    def fake_build_index(topics, *, strategy, embedding_model, device):
+        return SimpleNamespace(titles=[t.title for t in topics])
+
+    def fake_evaluate_grouped_positions(
+        index,
+        model,
+        tokenizer,
+        adapter,
+        vectors,
+        records,
+        positions,
+        generation_config,
+        k_values,
+        device,
+    ):
+        captured.setdefault("vectors_by_call", []).append(vectors.clone())
+        captured.setdefault("records_by_call", []).append(records)
+        return {
+            "mode": "last",
+            "recalls": {1: 1.0},
+            "mrr": 1.0,
+            "n_queries": len(records),
+        }
+
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.check_sentence_transformers_available",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.build_index", fake_build_index
+    )
+    monkeypatch.setattr(
+        "adapter_training.evaluate_retrieval.evaluate_grouped_positions",
+        fake_evaluate_grouped_positions,
+    )
+    fake_model = SimpleNamespace(
+        get_input_embeddings=lambda: SimpleNamespace(
+            weight=SimpleNamespace(device="cpu")
+        )
+    )
+    monkeypatch.setattr("model_loading.load_base_model", lambda *a, **k: fake_model)
+    monkeypatch.setattr("model_loading.load_tokenizer", lambda *a, **k: object())
+
+
+def test_vectors_k_pools_centring_equally_across_directories_and_reports_per_k(
+    tmp_path, monkeypatch
+):
+    HIDDEN = 4
+    k1_dir = tmp_path / "k1"
+    write_single_topic_dir(k1_dir, title="A", split="val", value=10.0, hidden=HIDDEN)
+    k2_dir = tmp_path / "k2"
+    write_single_group_dir(
+        k2_dir, titles=("C", "D"), split="val", value=30.0, hidden=HIDDEN
+    )
+    dataset_file = tmp_path / "topics.jsonl"
+    dataset_file.write_text(
+        "\n".join(
+            json.dumps(
+                {"original_title": t, "prompt": "p", "labels": ["l"], "split": "val"}
+            )
+            for t in ("A", "C", "D")
+        )
+    )
+
+    captured = {}
+    _patch_multi_k_common(monkeypatch, captured)
+
+    from adapter_training.evaluate_retrieval import main
+
+    args = SimpleNamespace(
+        vectors=None,
+        vectors_k={1: k1_dir, 2: k2_dir},
+        pool_vectors_k={1: k1_dir, 2: k2_dir},
+        split="val",
+        checkpoint="untrained",
+        dataset_file=dataset_file,
+        center=True,
+        grouped=False,
+        positions="last",
+        restrict_topics_to=None,
+        limit_topics=None,
+        seed=42,
+        k_values="1,5,10",
+        max_new_tokens=30,
+        temperature=0.7,
+        gen_seed=42,
+        embedding_model="thenlper/gte-large",
+        index_cache=None,
+        model="fake-model",
+        device="cpu",
+        dtype="bfloat16",
+        report=None,
+    )
+
+    report = main(args)
+
+    # k1's own mean is 10 (its only vector); k2's own mean is 30 -- equally
+    # weighted (D14) pools to 20, not the vector-count-weighted value (which
+    # would coincide with 20 here too since both have one vector, so this
+    # also exercises the "equal, not count" arithmetic via the second test
+    # below where counts differ).
+    assert set(report["per_k"]) == {"1", "2"}
+    k1_vectors, k2_vectors = captured["vectors_by_call"]
+    assert k1_vectors[0, 0].item() == pytest.approx(10.0 - 20.0)
+    assert k2_vectors[0, 0].item() == pytest.approx(30.0 - 20.0)
+
+
+def test_pool_vectors_k_lets_a_query_restrict_to_one_k_while_pooling_over_more(
+    tmp_path, monkeypatch
+):
+    HIDDEN = 4
+    k1_dir = tmp_path / "k1"
+    write_single_topic_dir(k1_dir, title="A", split="val", value=10.0, hidden=HIDDEN)
+    k2_dir = tmp_path / "k2"
+    write_single_group_dir(
+        k2_dir, titles=("C", "D"), split="val", value=30.0, hidden=HIDDEN
+    )
+    dataset_file = tmp_path / "topics.jsonl"
+    dataset_file.write_text(
+        "\n".join(
+            json.dumps(
+                {"original_title": t, "prompt": "p", "labels": ["l"], "split": "val"}
+            )
+            for t in ("A", "C", "D")
+        )
+    )
+
+    captured = {}
+    _patch_multi_k_common(monkeypatch, captured)
+
+    from adapter_training.evaluate_retrieval import main
+
+    args = SimpleNamespace(
+        vectors=None,
+        vectors_k={1: k1_dir},  # query only k=1 (the "run 1" scope in step 6)
+        pool_vectors_k={1: k1_dir, 2: k2_dir},  # pool over the training set
+        split="val",
+        checkpoint="untrained",
+        dataset_file=dataset_file,
+        center=True,
+        grouped=False,
+        positions="last",
+        restrict_topics_to=None,
+        limit_topics=None,
+        seed=42,
+        k_values="1,5,10",
+        max_new_tokens=30,
+        temperature=0.7,
+        gen_seed=42,
+        embedding_model="thenlper/gte-large",
+        index_cache=None,
+        model="fake-model",
+        device="cpu",
+        dtype="bfloat16",
+        report=None,
+    )
+
+    report = main(args)
+
+    assert set(report["per_k"]) == {"1"}
+    (only_call,) = captured["vectors_by_call"]
+    # Pooled equally over k1 (10) and k2 (30) is 20, even though only k=1 is
+    # queried -- the condition the adapter actually trained under (D13).
+    assert only_call[0, 0].item() == pytest.approx(10.0 - 20.0)
 
 
 # --- hf_cache: generation reproducibility across batch sizes -------------
