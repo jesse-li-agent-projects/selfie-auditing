@@ -1,7 +1,7 @@
 # Step 6 results: bg_think_many
 
-**Status: in progress.** Gate 2 is complete. Gate 3 is running; the OOD
-comparisons (§5) have not been run.
+**Status: in progress.** Gates 2 and 3 are complete. The OOD comparisons (§5)
+are running.
 
 ## The question
 
@@ -175,9 +175,54 @@ k=2 and k=3 have no prior and are not comparable to anything published. Loss
 rising with k (1.33 -> 1.65 -> 1.88) is what a harder target looks like -- more
 topics to verbalize per vector -- not evidence of degradation.
 
-## Gate 3: set-level retrieval
+## Gate 3: set-level retrieval -- passed at every k
 
-TODO -- run in progress.
+Two runs, both scoring `best.pt` centred against the **pooled** reference
+(D13), both decoding at `--max-new-tokens 110`, temperature 0.7, `n_samples` 1,
+seed 42 (D10), against the full 49,637-topic index.
+
+Run 1 queries the k=1 directory only, pooling the centring reference across all
+three. Run 2 queries all three k in one invocation, so the pooled mean and the
+index are each built once, and reports per k (D12).
+
+| k | n_queries | recall@1 | recall@5 | recall@10 | MRR |
+|---|---|---|---|---|---|
+| 1 | 46,790 | **0.5646** | 0.7438 | 0.8027 | 0.6475 |
+| 2 | 46,590 | **0.2206** | 0.3365 | 0.3931 | 0.2802 |
+| 3 | 77,080 | **0.0911** | 0.1553 | 0.1932 | 0.1268 |
+
+Run 1's k=1 figures are identical to run 2's to every printed digit, which is
+the seeded decoding behaving as it should across two separate invocations.
+
+### The `segments` block, beside each recall
+
+`segments` reports how many segments the generated description split into,
+against the k the query actually had.
+
+| k | mean segments | histogram | fraction != k |
+|---|---|---|---|
+| 1 | 1.0002 | {1: 4678, 2: 1} | 0.0002 |
+| 2 | 2.0000 | {2: 4651, 1: 4, 3: 4} | 0.0017 |
+| 3 | 2.9987 | {3: 7690, 2: 10, 1: 3, 4+: 5} | 0.0023 |
+
+**The adapter emits the right number of segments at least 99.77% of the time at
+every k.** It learned the multi-topic output format almost exactly; recall
+falling with k is a difficulty effect on identifying *which* topics, not a
+failure to produce k of them. This is worth separating, because "cannot count"
+and "cannot identify" would call for different follow-ups.
+
+### The floor, and what is not comparable
+
+The untrained floor is ~0.00068 aggregate recall@1, so these are roughly 830x,
+320x and 130x the floor. The gate asked only to clear it by a wide margin, and
+the borrowed-floor caveat in the plan §4 stands: the untrained arm was not run
+here, and an untrained projection scores at chance whatever the centring.
+
+Run 1 is **not** comparable to `bg_think`'s 0.404, for two independent reasons
+rather than the one D13 gives. The centring differs (pooled here, per-directory
+there), *and* the decoding differs (110 new tokens here against the 30 every
+existing report used). Neither 0.404 nor the raw-vector figures belong beside
+it.
 
 ## OOD evaluations
 
