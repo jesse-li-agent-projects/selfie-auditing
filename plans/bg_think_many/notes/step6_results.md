@@ -162,6 +162,15 @@ It also turned out to matter: on the four words, book is the *only* one where
 is limited to. The cheaper-looking choice would have produced a null result
 driven by word selection.
 
+### `--report` and `--plot-dir` disagree about the `outputs/` prefix
+
+`report_bridge_entity` prepends `outputs/` to `--report` but not to
+`--plot-dir`, so the same invocation wrote its JSON under `outputs/` and its
+figure into the tracked source tree at `bridge_entity/plot_three/`. Moved by
+hand. The same split exists in `evaluate_retrieval`, where `--index-cache` is
+prefixed and `--report` is not, so this is a pattern rather than one slip:
+**check each path flag individually, and pass absolute paths when it matters.**
+
 ### `outputs/` syncs one way, which strands input files on the remote
 
 The bridge-entity run died on
