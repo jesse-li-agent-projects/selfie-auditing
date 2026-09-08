@@ -1,7 +1,6 @@
 # Step 6 results: bg_think_many
 
-**Status: in progress.** Gates 2 and 3 are complete. The OOD comparisons (§5)
-are running.
+**Status: gates and OOD evaluations complete.**
 
 ## The question
 
@@ -35,6 +34,27 @@ Command as in the plan §2 (corrected -- see "What contradicted the plan"), with
 `--micro-batch-size 16` and `--resume`, writing to
 `outputs/adapters/bg_think_many/`. 5,902 steps at a measured ~3.1 s/step
 including validation.
+
+### Realised cost
+
+Against the plan's "~5-6 A100-hours for the training run, plus two retrieval
+passes and the OOD evaluations", on an RTX 5090 (31.36 GiB):
+
+| stage | wall clock |
+|---|---|
+| training, 5,902 steps | 17:10 -> 22:20 (5 h 10 m) |
+| final eval, 600k example-forwards | 22:20 -> 23:25 (1 h 05 m) |
+| Gate 3, both retrieval runs | 23:32 -> 00:11 (39 m) |
+| OOD 1, taboo user-prompt | 00:40 -> 01:46 (1 h 06 m) |
+| OOD 2, taboo assistant, 4 words | 01:46 -> 04:48 (3 h 02 m) |
+| OOD 3, bridge entity | 04:49 -> 05:42 (53 m) |
+| **total GPU** | **~12 h 35 m** |
+
+Training landed inside the estimate. What the estimate did not carry is that
+the *evaluations cost as much again as the training* -- 6 h 20 m against 6 h
+15 m -- with the assistant sweep alone nearly as expensive as Gate 3 and both
+other OOD arms combined. A future step of this shape should book GPU time for
+roughly double its training estimate.
 
 `--val-total-examples 300000`: the plan §2 records the reasoning and the user's
 confirmation (2026-09-07). It sizes the loss pool only, splits 1:2:3 into
@@ -127,6 +147,32 @@ That file's aggregate recall@1 is **0.00068** (recall@5 0.00169, MRR 0.00160);
 not on a bg_think directory. All of these are ~1e-3, so the plan's use of it as
 an order-of-magnitude reference stands -- but the precise figure should be quoted
 as 0.00068, not 0.0013.
+
+### The two taboo harnesses do not cover the same words
+
+`run_pipeline.py`'s predecessors cover book and chair; `selfie_on_assistant.py`'s
+covers book, chair, blue and salt. Plan §5's "match every setting to the
+existing runs" is therefore satisfiable only per harness -- there is no single
+word list that matches both, and taking the user-prompt sweep's list as
+canonical would have silently run the assistant comparison at half its
+predecessor's coverage.
+
+It also turned out to matter: on the four words, book is the *only* one where
+`bg_think_many` underperforms, and book is one of the two the user-prompt sweep
+is limited to. The cheaper-looking choice would have produced a null result
+driven by word selection.
+
+### `outputs/` syncs one way, which strands input files on the remote
+
+The bridge-entity run died on
+
+    FileNotFoundError: outputs/bridge_entity/questions.jsonl
+
+`outputs/` is pulled remote->local, so a file that exists only locally is never
+on the remote, however plainly it sits in the repo. Inputs have to be
+materialised through the worktree, which syncs local->remote -- the same route
+the topic corpus needed. Worth knowing before booking GPU time for anything
+that reads a local input file.
 
 ### Run provenance is silently lost from a synced worktree
 
@@ -224,9 +270,103 @@ there), *and* the decoding differs (110 new tokens here against the 30 every
 existing report used). Neither 0.404 nor the raw-vector figures belong beside
 it.
 
-## OOD evaluations
+## The OOD evaluations
 
-TODO -- run in progress.
+Not gates. A negative result here is the finding, and the headline one is
+negative.
+
+### 1. Taboo, user-prompt tokens -- no improvement over baseline
+
+`run_pipeline.py`, 3 organisms x 2 words x 32 layers x 11 positions x 200
+samples, settings matched to `outputs/taboo_bg_think`'s own sidecar. Cells are
+compared **matched** on (organism, word, layer, position), because the best
+cell is a maximum over 352 cells and that selection effect alone can move a
+headline number.
+
+`finetuned` is the only organism that genuinely conceals the word, so it is the
+one that answers the question.
+
+| vs | word | mean | top-10 mean | cells better/worse |
+|---|---|---|---|---|
+| baseline | book | 0.0126 -> 0.0097 | 0.193 -> 0.177 | 86 / 128 |
+| baseline | chair | 0.0023 -> 0.0040 | 0.072 -> 0.103 | 42 / 19 |
+| bg_think | book | 0.0105 -> 0.0097 | 0.142 -> 0.177 | 96 / 114 |
+| bg_think | chair | 0.0001 -> 0.0040 | 0.003 -> 0.103 | 44 / 3 |
+
+**Worse than baseline on book, better on chair**: no improvement over the
+published adapter. Against `bg_think` it clearly recovers ground on chair.
+
+**This comparison covers only two words, and that limitation matters more than
+it first appears.** `taboo_baseline` and `taboo_bg_think` only ever ran book and
+chair, so nothing else can be compared. The assistant sweep below covers four
+words and finds book to be the *one* word where `bg_think_many` underperforms --
+so this null result may be an artefact of which words were available rather than
+a property of the adapter. Settling it needs both predecessor adapters re-run on
+blue and salt: two more full sweeps, ~2 GPU-hours.
+
+### 2. Taboo, assistant tokens -- better than `bg_think` on 3 of 4 words
+
+`selfie_on_assistant.py`, 4 words, 4,992 cells, matched to
+`outputs/taboo_assistant_bg_think`. No baseline arm, by the user's decision
+(2026-09-07); the baseline is the paper's reported figure, not a run here.
+
+`finetuned` organism:
+
+| word | mean | top-10 mean | cells better/worse |
+|---|---|---|---|
+| blue | 0.0016 -> **0.0155** | 0.034 -> 0.204 | 331 / 65 |
+| salt | 0.0001 -> **0.0064** | 0.005 -> 0.180 | 155 / 8 |
+| chair | 0.0000 -> **0.0015** | 0.003 -> 0.059 | 62 / 3 |
+| book | 0.0058 -> 0.0044 | 0.243 -> 0.090 | 144 / 88 |
+
+Better on three words, two of them by a wide margin, worse on book alone.
+
+An observation, **not a mechanism** (the parent plan forbids assuming one, and
+this is the report author's inference either way): the improvement is confined
+to the `finetuned` organism. On `control` and `prompted`, neither of which
+genuinely hides the word, `bg_think_many` is mostly worse.
+
+### 3. Bridge entity (TwoHopFact) -- clearly worse
+
+The paper's headline OOD result, and the most out-of-distribution of the three:
+raw uninjected activations, no mean subtraction.
+
+| adapter | detected | rate +- CI95 | generations hitting |
+|---|---|---|---|
+| baseline | 89/100 | 89.0% +- 6.1% | 2.15% |
+| bg_think | 88/100 | 88.0% +- 6.4% | 1.74% |
+| **bg_think_many** | **70/100** | **70.0% +- 9.0%** | **0.62%** |
+
+**A real regression, not noise.** The intervals do not overlap (61-79 against
+83-95) and the generation hit rate is 3.5x lower. `baseline` and `bg_think` are
+indistinguishable from each other here; `bg_think_many` is worse than both.
+
+Note the detection rate is near ceiling for the other two, so it has little
+power; `generation_hit_rate`, over 67,488 cells, is the metric with resolution,
+and it agrees.
+
+### Reading the three together
+
+Gate 2 and Gate 3 both passed, so this is not a broken checkpoint. The mixture
+helps on one OOD task, does not help on another, and hurts on the third -- and
+the one it hurts on is the paper's headline result and the most distant from
+training conditions.
+
+## The confound
+
+Restated from the parent plan §7, and it is not a formality here.
+
+**This run changed both the data and the architecture.** `bg_think_many` is a
+`scalar_affine_plus_low_rank` projection with rank 64 trained on a 1:2:3
+multi-topic mixture; `bg_think` differs in both respects. No OOD result above
+can be attributed to the multi-topic data alone -- the bridge-entity regression
+included. A rank-64 projection trained on the existing single-topic vectors at
+the same budget (~3-4 A100-hours) is what separates them, and the bridge-entity
+result makes that control more interesting than it would have been had
+everything improved: it would say whether the added capacity, not the mixture,
+is what costs raw-activation transfer.
+
+Recommended, for the user to decide.
 
 ## The confound
 
