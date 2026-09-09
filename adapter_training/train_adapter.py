@@ -79,6 +79,35 @@ def parse_vectors_source(values: list[str]) -> dict[str, Path]:
     return directories
 
 
+def parse_centring_groups(values: list[str], names: list[str]) -> dict[str, str]:
+    """Parse repeated `--centring-group NAME=GROUP` into `{source: group}`.
+
+    Every source must be named, so a source silently falling into the wrong
+    reference is impossible to express.
+
+    :param values: raw `"NAME=GROUP"` strings, one per occurrence
+    :param names: every source name, so an omission is an error
+    :raises ValueError: on a malformed entry, a repeat, an unknown source or
+        a source left unnamed
+    """
+    groups: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"--centring-group expects NAME=GROUP, got {value!r}")
+        name, _, group = value.partition("=")
+        if name not in names:
+            raise ValueError(f"--centring-group names unknown source {name!r}")
+        if name in groups:
+            raise ValueError(f"--centring-group given twice for {name!r}")
+        if not group:
+            raise ValueError(f"--centring-group needs a group, got {value!r}")
+        groups[name] = group
+    missing = [name for name in names if name not in groups]
+    if missing:
+        raise ValueError(f"--centring-group must name every source; missing {missing}")
+    return groups
+
+
 def parse_mixture_ratio(text: str, names: list[str]) -> dict[str, int]:
     """Parse `"1:2:3"` into `{source: weight}`, in `names`' order.
 
@@ -130,6 +159,17 @@ def parse_args():
         default="1:2:3",
         help="colon-separated example-count ratio, in the order the sources "
         "were given (--vectors-k orders its own smallest k first)",
+    )
+    parser.add_argument(
+        "--centring-group",
+        action="append",
+        default=None,
+        metavar="NAME=GROUP",
+        help="which centring group each source belongs to, e.g. "
+        "'--centring-group tell=tell --centring-group bg1=bg'. Sources in one "
+        "group are pooled into a single mean, which preserves what differs "
+        "between them; separate groups remove it. Every source must be named. "
+        "Default: one group for all of them",
     )
     parser.add_argument(
         "--val-total-examples",
@@ -262,12 +302,18 @@ def parse_args():
             parsed.mixture_ratio = parse_mixture_ratio(
                 parsed.mixture_ratio, list(parsed.mixture_sources)
             )
+            if parsed.centring_group is not None:
+                parsed.centring_group = parse_centring_groups(
+                    parsed.centring_group, list(parsed.mixture_sources)
+                )
         except ValueError as exc:
             parser.error(str(exc))
         if parsed.val_total_examples is None:
             parser.error(
                 "--val-total-examples is required with --vectors-k/--vectors-source"
             )
+    elif parsed.centring_group is not None:
+        parser.error("--centring-group needs a mixture, not --vectors")
     return parsed
 
 
@@ -1008,6 +1054,9 @@ def write_run_config(
             }
         if semicolon_drops is not None:
             config["semicolon_drops"] = dict(semicolon_drops)
+        config["centring_groups"] = args.centring_group or {
+            name: "all" for name in args.mixture_sources
+        }
     else:
         config["position_means_path"] = str(args.vectors / "position_means.pt")
     config["git_commit"] = _git_commit()
@@ -1051,6 +1100,7 @@ def load_grouped_train_and_val(
     directories: dict[str, Path],
     *,
     ratio: dict[str, int],
+    centring_groups: dict[str, str] | None = None,
     budget_examples: int,
     val_total_examples: int,
     seed: int,
@@ -1065,6 +1115,8 @@ def load_grouped_train_and_val(
 
     :param directories: source name -> extraction output directory
     :param ratio: relative example count per source
+    :param centring_groups: source name -> centring group, or None to centre
+        every source together
     :param budget_examples: total train examples across every source
     :param val_total_examples: total val examples across every source -- the
         "full" val pool `train()` scores at the end (`final_eval.json`);
@@ -1073,9 +1125,21 @@ def load_grouped_train_and_val(
     :return: the train and val `Mixture`s; the val one's `source_ranges` is
         what lets `train()` score each source's own val slice
     """
-    train = build_mixture(directories, "train", budget_examples, ratio=ratio, seed=seed)
+    train = build_mixture(
+        directories,
+        "train",
+        budget_examples,
+        ratio=ratio,
+        centring_groups=centring_groups,
+        seed=seed,
+    )
     val = build_mixture(
-        directories, "val", val_total_examples, ratio=ratio, seed=f"{seed}-val"
+        directories,
+        "val",
+        val_total_examples,
+        ratio=ratio,
+        centring_groups=centring_groups,
+        seed=f"{seed}-val",
     )
     return train, val
 
@@ -1102,6 +1166,7 @@ def main(args) -> dict:
         train_mixture, val_mixture = load_grouped_train_and_val(
             args.mixture_sources,
             ratio=args.mixture_ratio,
+            centring_groups=args.centring_group,
             budget_examples=args.budget_examples,
             val_total_examples=args.val_total_examples,
             seed=args.seed,

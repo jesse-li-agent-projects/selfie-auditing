@@ -233,20 +233,45 @@ class _MixtureVectors:
         order `source_of` indexes into
     :ivar source_of: `[n_total]`, which `tensors` entry a global row maps to
     :ivar local_index_of: `[n_total]`, the row within that tensor
+    Centring is per group, not global: sources whose extraction prompts
+    differ have a large constant offset between them, and subtracting a mean
+    pooled across that offset would leave it in every vector. Each group gets
+    its own mean table, which is why `means` is a list and not one tensor --
+    groups can hold different numbers of positions, and a one-position group's
+    table must not be padded out to a ten-position group's length.
+
     :ivar position_of: `[n_total]`, the position (`row - record.start`) to
         centre that row with, or -1 for a row no surviving record addresses
-    :ivar means: `[n_positions, hidden]` fp32, the pooled reference
+    :ivar group_of: `[n_total]`, which `means` table a global row centres against
+    :ivar means: one `[n_positions, hidden]` fp32 reference per centring group,
+        ragged across groups
     """
 
     tensors: list[torch.Tensor]
     source_of: torch.Tensor
     local_index_of: torch.Tensor
     position_of: torch.Tensor
-    means: torch.Tensor
+    group_of: torch.Tensor
+    means: list[torch.Tensor]
+
+    def __post_init__(self) -> None:
+        # A row must never index a position its own group has no mean for.
+        # Rows at -1 are addressed by no record and are caught in _gather.
+        for group_index, table in enumerate(self.means):
+            positions = self.position_of[self.group_of == group_index]
+            if positions.numel() == 0:
+                continue
+            highest = int(positions.max().item())
+            if highest >= table.shape[0]:
+                raise ValueError(
+                    f"_MixtureVectors: centring group {group_index} has "
+                    f"{table.shape[0]} position means but a row asks for "
+                    f"position {highest}"
+                )
 
     @property
     def shape(self) -> tuple[int, int]:
-        return (self.source_of.shape[0], self.means.shape[1])
+        return (self.source_of.shape[0], self.means[0].shape[1])
 
     def _gather(self, indices: Sequence[int]) -> torch.Tensor:
         idx = torch.as_tensor(list(indices), dtype=torch.long)
@@ -258,12 +283,15 @@ class _MixtureVectors:
                 "_MixtureVectors: asked for a row no record addresses (it was "
                 "dropped by a filter), which has no position to centre against"
             )
-        hidden = self.means.shape[1]
+        hidden = self.means[0].shape[1]
         out = torch.empty(len(idx), hidden, dtype=torch.float32)
         for tensor_index in sources.unique().tolist():
             mask = sources == tensor_index
             out[mask] = self.tensors[tensor_index][locals_[mask]].to(torch.float32)
-        out -= self.means[positions]
+        groups = self.group_of[idx]
+        for group_index in groups.unique().tolist():
+            mask = groups == group_index
+            out[mask] -= self.means[group_index][positions[mask]]
         return out
 
     def __getitem__(self, key):
@@ -293,6 +321,9 @@ class Mixture:
     :ivar source_rows: source -> `(start, end)` into the store's rows
     :ivar semicolon_drops: source -> how many topics the `;`-label filter
         dropped (0 for a source whose extractor already applied it)
+    :ivar group_means: centring group -> the `[n_positions, hidden]` mean
+        subtracted from that group's rows, for a caller that has to prove a
+        group's reference is the one an earlier run used
     """
 
     store: VectorStore
@@ -300,6 +331,7 @@ class Mixture:
     source_ranges: dict[str, tuple[int, int]]
     source_rows: dict[str, tuple[int, int]]
     semicolon_drops: dict[str, int]
+    group_means: dict[str, torch.Tensor]
 
 
 def _load_source_records(directory: Path) -> tuple[list[GroupRecord], int]:
@@ -324,23 +356,40 @@ def _load_source_records(directory: Path) -> tuple[list[GroupRecord], int]:
 
 def _load_mixture_store(
     directories: Mapping[str, Path],
+    centring_groups: Mapping[str, str] | None = None,
 ) -> tuple[
     VectorStore,
     dict[str, list[GroupRecord]],
     dict[str, tuple[int, int]],
     dict[str, int],
+    dict[str, torch.Tensor],
 ]:
-    """Load every source's vectors behind one mmap'd, pooled-centred
+    """Load every source's vectors behind one mmap'd, per-group-centred
     `_MixtureVectors`, without concatenating any vector table.
+
+    Sources sharing a centring group are pooled with equal weight into one
+    reference (`pooled_position_means`), which preserves whatever differs
+    *between* those populations. Put sources in separate groups where that
+    difference is prompt-structure bias you want removed rather than kept.
 
     :param directories: source name -> extraction output directory, in the
         caller's order (which fixes the store's row layout)
+    :param centring_groups: source name -> group name; the default puts every
+        source in one group, which is a plain pooled mean over all of them
     :return: the mixture store; each source's records with `start` offset into
         the store's global row space (so `record.start + position` addresses
-        the right row directly); each source's `(start, end)` row range; and
-        each source's `;`-filter drop count
+        the right row directly); each source's `(start, end)` row range; each
+        source's `;`-filter drop count; and each group's mean
+    :raises ValueError: if `centring_groups` does not name exactly the sources
     """
     names = list(directories)
+    if centring_groups is None:
+        centring_groups = dict.fromkeys(names, "all")
+    elif set(centring_groups) != set(names):
+        raise ValueError(
+            f"_load_mixture_store: centring groups name "
+            f"{sorted(centring_groups)} but the sources are {sorted(names)}"
+        )
     per_source_records: dict[str, list[GroupRecord]] = {}
     semicolon_drops: dict[str, int] = {}
     sources: list[tuple[Path, list[VectorRecord]]] = []
@@ -350,12 +399,26 @@ def _load_mixture_store(
         semicolon_drops[name] = dropped
         sources.append((directories[name], records))
 
-    pooled = pooled_position_means(sources)
+    group_names: list[str] = []
+    for name in names:
+        if centring_groups[name] not in group_names:
+            group_names.append(centring_groups[name])
+    group_means = {
+        group: pooled_position_means(
+            [
+                (directories[name], per_source_records[name])
+                for name in names
+                if centring_groups[name] == group
+            ]
+        )
+        for group in group_names
+    }
 
     tensors: list[torch.Tensor] = []
     source_chunks: list[torch.Tensor] = []
     local_chunks: list[torch.Tensor] = []
     position_chunks: list[torch.Tensor] = []
+    group_chunks: list[torch.Tensor] = []
     source_rows: dict[str, tuple[int, int]] = {}
     offsets: dict[str, int] = {}
     row_count = 0
@@ -378,6 +441,9 @@ def _load_mixture_store(
         source_chunks.append(torch.full((n,), tensor_index, dtype=torch.long))
         local_chunks.append(torch.arange(n, dtype=torch.long))
         position_chunks.append(position_of)
+        group_chunks.append(
+            torch.full((n,), group_names.index(centring_groups[name]), dtype=torch.long)
+        )
 
         offsets[name] = row_count
         source_rows[name] = (row_count, row_count + n)
@@ -388,7 +454,8 @@ def _load_mixture_store(
         source_of=torch.cat(source_chunks),
         local_index_of=torch.cat(local_chunks),
         position_of=torch.cat(position_chunks),
-        means=pooled,
+        group_of=torch.cat(group_chunks),
+        means=[group_means[group] for group in group_names],
     )
     offset_records = {
         name: [
@@ -397,8 +464,9 @@ def _load_mixture_store(
         ]
         for name in names
     }
-    store = VectorStore(vectors=mixture_vectors, hidden_size=pooled.shape[1])
-    return store, offset_records, source_rows, semicolon_drops
+    hidden = group_means[group_names[0]].shape[1]
+    store = VectorStore(vectors=mixture_vectors, hidden_size=hidden)
+    return store, offset_records, source_rows, semicolon_drops, group_means
 
 
 def build_mixture(
@@ -407,6 +475,7 @@ def build_mixture(
     total_examples: int,
     *,
     ratio: Mapping[str, int],
+    centring_groups: Mapping[str, str] | None = None,
     seed: int | str,
 ) -> Mixture:
     """One split's mixture, across several named extraction sources.
@@ -424,6 +493,8 @@ def build_mixture(
     :param split: which split's records to sample examples from
     :param total_examples: exact total across all sources, split by `ratio`
     :param ratio: relative example count per source
+    :param centring_groups: source name -> centring group (see
+        `_load_mixture_store`); the default centres every source together
     :param seed: seeds each source's sampler independently
         (`f"{seed}-{name}-{split}"`)
     :return: the sampled `Mixture`
@@ -434,8 +505,8 @@ def build_mixture(
             f"build_mixture: ratio names {sorted(ratio)} but the sources are "
             f"{sorted(directories)}"
         )
-    store, offset_records, source_rows, semicolon_drops = _load_mixture_store(
-        directories
+    store, offset_records, source_rows, semicolon_drops, group_means = (
+        _load_mixture_store(directories, centring_groups)
     )
     counts = _split_by_ratio(total_examples, ratio)
 
@@ -460,4 +531,5 @@ def build_mixture(
         source_ranges=source_ranges,
         source_rows=source_rows,
         semicolon_drops=semicolon_drops,
+        group_means=group_means,
     )

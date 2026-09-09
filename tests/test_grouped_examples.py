@@ -8,7 +8,11 @@ import pytest
 import torch
 
 from adapter_training.dataset import GroupRecord, TopicRecord
+from adapter_training.dataset import pooled_position_means
 from adapter_training.grouped_examples import (
+    _MixtureVectors,
+    _load_mixture_store,
+    _load_source_records,
     _split_by_ratio,
     build_mixture,
     compose_label,
@@ -466,3 +470,167 @@ def test_single_topic_source_reports_its_semicolon_drops(tmp_path):
     start, end = mixture.source_ranges["filtered"]
     for example in mixture.examples[start:end]:
         assert example.vector_index < 4
+
+
+# --- centring groups -------------------------------------------------------
+
+
+def build_ragged_sources(tmp_path):
+    """A one-position source and a four-position one, so a group holding only
+    the first must not be padded out to the second's length.
+
+    `tell` holds two topics (one train, one val) at count=1, raw 11.0/12.0, so
+    its own mean is 11.5. `bg` holds two groups at count=4, raw 41.0/42.0, so
+    its own mean is 41.5 at every position.
+    """
+    tell_train = TopicRecord("TellTrain", six_label_topic("tt"), "train", 0, 1)
+    tell_val = TopicRecord("TellVal", six_label_topic("tv"), "val", 1, 1)
+    tell_vectors = torch.zeros(2, HIDDEN, dtype=torch.bfloat16)
+    tell_vectors[0] = 11.0
+    tell_vectors[1] = 12.0
+    write_topic_dir(
+        tmp_path / "tell", [tell_train, tell_val], tell_vectors, torch.zeros(1, HIDDEN)
+    )
+
+    bg_train = GroupRecord(
+        ("BgTrainA", "BgTrainB"),
+        (six_label_topic("bta"), six_label_topic("btb")),
+        "train",
+        start=0,
+        count=4,
+    )
+    bg_val = GroupRecord(
+        ("BgValA", "BgValB"),
+        (six_label_topic("bva"), six_label_topic("bvb")),
+        "val",
+        start=4,
+        count=4,
+    )
+    bg_vectors = torch.zeros(8, HIDDEN, dtype=torch.bfloat16)
+    bg_vectors[0:4] = 41.0
+    bg_vectors[4:8] = 42.0
+    write_group_dir(
+        tmp_path / "bg", [bg_train, bg_val], bg_vectors, torch.zeros(4, HIDDEN)
+    )
+    return {"tell": tmp_path / "tell", "bg": tmp_path / "bg"}
+
+
+def test_default_centring_group_matches_pooling_over_every_source(tmp_path):
+    # The regression guard for "the bg* pooled mean is unchanged": the default
+    # single group must be bit-identical to the old all-sources pooled mean.
+    directories = build_fixture(tmp_path)
+    _store, _records, _rows, _drops, group_means = _load_mixture_store(directories)
+    expected = pooled_position_means(
+        [(d, _load_source_records(d)[0]) for d in directories.values()]
+    )
+    assert list(group_means) == ["all"]
+    assert torch.equal(group_means["all"], expected)
+
+
+def test_two_groups_each_get_their_own_mean(tmp_path):
+    directories = build_fixture(tmp_path)
+    groups = {"k1": "one", "k2": "rest", "k3": "rest"}
+    _store, _records, _rows, _drops, group_means = _load_mixture_store(
+        directories, groups
+    )
+    assert set(group_means) == {"one", "rest"}
+    # k1's own mean is the average of its train/val constants, untouched by
+    # the other two; the rest pool to (21.5 + 31.5) / 2.
+    assert group_means["one"][0, 0].item() == pytest.approx(11.5)
+    assert group_means["rest"][0, 0].item() == pytest.approx(26.5)
+
+
+def test_separate_groups_centre_each_source_on_its_own_mean(tmp_path):
+    directories = build_ragged_sources(tmp_path)
+    mixture = build_mixture(
+        directories,
+        "train",
+        4,
+        ratio={"tell": 1, "bg": 1},
+        centring_groups={"tell": "tell", "bg": "bg"},
+        seed=0,
+    )
+    for name, raw, mean in (("tell", 11.0, 11.5), ("bg", 41.0, 41.5)):
+        start, _end = mixture.source_ranges[name]
+        index = mixture.examples[start].vector_index
+        assert mixture.store.vectors[index, 0].item() == pytest.approx(raw - mean)
+
+
+def test_a_ragged_group_is_neither_padded_nor_read_out_of_range(tmp_path):
+    directories = build_ragged_sources(tmp_path)
+    mixture = build_mixture(
+        directories,
+        "train",
+        4,
+        ratio={"tell": 1, "bg": 1},
+        centring_groups={"tell": "tell", "bg": "bg"},
+        seed=0,
+    )
+    assert mixture.group_means["tell"].shape[0] == 1
+    assert mixture.group_means["bg"].shape[0] == 4
+    # Every tell row centres against position 0 and no other.
+    start, end = mixture.source_ranges["tell"]
+    row_start, row_end = mixture.source_rows["tell"]
+    for example in mixture.examples[start:end]:
+        assert row_start <= example.vector_index < row_end
+
+
+def test_pooling_a_ragged_group_would_leave_the_offset_in(tmp_path):
+    # Why D3 separates them: pooled, tell's single position averages with bg's
+    # position 0 and keeps a large constant offset that per-group centring
+    # removes.
+    directories = build_ragged_sources(tmp_path)
+    pooled = build_mixture(directories, "train", 4, ratio={"tell": 1, "bg": 1}, seed=0)
+    start, _end = pooled.source_ranges["tell"]
+    index = pooled.examples[start].vector_index
+    assert pooled.store.vectors[index, 0].item() == pytest.approx(11.0 - 26.5)
+
+
+def test_centring_groups_must_name_every_source(tmp_path):
+    directories = build_fixture(tmp_path)
+    with pytest.raises(ValueError, match="centring groups name"):
+        _load_mixture_store(directories, {"k1": "one"})
+
+
+def test_split_by_ratio_over_the_tell_and_think_budget():
+    # The plan's D4 table, which must come out with no remainder to distribute.
+    assert _split_by_ratio(2_266_173, {"tell": 3, "bg1": 1, "bg2": 2, "bg3": 3}) == {
+        "tell": 755_391,
+        "bg1": 251_797,
+        "bg2": 503_594,
+        "bg3": 755_391,
+    }
+    assert _split_by_ratio(450_000, {"tell": 3, "bg1": 1, "bg2": 2, "bg3": 3}) == {
+        "tell": 150_000,
+        "bg1": 50_000,
+        "bg2": 100_000,
+        "bg3": 150_000,
+    }
+
+
+def test_mixture_vectors_rejects_a_row_its_group_has_no_mean_for():
+    # The assertion that stops a one-position source silently borrowing a
+    # ten-position group's mean for a position it never had.
+    with pytest.raises(ValueError, match="position means but a row asks"):
+        _MixtureVectors(
+            tensors=[torch.zeros(2, HIDDEN, dtype=torch.bfloat16)],
+            source_of=torch.zeros(2, dtype=torch.long),
+            local_index_of=torch.arange(2),
+            position_of=torch.tensor([0, 1]),
+            group_of=torch.zeros(2, dtype=torch.long),
+            means=[torch.zeros(1, HIDDEN)],
+        )
+
+
+def test_mixture_vectors_refuses_a_row_no_record_addresses():
+    vectors = _MixtureVectors(
+        tensors=[torch.zeros(2, HIDDEN, dtype=torch.bfloat16)],
+        source_of=torch.zeros(2, dtype=torch.long),
+        local_index_of=torch.arange(2),
+        position_of=torch.tensor([0, -1]),
+        group_of=torch.zeros(2, dtype=torch.long),
+        means=[torch.zeros(1, HIDDEN)],
+    )
+    assert vectors[0, 0].item() == pytest.approx(0.0)
+    with pytest.raises(IndexError, match="no record addresses"):
+        vectors[1]

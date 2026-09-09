@@ -41,6 +41,7 @@ from adapter_training.train_adapter import (
     optimizer_step,
     parse_mixture_ratio,
     parse_vectors_k,
+    parse_centring_groups,
     parse_vectors_source,
     seed_everything,
     train,
@@ -1145,6 +1146,55 @@ def test_vectors_source_and_vectors_k_agree_on_sources_and_ratio(monkeypatch):
     assert via_k.mixture_sources == via_source.mixture_sources
     assert list(via_k.mixture_sources) == list(via_source.mixture_sources)
     assert via_k.mixture_ratio == via_source.mixture_ratio
+
+
+def test_parse_centring_groups_maps_every_source():
+    assert parse_centring_groups(
+        ["tell=tell", "bg1=bg", "bg2=bg"], ["tell", "bg1", "bg2"]
+    ) == {"tell": "tell", "bg1": "bg", "bg2": "bg"}
+
+
+def test_parse_centring_groups_rejects_an_unnamed_source():
+    # Silence here would put a source in the wrong reference, so it is an
+    # error rather than a default.
+    with pytest.raises(ValueError, match="must name every source"):
+        parse_centring_groups(["tell=tell"], ["tell", "bg1"])
+
+
+def test_parse_centring_groups_rejects_an_unknown_source():
+    with pytest.raises(ValueError, match="unknown source"):
+        parse_centring_groups(["nope=x", "tell=tell"], ["tell"])
+
+
+def test_parse_centring_groups_rejects_a_repeat_and_a_malformed_entry():
+    with pytest.raises(ValueError, match="twice"):
+        parse_centring_groups(["tell=a", "tell=b"], ["tell"])
+    with pytest.raises(ValueError, match="NAME=GROUP"):
+        parse_centring_groups(["tell"], ["tell"])
+
+
+def test_centring_group_defaults_to_one_group_and_needs_a_mixture(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-source",
+            "tell=a",
+            "--mixture-ratio",
+            "1",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    assert parse_args().centring_group is None
+
+    monkeypatch.setattr(
+        sys, "argv", _train_argv("--vectors", "a", "--centring-group", "tell=tell")
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
 
 
 def test_parse_vectors_k_rejects_a_repeated_k():
