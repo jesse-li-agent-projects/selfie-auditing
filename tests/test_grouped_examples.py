@@ -1,4 +1,4 @@
-"""Tests for adapter_training.grouped_examples (bg_think_many step 3)."""
+"""Tests for adapter_training.grouped_examples."""
 
 import json
 from collections import Counter
@@ -186,20 +186,20 @@ def test_sample_examples_composed_label_parts_share_a_bucket_index():
 
 
 def test_split_by_ratio_matches_the_dataset_budget():
-    assert _split_by_ratio(1_510_782, {1: 1, 2: 2, 3: 3}) == {
-        1: 251_797,
-        2: 503_594,
-        3: 755_391,
+    assert _split_by_ratio(1_510_782, {"k1": 1, "k2": 2, "k3": 3}) == {
+        "k1": 251_797,
+        "k2": 503_594,
+        "k3": 755_391,
     }
 
 
 def test_split_by_ratio_sums_exactly_with_a_remainder():
-    counts = _split_by_ratio(10, {1: 1, 2: 2, 3: 3})
+    counts = _split_by_ratio(10, {"k1": 1, "k2": 2, "k3": 3})
     assert sum(counts.values()) == 10
 
 
 def test_split_by_ratio_is_never_negative():
-    counts = _split_by_ratio(1, {1: 1, 2: 2, 3: 3})
+    counts = _split_by_ratio(1, {"k1": 1, "k2": 2, "k3": 3})
     assert sum(counts.values()) == 1
     assert all(v >= 0 for v in counts.values())
 
@@ -269,7 +269,7 @@ def build_fixture(tmp_path):
     write_topic_dir(
         tmp_path / "k1", [k1_train, k1_val], vectors1, torch.zeros(4, HIDDEN)
     )
-    directories[1] = tmp_path / "k1"
+    directories["k1"] = tmp_path / "k1"
 
     k2_train = GroupRecord(
         ("K2TrainA", "K2TrainB"),
@@ -291,7 +291,7 @@ def build_fixture(tmp_path):
     write_group_dir(
         tmp_path / "k2", [k2_train, k2_val], vectors2, torch.zeros(4, HIDDEN)
     )
-    directories[2] = tmp_path / "k2"
+    directories["k2"] = tmp_path / "k2"
 
     k3_train = GroupRecord(
         ("K3TrainA", "K3TrainB", "K3TrainC"),
@@ -313,58 +313,156 @@ def build_fixture(tmp_path):
     write_group_dir(
         tmp_path / "k3", [k3_train, k3_val], vectors3, torch.zeros(4, HIDDEN)
     )
-    directories[3] = tmp_path / "k3"
+    directories["k3"] = tmp_path / "k3"
 
     return directories
 
 
+EVEN = {"k1": 1, "k2": 1, "k3": 1}
+
+
 def test_build_mixture_splits_by_ratio(tmp_path):
     directories = build_fixture(tmp_path)
-    _, examples, k_ranges = build_mixture(
-        directories, "train", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
-    )
-    assert len(examples) == 12
-    assert {k: end - start for k, (start, end) in k_ranges.items()} == {
-        1: 4,
-        2: 4,
-        3: 4,
-    }
-    for k, (start, end) in k_ranges.items():
-        assert examples[start:end] != []
+    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    assert len(mixture.examples) == 12
+    assert {
+        name: end - start for name, (start, end) in mixture.source_ranges.items()
+    } == {"k1": 4, "k2": 4, "k3": 4}
+    for start, end in mixture.source_ranges.values():
+        assert mixture.examples[start:end] != []
+
+
+def test_build_mixture_rejects_a_ratio_that_names_other_sources(tmp_path):
+    directories = build_fixture(tmp_path)
+    with pytest.raises(ValueError, match="ratio names"):
+        build_mixture(directories, "train", 12, ratio={"k1": 1, "nope": 1}, seed=0)
 
 
 # raw -> pooled-centred (raw - 21.5), per build_fixture's docstring.
-TRAIN_CENTRED = {1: -10.5, 2: -0.5, 3: 9.5}
-VAL_CENTRED = {1: -9.5, 2: 0.5, 3: 10.5}
+TRAIN_CENTRED = {"k1": -10.5, "k2": -0.5, "k3": 9.5}
+VAL_CENTRED = {"k1": -9.5, "k2": 0.5, "k3": 10.5}
 
 
 def test_build_mixture_offsets_index_into_the_mixture_store(tmp_path):
     directories = build_fixture(tmp_path)
-    store, examples, k_ranges = build_mixture(
-        directories, "train", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
-    )
-    # Every example's vector_index must land on that k's own (pooled-centred)
-    # rows in the mixture store, not another k's or the val split's.
-    for k, (start, end) in k_ranges.items():
-        for example in examples[start:end]:
-            assert store.vectors[example.vector_index, 0].item() == pytest.approx(
-                TRAIN_CENTRED[k]
-            )
+    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    # Every example's vector_index must land on that source's own
+    # (pooled-centred) rows, not another source's or the val split's.
+    for name, (start, end) in mixture.source_ranges.items():
+        for example in mixture.examples[start:end]:
+            assert mixture.store.vectors[
+                example.vector_index, 0
+            ].item() == pytest.approx(TRAIN_CENTRED[name])
+
+
+def test_build_mixture_examples_stay_inside_their_own_source_rows(tmp_path):
+    # The check that replaces counting "; " separators: that one cannot tell
+    # two single-topic sources apart, since both compose to zero separators.
+    directories = build_fixture(tmp_path)
+    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    for name, (start, end) in mixture.source_ranges.items():
+        row_start, row_end = mixture.source_rows[name]
+        for example in mixture.examples[start:end]:
+            assert row_start <= example.vector_index < row_end
 
 
 def test_build_mixture_never_addresses_a_val_group_from_a_train_call(tmp_path):
     directories = build_fixture(tmp_path)
-    store, examples, _ = build_mixture(
-        directories, "train", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
-    )
-    values = {round(store.vectors[e.vector_index, 0].item(), 6) for e in examples}
+    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    values = {
+        round(mixture.store.vectors[e.vector_index, 0].item(), 6)
+        for e in mixture.examples
+    }
     assert values == set(TRAIN_CENTRED.values())
 
 
 def test_build_mixture_val_call_only_addresses_val_groups(tmp_path):
     directories = build_fixture(tmp_path)
-    store, examples, _ = build_mixture(
-        directories, "val", 12, ratio={1: 1, 2: 1, 3: 1}, seed=0
-    )
-    values = {round(store.vectors[e.vector_index, 0].item(), 6) for e in examples}
+    mixture = build_mixture(directories, "val", 12, ratio=EVEN, seed=0)
+    values = {
+        round(mixture.store.vectors[e.vector_index, 0].item(), 6)
+        for e in mixture.examples
+    }
     assert values == set(VAL_CENTRED.values())
+
+
+# --- two sources at the same k --------------------------------------------
+
+
+def build_two_single_topic_sources(tmp_path):
+    """Two single-topic (k=1) sources, the case the k-keyed code could not
+    express at all. Raw constants 11/12 and 41/42; each source's own mean is
+    11.5 and 41.5, pooled equally to 26.5.
+    """
+    directories = {}
+    for name, base in (("tell", 11.0), ("bg1", 41.0)):
+        train = TopicRecord(
+            f"{name}Train", six_label_topic(f"{name}t"), "train", start=0, count=4
+        )
+        val = TopicRecord(
+            f"{name}Val", six_label_topic(f"{name}v"), "val", start=4, count=4
+        )
+        vectors = torch.zeros(8, HIDDEN, dtype=torch.bfloat16)
+        vectors[0:4] = base
+        vectors[4:8] = base + 1.0
+        write_topic_dir(tmp_path / name, [train, val], vectors, torch.zeros(4, HIDDEN))
+        directories[name] = tmp_path / name
+    return directories
+
+
+def test_two_sources_at_the_same_k_land_in_disjoint_offset_ranges(tmp_path):
+    directories = build_two_single_topic_sources(tmp_path)
+    mixture = build_mixture(
+        directories, "train", 8, ratio={"tell": 1, "bg1": 1}, seed=0
+    )
+    assert mixture.source_rows == {"tell": (0, 8), "bg1": (8, 16)}
+    for name, (start, end) in mixture.source_ranges.items():
+        row_start, row_end = mixture.source_rows[name]
+        for example in mixture.examples[start:end]:
+            assert row_start <= example.vector_index < row_end
+
+
+def test_two_sources_at_the_same_k_are_centred_on_the_pooled_mean(tmp_path):
+    directories = build_two_single_topic_sources(tmp_path)
+    mixture = build_mixture(
+        directories, "train", 8, ratio={"tell": 1, "bg1": 1}, seed=0
+    )
+    centred = {
+        name: mixture.store.vectors[mixture.examples[start].vector_index, 0].item()
+        for name, (start, _end) in mixture.source_ranges.items()
+    }
+    assert centred["tell"] == pytest.approx(11.0 - 26.5)
+    assert centred["bg1"] == pytest.approx(41.0 - 26.5)
+
+
+def test_mixture_ratio_follows_the_given_order_not_a_sorted_one(tmp_path):
+    # bg1 is given second and takes weight 3, so a sorted-by-name reading
+    # (bg1 before tell) would hand it 1 instead.
+    directories = build_two_single_topic_sources(tmp_path)
+    mixture = build_mixture(
+        directories, "train", 8, ratio={"tell": 1, "bg1": 3}, seed=0
+    )
+    assert {
+        name: end - start for name, (start, end) in mixture.source_ranges.items()
+    } == {"tell": 2, "bg1": 6}
+
+
+def test_single_topic_source_reports_its_semicolon_drops(tmp_path):
+    directories = build_two_single_topic_sources(tmp_path)
+    dropped = TopicRecord("Dropped", ("a; b", "c; d"), "train", start=8, count=4)
+    kept = TopicRecord("Kept", six_label_topic("kept"), "train", start=0, count=4)
+    vectors = torch.zeros(12, HIDDEN, dtype=torch.bfloat16)
+    vectors[0:4] = 51.0
+    vectors[8:12] = 52.0
+    write_topic_dir(
+        tmp_path / "filtered", [kept, dropped], vectors, torch.zeros(4, HIDDEN)
+    )
+    directories = {"filtered": tmp_path / "filtered", "tell": directories["tell"]}
+    mixture = build_mixture(
+        directories, "train", 4, ratio={"filtered": 1, "tell": 1}, seed=0
+    )
+    assert mixture.semicolon_drops == {"filtered": 1, "tell": 0}
+    # And the dropped topic's rows are never addressed.
+    start, end = mixture.source_ranges["filtered"]
+    for example in mixture.examples[start:end]:
+        assert example.vector_index < 4

@@ -20,10 +20,8 @@ carries on from the last validation point; without the flag the run starts
 over from step 0.
 
 **This trainer always uses centred vectors**: that is what upstream's own
-`validate()` scored, and what the 1.3662 reproduction check
-(`evaluate_adapter.py --center`) needs to be comparable to. Raw vectors are a
-downstream-interpretation-time concern (`interpret.py`), never a training
-one.
+`validate()` scored. Raw vectors are a downstream-interpretation-time concern
+(`interpret.py`), never a training one.
 """
 
 from __future__ import annotations
@@ -36,38 +34,43 @@ from pathlib import Path
 from config import BASE_MODEL_8B
 
 
-def parse_vectors_k(values: list[str]) -> dict[int, Path]:
-    """Parse repeated `--vectors-k K=DIR` values into `{k: outputs/DIR}`.
+def parse_vectors_k(values: list[str]) -> dict[str, Path]:
+    """Parse repeated `--vectors-k K=DIR` values into `{"kK": outputs/DIR}`.
+
+    Sources are keyed by name everywhere below, so each k becomes the source
+    name `"k1"`/`"k2"`/`"k3"`, ordered smallest k first -- which is the order
+    `--mixture-ratio` was always read in, so an archived `--vectors-k` command
+    keeps its meaning.
 
     :param values: raw `"K=DIR"` strings, one per `--vectors-k` occurrence
     :raises ValueError: on a malformed entry or a repeated k
     """
-    directories: dict[int, Path] = {}
+    ks: dict[int, Path] = {}
     for value in values:
         if "=" not in value:
             raise ValueError(f"--vectors-k expects K=DIR, got {value!r}")
         key, _, raw_dir = value.partition("=")
         k = int(key)
-        if k in directories:
+        if k in ks:
             raise ValueError(f"--vectors-k given twice for k={k}")
-        directories[k] = Path("outputs") / raw_dir
-    return directories
+        ks[k] = Path("outputs") / raw_dir
+    return {f"k{k}": ks[k] for k in sorted(ks)}
 
 
-def parse_mixture_ratio(text: str, ks: list[int]) -> dict[int, int]:
-    """Parse `"1:2:3"` into `{k: weight}`, in `ks`' order.
+def parse_mixture_ratio(text: str, names: list[str]) -> dict[str, int]:
+    """Parse `"1:2:3"` into `{source: weight}`, in `names`' order.
 
-    :param text: colon-separated weights, smallest-k-first
-    :param ks: the k values --vectors-k supplied, sorted
-    :raises ValueError: if the weight count does not match `len(ks)`
+    :param text: colon-separated weights, in the order the sources were given
+    :param names: the source names, in the order they were given
+    :raises ValueError: if the weight count does not match `len(names)`
     """
     parts = text.split(":")
-    if len(parts) != len(ks):
+    if len(parts) != len(names):
         raise ValueError(
-            f"--mixture-ratio has {len(parts)} entries but --vectors-k gave "
-            f"{len(ks)} k values ({ks})"
+            f"--mixture-ratio has {len(parts)} entries but {len(names)} sources "
+            f"were given ({names})"
         )
-    return {k: int(weight) for k, weight in zip(ks, parts)}
+    return {name: int(weight) for name, weight in zip(names, parts)}
 
 
 def parse_args():
@@ -207,7 +210,7 @@ def parse_args():
         try:
             parsed.vectors_k = parse_vectors_k(parsed.vectors_k)
             parsed.mixture_ratio = parse_mixture_ratio(
-                parsed.mixture_ratio, sorted(parsed.vectors_k)
+                parsed.mixture_ratio, list(parsed.vectors_k)
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -240,7 +243,7 @@ from adapter_training.dataset import (
     load_vector_store,
     pooled_vector_store,
 )
-from adapter_training.grouped_examples import build_mixture
+from adapter_training.grouped_examples import Mixture, build_mixture
 from adapter_training.loss import (
     LossConfig,
     SoftPromptLoss,
@@ -703,7 +706,7 @@ def train(
     run_dir: Path,
     device,
     resume: bool = False,
-    val_k_ranges: dict[int, tuple[int, int]] | None = None,
+    val_source_ranges: dict[str, tuple[int, int]] | None = None,
 ) -> dict:
     """The training loop: seeding, schedule, sampling, micro-batching,
     validation and checkpointing. Callable directly (as tests do, with a
@@ -723,10 +726,10 @@ def train(
     :param resume: carry on from `run_dir`'s resume state if there is one,
         which costs up to `validate_every` steps of redone work but needs
         nothing saved per step; a run with no resume state starts fresh
-    :param val_k_ranges: `--vectors-k` runs only -- each k's `(start, end)`
-        slice of `val_examples`, so the final report also scores each k's
-        own val slice (bg_think_many D12, Gate 2), beside the whole-mixture
-        number `measured_loss` keeps
+    :param val_source_ranges: mixture runs only -- each source's
+        `(start, end)` slice of `val_examples`, so the final report also
+        scores each source's own val slice beside the whole-mixture number
+        `measured_loss` keeps. Never pooled into a headline figure
     :return: the final full-val report (also written to `final_eval.json`)
     """
     seed_everything(config.seed)
@@ -890,12 +893,12 @@ def train(
         "global_step": steps_to_run,
         "total_steps": total_steps,
     }
-    if val_k_ranges is not None:
-        final_report["val_loss_by_k"] = {
-            str(k): evaluate(
+    if val_source_ranges is not None:
+        final_report["val_loss_by_source"] = {
+            name: evaluate(
                 val_store, val_examples[start:end], scorer, config.micro_batch_size
             )
-            for k, (start, end) in sorted(val_k_ranges.items())
+            for name, (start, end) in val_source_ranges.items()
         }
     with open(run_dir / "final_eval.json", "w") as handle:
         json.dump(final_report, handle, indent=2)
@@ -921,15 +924,18 @@ def write_run_config(
     args,
     *,
     total_steps: int,
-    mixture_k_ranges: dict[int, tuple[int, int]] | None = None,
+    mixture_source_ranges: dict[str, tuple[int, int]] | None = None,
+    semicolon_drops: dict[str, int] | None = None,
 ) -> None:
     """`run_config.json`: every CLI arg, the resolved step count, and enough
     provenance (the vectors dir(s), their `position_means.pt`, the git
     commit) to trace a checkpoint back to the centring it was trained under.
 
-    :param mixture_k_ranges: `--vectors-k` runs only -- each k's `(start,
-        end)` slice of the train example list, so a later step (D12's per-k
-        validation loss) does not have to recompute the mixture to find them
+    :param mixture_source_ranges: mixture runs only -- each source's
+        `(start, end)` slice of the train example list, so a later step does
+        not have to recompute the mixture to find them
+    :param semicolon_drops: mixture runs only -- how many topics the
+        `;`-label filter dropped per source, which a pre-run check reports
     """
     config = {
         key: (str(value) if isinstance(value, Path) else value)
@@ -937,14 +943,16 @@ def write_run_config(
     }
     config["resolved_total_steps"] = total_steps
     if args.vectors_k is not None:
-        config["vectors_k"] = {k: str(d) for k, d in args.vectors_k.items()}
+        config["vectors_k"] = {name: str(d) for name, d in args.vectors_k.items()}
         config["position_means_paths"] = {
-            k: str(d / "position_means.pt") for k, d in args.vectors_k.items()
+            name: str(d / "position_means.pt") for name, d in args.vectors_k.items()
         }
-        if mixture_k_ranges is not None:
-            config["mixture_k_ranges"] = {
-                str(k): list(v) for k, v in mixture_k_ranges.items()
+        if mixture_source_ranges is not None:
+            config["mixture_source_ranges"] = {
+                name: list(v) for name, v in mixture_source_ranges.items()
             }
+        if semicolon_drops is not None:
+            config["semicolon_drops"] = dict(semicolon_drops)
     else:
         config["position_means_path"] = str(args.vectors / "position_means.pt")
     config["git_commit"] = _git_commit()
@@ -985,46 +993,36 @@ def load_train_and_val(
 
 
 def load_grouped_train_and_val(
-    directories: dict[int, Path],
+    directories: dict[str, Path],
     *,
-    ratio: dict[int, int],
+    ratio: dict[str, int],
     budget_examples: int,
     val_total_examples: int,
     seed: int,
-):
-    """The `--vectors-k` counterpart to `load_train_and_val`: the k=1:2:3
-    mixture (bg_think_many D6), sampled once per split (`build_mixture`).
+) -> tuple[Mixture, Mixture]:
+    """The mixture counterpart to `load_train_and_val`: several named sources
+    in one ratio, sampled once per split (`build_mixture`).
 
-    Train and val each get their own concatenated `VectorStore` -- the same
-    directories loaded and centred twice, at the cost `step3_example_builder.md`
-    §3 documents, rather than one store shared across splits complicating the
-    indexing for no memory saving worth the complexity at this scale.
+    Train and val each get their own `VectorStore` -- the same directories
+    loaded and centred twice, rather than one store shared across splits
+    complicating the indexing for no memory saving worth the complexity at
+    this scale.
 
-    :param directories: k -> extraction output directory
-    :param ratio: relative example count per k (D6)
-    :param budget_examples: total train examples across every k
-    :param val_total_examples: total val examples across every k -- the
+    :param directories: source name -> extraction output directory
+    :param ratio: relative example count per source
+    :param budget_examples: total train examples across every source
+    :param val_total_examples: total val examples across every source -- the
         "full" val pool `train()` scores at the end (`final_eval.json`);
         periodic validation subsamples `--val-subsample` from it
     :param seed: seeds train and val sampling independently
-    :return: `(train_store, train_examples, val_store, val_examples,
-        train_k_ranges, val_k_ranges)` -- `val_k_ranges` is what lets
-        `train()` score each k's own val slice for Gate 2 (bg_think_many D12)
+    :return: the train and val `Mixture`s; the val one's `source_ranges` is
+        what lets `train()` score each source's own val slice
     """
-    train_store, train_examples, train_k_ranges = build_mixture(
-        directories, "train", budget_examples, ratio=ratio, seed=seed
-    )
-    val_store, val_examples, val_k_ranges = build_mixture(
+    train = build_mixture(directories, "train", budget_examples, ratio=ratio, seed=seed)
+    val = build_mixture(
         directories, "val", val_total_examples, ratio=ratio, seed=f"{seed}-val"
     )
-    return (
-        train_store,
-        train_examples,
-        val_store,
-        val_examples,
-        train_k_ranges,
-        val_k_ranges,
-    )
+    return train, val
 
 
 def main(args) -> dict:
@@ -1037,28 +1035,27 @@ def main(args) -> dict:
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
-    mixture_k_ranges = None
-    val_k_ranges = None
+    mixture_source_ranges = None
+    val_source_ranges = None
+    semicolon_drops = None
     if args.vectors_k is not None:
         if args.pool_positions or args.restrict_topics_to is not None:
             raise ValueError(
                 "--pool-positions and --restrict-topics-to are not supported "
-                "with --vectors-k"
+                "with a mixture"
             )
-        (
-            train_store,
-            train_examples,
-            val_store,
-            val_examples,
-            mixture_k_ranges,
-            val_k_ranges,
-        ) = load_grouped_train_and_val(
+        train_mixture, val_mixture = load_grouped_train_and_val(
             args.vectors_k,
             ratio=args.mixture_ratio,
             budget_examples=args.budget_examples,
             val_total_examples=args.val_total_examples,
             seed=args.seed,
         )
+        train_store, train_examples = train_mixture.store, train_mixture.examples
+        val_store, val_examples = val_mixture.store, val_mixture.examples
+        mixture_source_ranges = train_mixture.source_ranges
+        val_source_ranges = val_mixture.source_ranges
+        semicolon_drops = train_mixture.semicolon_drops
     else:
         train_store, train_examples, val_store, val_examples = load_train_and_val(
             args.vectors,
@@ -1076,7 +1073,8 @@ def main(args) -> dict:
         args.run_dir,
         args,
         total_steps=total_steps,
-        mixture_k_ranges=mixture_k_ranges,
+        mixture_source_ranges=mixture_source_ranges,
+        semicolon_drops=semicolon_drops,
     )
 
     result = train(
@@ -1090,7 +1088,7 @@ def main(args) -> dict:
         run_dir=args.run_dir,
         device=device,
         resume=args.resume,
-        val_k_ranges=val_k_ranges,
+        val_source_ranges=val_source_ranges,
     )
     print(json.dumps(result, indent=2))
     return result

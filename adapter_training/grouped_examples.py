@@ -1,12 +1,18 @@
-"""Composed labels and the 1:2:3 mixture sampler (bg_think_many step 3).
+"""Composed labels and the multi-source mixture sampler.
 
 `Example(vector_index, label)` (`adapter_training.dataset`) is unchanged: a
 group's composed label is still just a string, joining one label per topic
 with `"; "`. Everything below produces the *right list* of them, in the right
-k=1:2:3 mixture, from step 2's `groups.json` (and, for k=1, the reused
-`outputs/bg_think_l19` topic records). Nothing here needs step 2's vectors to
-be tested -- only `GroupRecord`/`TopicRecord` shapes and a `buckets_of`
-callable.
+mixture, from each source's `groups.json` or `topics.json`.
+
+A **source** is one extraction output directory, named by the caller. Sources
+are keyed by name rather than by k (how many topics one extraction prompt
+named) because two sources can share a k -- `tell_and_think` mixes two k=1
+populations that differ in extraction prompt. k is a property of a source,
+read off its records where anything needs it, never an identity.
+
+Nothing here needs real vectors to be tested -- only `GroupRecord`/
+`TopicRecord` shapes and a `buckets_of` callable.
 """
 
 from __future__ import annotations
@@ -177,36 +183,41 @@ def sample_examples(
     return examples
 
 
-def _split_by_ratio(total: int, ratio: Mapping[int, int]) -> dict[int, int]:
+def _split_by_ratio(total: int, ratio: Mapping[str, int]) -> dict[str, int]:
     """Split `total` by `ratio`, handling the remainder explicitly.
 
-    Each key's share is `total * ratio[k] // sum(ratio.values())`, floored;
-    the remainder (at most `len(ratio) - 1`) goes to the keys with the
-    largest fractional remainder, largest first, ties broken by key order.
+    Each source's share is `total * ratio[name] // sum(ratio.values())`,
+    floored; the remainder (at most `len(ratio) - 1`) goes to the sources with
+    the largest fractional remainder, largest first, ties broken by `ratio`'s
+    own iteration order. Source names have no meaningful sort order, so the
+    caller's order is the only stable one.
 
     :param total: the exact sum the shares must add up to
-    :param ratio: relative weight per key
-    :return: one non-negative share per key in `ratio`, summing to `total`
+    :param ratio: relative weight per source, in the caller's order
+    :return: one non-negative share per source in `ratio`, summing to `total`
     """
-    keys = sorted(ratio)
-    weight_sum = sum(ratio[k] for k in keys)
-    exact = {k: total * ratio[k] / weight_sum for k in keys}
-    counts = {k: int(exact[k]) for k in keys}
+    names = list(ratio)
+    weight_sum = sum(ratio.values())
+    exact = {name: total * ratio[name] / weight_sum for name in names}
+    counts = {name: int(exact[name]) for name in names}
     remainder = total - sum(counts.values())
-    order = sorted(keys, key=lambda k: (exact[k] - counts[k], -k), reverse=True)
-    for k in order[:remainder]:
-        counts[k] += 1
+    order = sorted(
+        range(len(names)),
+        key=lambda i: (exact[names[i]] - counts[names[i]], -i),
+        reverse=True,
+    )
+    for i in order[:remainder]:
+        counts[names[i]] += 1
     return counts
 
 
 @dataclasses.dataclass
 class _MixtureVectors:
-    """`VectorStore.vectors` for a k=1:2:3 mixture, without ever concatenating
-    the underlying tables (step3_example_builder.md §3's memory-bounded
-    path).
+    """`VectorStore.vectors` for a multi-source mixture, without ever
+    concatenating the underlying tables (the memory-bounded path).
 
     Each source directory's `vectors.pt` is memory-mapped and kept bf16; the
-    fp32 cast and the pooled centring (D13) happen at gather time, in
+    fp32 cast and the pooled centring happen at gather time, in
     `__getitem__`, on only the rows actually requested. This keeps resident
     anonymous memory near the batch size rather than the ~26 GiB a
     concatenated fp32 table would cost, since `torch.load(mmap=True)` touches
@@ -218,34 +229,39 @@ class _MixtureVectors:
     single `(index, column)` pair, both of which `__getitem__` below
     supports directly.
 
-    :ivar tensors: one mmap'd, bf16, raw (uncentred) tensor per source
-        directory, in the order `directory_of` indexes into
-    :ivar directory_of: `[n_total]`, which `tensors` entry a global row maps to
+    :ivar tensors: one mmap'd, bf16, raw (uncentred) tensor per source, in the
+        order `source_of` indexes into
+    :ivar source_of: `[n_total]`, which `tensors` entry a global row maps to
     :ivar local_index_of: `[n_total]`, the row within that tensor
     :ivar position_of: `[n_total]`, the position (`row - record.start`) to
-        centre that row with
-    :ivar means: `[n_positions, hidden]` fp32, the pooled reference (D13)
+        centre that row with, or -1 for a row no surviving record addresses
+    :ivar means: `[n_positions, hidden]` fp32, the pooled reference
     """
 
     tensors: list[torch.Tensor]
-    directory_of: torch.Tensor
+    source_of: torch.Tensor
     local_index_of: torch.Tensor
     position_of: torch.Tensor
     means: torch.Tensor
 
     @property
     def shape(self) -> tuple[int, int]:
-        return (self.directory_of.shape[0], self.means.shape[1])
+        return (self.source_of.shape[0], self.means.shape[1])
 
     def _gather(self, indices: Sequence[int]) -> torch.Tensor:
         idx = torch.as_tensor(list(indices), dtype=torch.long)
-        dirs = self.directory_of[idx]
+        sources = self.source_of[idx]
         locals_ = self.local_index_of[idx]
         positions = self.position_of[idx]
+        if bool((positions < 0).any()):
+            raise IndexError(
+                "_MixtureVectors: asked for a row no record addresses (it was "
+                "dropped by a filter), which has no position to centre against"
+            )
         hidden = self.means.shape[1]
         out = torch.empty(len(idx), hidden, dtype=torch.float32)
-        for tensor_index in dirs.unique().tolist():
-            mask = dirs == tensor_index
+        for tensor_index in sources.unique().tolist():
+            mask = sources == tensor_index
             out[mask] = self.tensors[tensor_index][locals_[mask]].to(torch.float32)
         out -= self.means[positions]
         return out
@@ -261,48 +277,91 @@ class _MixtureVectors:
         return result[0] if single else result
 
 
+@dataclasses.dataclass(frozen=True)
+class Mixture:
+    """One split's sampled mixture, plus the bookkeeping its checks need.
+
+    `source_ranges` slices `examples`; `source_rows` slices the store's global
+    row space. The two together are what lets a caller assert that a source's
+    examples only ever address that source's own vectors -- a stronger check
+    than counting `"; "` separators in the composed labels, which cannot tell
+    two k=1 sources apart at all.
+
+    :ivar store: the combined, centred store `examples`' indices address
+    :ivar examples: every source's examples, concatenated in source order
+    :ivar source_ranges: source -> `(start, end)` into `examples`
+    :ivar source_rows: source -> `(start, end)` into the store's rows
+    :ivar semicolon_drops: source -> how many topics the `;`-label filter
+        dropped (0 for a source whose extractor already applied it)
+    """
+
+    store: VectorStore
+    examples: list[Example]
+    source_ranges: dict[str, tuple[int, int]]
+    source_rows: dict[str, tuple[int, int]]
+    semicolon_drops: dict[str, int]
+
+
+def _load_source_records(directory: Path) -> tuple[list[GroupRecord], int]:
+    """One source's records, as groups, however the extractor wrote them.
+
+    Dispatches on which file the directory actually has rather than on the
+    source's k: a single-topic directory predates `GroupRecord` and writes
+    `topics.json`, and more than one source in a mixture can be single-topic.
+
+    The `;`-label filter is applied to `topics.json` sources here, since the
+    single-topic extractors predate it. Grouped extractors apply it
+    themselves, so a `groups.json` source drops nothing here.
+
+    :param directory: an extraction output directory
+    :return: the records as `GroupRecord`s, and the `;`-filter drop count
+    """
+    if (directory / "groups.json").exists():
+        return load_group_records(directory), 0
+    topic_records, dropped = drop_semicolon_topics(load_topic_records(directory))
+    return [group_record_from_topic(r) for r in topic_records], len(dropped)
+
+
 def _load_mixture_store(
-    directories: Mapping[int, Path],
-) -> tuple[VectorStore, dict[int, list[GroupRecord]]]:
-    """Load every k's vectors behind one mmap'd, pooled-centred (D13)
+    directories: Mapping[str, Path],
+) -> tuple[
+    VectorStore,
+    dict[str, list[GroupRecord]],
+    dict[str, tuple[int, int]],
+    dict[str, int],
+]:
+    """Load every source's vectors behind one mmap'd, pooled-centred
     `_MixtureVectors`, without concatenating any vector table.
 
-    k=1's directory is read as `TopicRecord`s (`outputs/bg_think_l19`
-    predates `GroupRecord`) and adapted with `group_record_from_topic`; the
-    `;`-label filter (parent plan §8) is applied to it here too, since that
-    directory predates step 2's own filter.
-
-    :param directories: k -> extraction output directory
-    :return: the mixture store, and each k's records with `start` offset into
+    :param directories: source name -> extraction output directory, in the
+        caller's order (which fixes the store's row layout)
+    :return: the mixture store; each source's records with `start` offset into
         the store's global row space (so `record.start + position` addresses
-        the right row directly)
+        the right row directly); each source's `(start, end)` row range; and
+        each source's `;`-filter drop count
     """
-    ks = sorted(directories)
-    per_k_records: dict[int, list[GroupRecord]] = {}
+    names = list(directories)
+    per_source_records: dict[str, list[GroupRecord]] = {}
+    semicolon_drops: dict[str, int] = {}
     sources: list[tuple[Path, list[VectorRecord]]] = []
-    for k in ks:
-        directory = directories[k]
-        if k == 1:
-            topic_records, _dropped = drop_semicolon_topics(
-                load_topic_records(directory)
-            )
-            records = [group_record_from_topic(r) for r in topic_records]
-        else:
-            records = load_group_records(directory)
-        per_k_records[k] = records
-        sources.append((directory, records))
+    for name in names:
+        records, dropped = _load_source_records(directories[name])
+        per_source_records[name] = records
+        semicolon_drops[name] = dropped
+        sources.append((directories[name], records))
 
     pooled = pooled_position_means(sources)
 
     tensors: list[torch.Tensor] = []
-    directory_chunks: list[torch.Tensor] = []
+    source_chunks: list[torch.Tensor] = []
     local_chunks: list[torch.Tensor] = []
     position_chunks: list[torch.Tensor] = []
-    offsets: dict[int, int] = {}
+    source_rows: dict[str, tuple[int, int]] = {}
+    offsets: dict[str, int] = {}
     row_count = 0
-    for tensor_index, k in enumerate(ks):
+    for tensor_index, name in enumerate(names):
         vectors = torch.load(
-            directories[k] / "vectors.pt",
+            directories[name] / "vectors.pt",
             map_location="cpu",
             weights_only=True,
             mmap=True,
@@ -311,78 +370,94 @@ def _load_mixture_store(
         n = vectors.shape[0]
 
         position_of = torch.full((n,), -1, dtype=torch.long)
-        for record in per_k_records[k]:
+        for record in per_source_records[name]:
             position_of[record.start : record.start + record.count] = torch.arange(
                 record.count, dtype=torch.long
             )
 
-        directory_chunks.append(torch.full((n,), tensor_index, dtype=torch.long))
+        source_chunks.append(torch.full((n,), tensor_index, dtype=torch.long))
         local_chunks.append(torch.arange(n, dtype=torch.long))
         position_chunks.append(position_of)
 
-        offsets[k] = row_count
+        offsets[name] = row_count
+        source_rows[name] = (row_count, row_count + n)
         row_count += n
 
     mixture_vectors = _MixtureVectors(
         tensors=tensors,
-        directory_of=torch.cat(directory_chunks),
+        source_of=torch.cat(source_chunks),
         local_index_of=torch.cat(local_chunks),
         position_of=torch.cat(position_chunks),
         means=pooled,
     )
     offset_records = {
-        k: [
-            dataclasses.replace(record, start=record.start + offsets[k])
-            for record in per_k_records[k]
+        name: [
+            dataclasses.replace(record, start=record.start + offsets[name])
+            for record in per_source_records[name]
         ]
-        for k in ks
+        for name in names
     }
     store = VectorStore(vectors=mixture_vectors, hidden_size=pooled.shape[1])
-    return store, offset_records
+    return store, offset_records, source_rows, semicolon_drops
 
 
 def build_mixture(
-    directories: Mapping[int, Path],
+    directories: Mapping[str, Path],
     split: str,
     total_examples: int,
     *,
-    ratio: Mapping[int, int] = {1: 1, 2: 2, 3: 3},
+    ratio: Mapping[str, int],
     seed: int | str,
-) -> tuple[VectorStore, list[Example], dict[int, tuple[int, int]]]:
-    """One split's 1:2:3 mixture, across the three k extraction directories.
+) -> Mixture:
+    """One split's mixture, across several named extraction sources.
 
-    Each directory has its own `vectors.pt` and index space; this
-    concatenates the three (centred) tables and offsets each directory's
-    records so `Example.vector_index` addresses the combined table directly.
-    See `_load_mixture_store` for the loading/centring; this adds the split
-    filter and the per-k sampling.
+    Each source has its own `vectors.pt` and index space; this offsets each
+    source's records so `Example.vector_index` addresses the combined table
+    directly. See `_load_mixture_store` for the loading/centring; this adds
+    the split filter and the per-source sampling.
 
-    :param directories: k -> extraction output directory (k=1, 2, 3)
+    `directories` and `ratio` are read in their own iteration order, which
+    must agree -- source names have no meaningful sort order, so there is no
+    canonical order to fall back on.
+
+    :param directories: source name -> extraction output directory
     :param split: which split's records to sample examples from
-    :param total_examples: exact total across all k, split by `ratio`
-    :param ratio: relative example count per k (D6's 1:2:3 by default)
-    :param seed: seeds each k's sampler independently (`f"{seed}-k{k}-{split}"`)
-    :return: the combined store, the examples (grouped by k, in k order),
-        and each k's `(start, end)` index range into the returned examples --
-        for per-k validation loss (parent plan D12)
+    :param total_examples: exact total across all sources, split by `ratio`
+    :param ratio: relative example count per source
+    :param seed: seeds each source's sampler independently
+        (`f"{seed}-{name}-{split}"`)
+    :return: the sampled `Mixture`
+    :raises ValueError: if `ratio` does not name exactly `directories`' sources
     """
-    store, offset_records = _load_mixture_store(directories)
-    ks = sorted(directories)
+    if set(ratio) != set(directories):
+        raise ValueError(
+            f"build_mixture: ratio names {sorted(ratio)} but the sources are "
+            f"{sorted(directories)}"
+        )
+    store, offset_records, source_rows, semicolon_drops = _load_mixture_store(
+        directories
+    )
     counts = _split_by_ratio(total_examples, ratio)
 
     examples: list[Example] = []
-    k_ranges: dict[int, tuple[int, int]] = {}
-    for k in ks:
-        split_records = [r for r in offset_records[k] if r.split == split]
+    source_ranges: dict[str, tuple[int, int]] = {}
+    for name in directories:
+        split_records = [r for r in offset_records[name] if r.split == split]
         start_idx = len(examples)
         examples.extend(
             sample_examples(
                 split_records,
-                counts[k],
+                counts[name],
                 buckets_of=label_buckets,
-                seed=f"{seed}-k{k}-{split}",
+                seed=f"{seed}-{name}-{split}",
             )
         )
-        k_ranges[k] = (start_idx, len(examples))
+        source_ranges[name] = (start_idx, len(examples))
 
-    return store, examples, k_ranges
+    return Mixture(
+        store=store,
+        examples=examples,
+        source_ranges=source_ranges,
+        source_rows=source_rows,
+        semicolon_drops=semicolon_drops,
+    )
