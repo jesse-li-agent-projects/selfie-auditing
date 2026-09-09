@@ -38,8 +38,8 @@ from the built example lists, not from the flags:
    own global offset range (§2.4 of step 1 -- the separator check does not work
    here).
 3. The `bg*` group's pooled mean is bit-identical to the one `bg_think_many`
-   used. This is what makes D5's comparison a single-variable one, so check it
-   rather than assume it.
+   used. This is what keeps the `bg*` slices on `bg_think_many`'s footing, so
+   check it rather than assume it.
 4. Record the exact `;`-filter drop counts per source (D9 expects 10 topics for
    `tell`).
 
@@ -64,8 +64,9 @@ from the built example lists, not from the flags:
 
 8,853 steps. Every hyperparameter except the sources, the ratio, the centring
 groups and the two budgets is what `bg_think_many` used (parent plan D5).
-**Do not tune them** -- a tuned run would not be comparable to `bg_think_many`,
-and comparability is this plan's entire value over its predecessor.
+**Do not tune them.** Not because comparability is the deliverable -- parent
+plan §8 says it is not -- but because a tuned run answers a different question
+than the one asked, and there is no budget to do both.
 
 Four things `bg_think_many`'s step 6 got wrong on this exact command, all
 already corrected above. Do not reintroduce them:
@@ -90,40 +91,48 @@ after:
 - `outputs/` syncs remote -> local only, so any local input file is not on the
   remote. Materialise inputs through the worktree, which syncs local -> remote.
 
-## 4. Gate 2: validation loss, per source
+## 4. Gate 2: validation loss, per source, as a diagnostic
 
-Report the table, never a pooled figure (D7).
+Report all four per-source slices, never a pooled figure (parent plan D7).
 
-| slice | prior | what the prior is |
-|---|---|---|
-| `tell` | 1.3662 | published checkpoint's `best_val_loss` -- **a floor, not a target** (D7) |
-| `bg1` | 1.3294 | `bg_think_many`'s k=1 slice: like-for-like |
-| `bg2` | 1.6505 | `bg_think_many`'s k=2 slice |
-| `bg3` | 1.8797 | `bg_think_many`'s k=3 slice |
+**This gate is not a comparison.** It asks only whether the run trained: every
+slice finite, every curve converging, no slice stuck or diverging, nothing
+absurd relative to its own curve. `bg_think_many`'s slice losses and the
+published checkpoint's `best_val_loss` are **not** valid references -- D7 was
+corrected by the user on 2026-09-09 because validation loss is not comparable
+across these runs, and not only because the architectures differ: each run's
+loss is computed over a different training distribution, so it is a different
+task. Do not pass or fail the run on any of them, and do not quote a published
+figure without saying in the same sentence that it is not a comparison.
 
-The 1.3662 caveat is not a formality: it was a plain `scalar_affine` projection
-at 2,951 steps, so a rank-64 model should beat it and "beat it" is not a
-finding. Landing *worse* than it is a bug signal.
+A slice that looks anomalous is a reason to re-check Gate 1's assertions, not a
+verdict on the adapter. All evidence about whether `tell_and_think` is better
+than `bg_think_many` comes from §6.
 
-A slice far better than its prior is also a bug signal -- re-check Gate 1's
-assertions before believing it.
-
-## 5. Gate 3: set-level retrieval
+## 5. Gate 3: set-level retrieval is not catastrophic
 
 Score `best.pt` at `--max-new-tokens 110`, temperature 0.7, `n_samples` 1, seed
-42, against the full 49,637-topic index, centred per D3, reporting per source
-(D7). The untrained floor is **0.00068** aggregate recall@1 -- not 0.0013, which
+42, against the full 49,637-topic index, centred per D3, reporting per source.
+The untrained floor is **0.00068** aggregate recall@1 -- not 0.0013, which
 `bg_think_many`'s notes correct as a position-0 figure measured on a different
 directory. Report the `segments` histogram beside every score.
 
+**Pass unless aggregate recall@1 is below 3x the floor (0.00204)** (parent plan
+§6). This catches a broken adapter and nothing more; an unimpressive score is
+not grounds to withhold the OOD arms, because OOD generalisation is
+unpredictable. Do not add a `tell` prior at this decoding length -- none is
+wanted.
+
 `bg_think_many`'s figures (0.5646 / 0.2206 / 0.0911 recall@1 at k=1/2/3) are
-comparable **only** for the `bg*` sources, and only because D3 leaves their
-centring unchanged. `tell` has no comparable prior at this decoding length.
+informative **only** for the `bg*` sources, and only because D3 leaves their
+centring unchanged.
 
 ## 6. The evaluations (parent plan §7)
 
 Three arms, matched to `bg_think_many`'s settings so the numbers compose. None
-is a gate; a negative result is the finding.
+is a gate; a negative result is the finding. **Read parent plan §7 first**: the
+taboo task and the bridge-entity task carry the result equally, and arms 1 and 2
+are two harnesses over *one* task, split for historical reasons.
 
 1. **Taboo, user-prompt tokens** -- `run_pipeline.py`, matched to
    `outputs/taboo_bg_think_many`'s sidecar. Compare **matched** on (organism,
@@ -133,19 +142,26 @@ is a gate; a negative result is the finding.
    question. This harness only ever covered book and chair, and the predecessor
    found book to be the one word where it underperformed -- so treat a null
    result here as possibly a word-selection artefact, and say so.
-2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, four words (book,
-   chair, blue, salt), matched to `outputs/taboo_assistant_bg_think_many`. The
-   two harnesses do not cover the same word lists; match each one to its own
-   predecessor rather than intersecting them.
+2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, matched to
+   `outputs/taboo_assistant_bg_think_many`. **Run book and chair only**, per the
+   user (2026-09-09), to hold evaluation cost down -- not the predecessor's four.
+   Extending to blue and salt is a follow-up if this run's result is good enough
+   to warrant it, and the report should say whether it is.
 3. **Bridge entity (TwoHopFact)** -- raw uninjected activations, no mean
    subtraction. Priors: `baseline` 89/100, `bg_think` 88/100, `bg_think_many`
    70/100. Detection rate is near ceiling for the first two and so has little
    power; **`generation_hit_rate`, over 67,488 cells, is the metric with
    resolution** (2.15% / 1.74% / 0.62%). Report both.
 
-Arm 3 is the one the parent plan §7 flags as the sharpest question this run
-answers. Read that section's note about whose inference that framing is before
-carrying it into the report.
+**Arms 1 and 2 need a combined reading, not just two tables.** With arm 2 cut to
+book and chair, both harnesses now cover the **same two words**, so a direct
+cross-harness reading is available throughout. Match each arm to its own
+predecessor for the numbers, then state what the taboo task as a whole shows.
+Where a conclusion holds in one harness and not the other, name which and treat
+the disagreement as the finding.
+
+**Comparison arms: `baseline` (primary) and `bg_think_many` (secondary)**, per
+the user and parent plan §8. `bg_think`'s figures are context only, not an arm.
 
 ### Realised cost, from the predecessor
 
@@ -164,16 +180,22 @@ Write `plans/tell_and_think/notes/step2_results.md`. It must contain:
 - The realised cost table, against this file's estimate.
 - **"What contradicted the plan"** -- the most valuable section, per the
   predecessor's note. Anything this file assumes and the code does not have.
-- Gate 1, 2, 3 results, with the D7 caveat stated wherever 1.3662 appears.
-- The three OOD arms, matched-cell comparisons, against **both**
-  `bg_think_many` and `baseline`.
-- **What this does not isolate** (parent plan §8): the `tell` centring rule
-  differs from `bg_think_many`'s, so the `tell` slice carries a confound the
-  `bg*` slices do not; and `bg_think_many`'s own rank-vs-data confound is
-  untouched by this run.
+- Gate 1, 2, 3 results. Gate 2 is reported as a diagnostic only; if any
+  published validation loss appears at all, the same sentence must say it is not
+  a comparison (D7).
+- The three OOD arms, matched-cell comparisons, against `baseline` first and
+  `bg_think_many` second (parent plan §8). Beating `baseline` is the goal the
+  run was set for; say plainly whether it did.
+- **What is acknowledged and accepted** (parent plan §8), stated without
+  hedging the result: the stretched cosine schedule (8,853 steps against 5,902),
+  the `tell` centring rule differing from `bg_think_many`'s, and `bg1`'s 0.54
+  draws/vector. This run was not designed to isolate a cause, so do not report
+  it as though it were.
 - D2's vector re-use (`tell` draws 755,391 examples from 44,673 distinct train
-  vectors) and D8's population asymmetry (2,636 topics seen only through
-  `tell`), both stated up front rather than discovered in the analysis.
+  vectors, ~17 each) and D8's population asymmetry (2,636 topics seen only
+  through `tell`), both stated up front rather than discovered in the analysis.
+  Note that `tell` draws *every* vector it has, so this is re-use and not a
+  data-diversity deficit (parent plan §8).
 
 Then archive the plan: move `plans/tell_and_think/` into `plans/archive/` and
 update `plans/CLAUDE.md`, whose "Background thinking (bg_think)" section is the
