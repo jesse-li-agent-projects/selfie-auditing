@@ -33,6 +33,13 @@ write something while thinking about a topic in the background) is still live;
 future plans on it should not assume the pangram-specific fidelity filter or
 single-topic framing those archived plans used.
 
+- tell_and_think/tell_and_think.md
+    - The live successor: merges the original SelfIE paper's own extraction
+      data ("Tell me about X.", already extracted at outputs/baseline_l19)
+      into bg_think_many's multi-topic mixture, holding the architecture and
+      the background example counts fixed so the data change is isolated.
+      Two steps: source-keyed mixture code, then the run.
+
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
       details) that the plans' claims cite. Read it before disputing a claim a
