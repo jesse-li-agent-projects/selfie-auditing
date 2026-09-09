@@ -15,6 +15,7 @@ against Llama-3.2-1B (`config.DUMMY_BASE_MODEL`), run under `gpu-exec`.
 import itertools
 import json
 import math
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +41,7 @@ from adapter_training.train_adapter import (
     optimizer_step,
     parse_mixture_ratio,
     parse_vectors_k,
+    parse_vectors_source,
     seed_everything,
     train,
 )
@@ -1034,6 +1036,115 @@ def test_parse_vectors_k_orders_sources_by_k_whatever_order_they_were_given():
     # command keeps its meaning now that order (not sort) fixes the weights.
     directories = parse_vectors_k(["3=c", "1=a", "2=b"])
     assert list(directories) == ["k1", "k2", "k3"]
+
+
+def test_parse_vectors_source_keeps_the_given_order_and_prefixes_outputs():
+    directories = parse_vectors_source(["tell=baseline_l19", "bg1=bg_think_l19"])
+    assert directories == {
+        "tell": Path("outputs/baseline_l19"),
+        "bg1": Path("outputs/bg_think_l19"),
+    }
+    assert list(directories) == ["tell", "bg1"]
+
+
+def test_parse_vectors_source_rejects_a_repeated_name():
+    with pytest.raises(ValueError, match="twice"):
+        parse_vectors_source(["tell=a", "tell=b"])
+
+
+def test_parse_vectors_source_rejects_a_malformed_entry():
+    with pytest.raises(ValueError, match="NAME=DIR"):
+        parse_vectors_source(["tell"])
+
+
+def test_parse_vectors_source_rejects_an_empty_name():
+    with pytest.raises(ValueError, match="needs a name"):
+        parse_vectors_source(["=a"])
+
+
+def _train_argv(*flags):
+    return [
+        "train_adapter.py",
+        "--run-dir",
+        "r",
+        "--budget-examples",
+        "8",
+        *flags,
+    ]
+
+
+def test_exactly_one_vectors_flag_is_required(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(sys, "argv", _train_argv())
+    with pytest.raises(SystemExit):
+        parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv("--vectors", "a", "--vectors-source", "tell=b"),
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv("--vectors-k", "1=a", "--vectors-source", "tell=b"),
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_val_total_examples_is_required_with_a_mixture(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys, "argv", _train_argv("--vectors-source", "tell=a", "--mixture-ratio", "1")
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_vectors_source_and_vectors_k_agree_on_sources_and_ratio(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-k",
+            "1=a",
+            "--vectors-k",
+            "2=b",
+            "--mixture-ratio",
+            "1:2",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    via_k = parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-source",
+            "k1=a",
+            "--vectors-source",
+            "k2=b",
+            "--mixture-ratio",
+            "1:2",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    via_source = parse_args()
+
+    assert via_k.mixture_sources == via_source.mixture_sources
+    assert list(via_k.mixture_sources) == list(via_source.mixture_sources)
+    assert via_k.mixture_ratio == via_source.mixture_ratio
 
 
 def test_parse_vectors_k_rejects_a_repeated_k():

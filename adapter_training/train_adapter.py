@@ -57,6 +57,28 @@ def parse_vectors_k(values: list[str]) -> dict[str, Path]:
     return {f"k{k}": ks[k] for k in sorted(ks)}
 
 
+def parse_vectors_source(values: list[str]) -> dict[str, Path]:
+    """Parse repeated `--vectors-source NAME=DIR` into `{NAME: outputs/DIR}`.
+
+    Insertion order is the order the flags were given, which is what fixes
+    `--mixture-ratio`'s weights and the mixture store's row layout.
+
+    :param values: raw `"NAME=DIR"` strings, one per occurrence
+    :raises ValueError: on a malformed entry, an empty name or a repeated name
+    """
+    directories: dict[str, Path] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"--vectors-source expects NAME=DIR, got {value!r}")
+        name, _, raw_dir = value.partition("=")
+        if not name:
+            raise ValueError(f"--vectors-source needs a name, got {value!r}")
+        if name in directories:
+            raise ValueError(f"--vectors-source given twice for {name!r}")
+        directories[name] = Path("outputs") / raw_dir
+    return directories
+
+
 def parse_mixture_ratio(text: str, names: list[str]) -> dict[str, int]:
     """Parse `"1:2:3"` into `{source: weight}`, in `names`' order.
 
@@ -82,31 +104,40 @@ def parse_args():
         type=lambda value: Path("outputs") / value,
         default=None,
         help="extraction output dir, written under outputs/ (implicitly prepended). "
-        "Mutually exclusive with --vectors-k",
+        "Mutually exclusive with --vectors-k and --vectors-source",
+    )
+    parser.add_argument(
+        "--vectors-source",
+        action="append",
+        default=None,
+        metavar="NAME=DIR",
+        help="one named extraction dir per source, e.g. "
+        "'--vectors-source tell=baseline_l19 --vectors-source bg1=bg_think_l19' "
+        "(DIR written under outputs/, implicitly prepended). Repeatable. Two "
+        "sources may share a k. Mutually exclusive with --vectors/--vectors-k",
     )
     parser.add_argument(
         "--vectors-k",
         action="append",
         default=None,
         metavar="K=DIR",
-        help="one extraction dir per k, e.g. '--vectors-k 1=bg_think_l19 "
-        "--vectors-k 2=bg_think_many_l19_k2 --vectors-k 3=bg_think_many_l19_k3' "
-        "(DIR written under outputs/, implicitly prepended). Repeatable. "
-        "Mutually exclusive with --vectors",
+        help="the k-keyed spelling of --vectors-source, naming its sources "
+        "k1/k2/k3 in smallest-to-largest k order. Kept so archived commands "
+        "reproduce; --vectors-source is the general form",
     )
     parser.add_argument(
         "--mixture-ratio",
         default="1:2:3",
-        help="colon-separated example-count ratio, in the same k order as "
-        "--vectors-k's smallest-to-largest k (bg_think_many's D6 default 1:2:3)",
+        help="colon-separated example-count ratio, in the order the sources "
+        "were given (--vectors-k orders its own smallest k first)",
     )
     parser.add_argument(
         "--val-total-examples",
         type=int,
         default=None,
-        help="--vectors-k only: size of the full val pool sampled for "
+        help="mixture runs only: size of the full val pool sampled for "
         "final_eval.json (periodic validation still subsamples --val-subsample "
-        "from it). Required with --vectors-k",
+        "from it). Required with --vectors-k/--vectors-source",
     )
     parser.add_argument(
         "--run-dir",
@@ -204,18 +235,39 @@ def parse_args():
     )
     parsed = parser.parse_args()
 
-    if (parsed.vectors is None) == (parsed.vectors_k is None):
-        parser.error("exactly one of --vectors or --vectors-k is required")
-    if parsed.vectors_k is not None:
+    given = [
+        name
+        for name, value in (
+            ("--vectors", parsed.vectors),
+            ("--vectors-k", parsed.vectors_k),
+            ("--vectors-source", parsed.vectors_source),
+        )
+        if value is not None
+    ]
+    if len(given) != 1:
+        parser.error(
+            "exactly one of --vectors, --vectors-k or --vectors-source is "
+            f"required (got {', '.join(given) or 'none'})"
+        )
+
+    # One attribute downstream, whichever spelling built it.
+    parsed.mixture_sources = None
+    if parsed.vectors is None:
         try:
-            parsed.vectors_k = parse_vectors_k(parsed.vectors_k)
+            parsed.mixture_sources = (
+                parse_vectors_k(parsed.vectors_k)
+                if parsed.vectors_k is not None
+                else parse_vectors_source(parsed.vectors_source)
+            )
             parsed.mixture_ratio = parse_mixture_ratio(
-                parsed.mixture_ratio, list(parsed.vectors_k)
+                parsed.mixture_ratio, list(parsed.mixture_sources)
             )
         except ValueError as exc:
             parser.error(str(exc))
         if parsed.val_total_examples is None:
-            parser.error("--val-total-examples is required with --vectors-k")
+            parser.error(
+                "--val-total-examples is required with --vectors-k/--vectors-source"
+            )
     return parsed
 
 
@@ -942,10 +994,13 @@ def write_run_config(
         for key, value in vars(args).items()
     }
     config["resolved_total_steps"] = total_steps
-    if args.vectors_k is not None:
-        config["vectors_k"] = {name: str(d) for name, d in args.vectors_k.items()}
+    if args.mixture_sources is not None:
+        config["mixture_sources"] = {
+            name: str(d) for name, d in args.mixture_sources.items()
+        }
         config["position_means_paths"] = {
-            name: str(d / "position_means.pt") for name, d in args.vectors_k.items()
+            name: str(d / "position_means.pt")
+            for name, d in args.mixture_sources.items()
         }
         if mixture_source_ranges is not None:
             config["mixture_source_ranges"] = {
@@ -1038,14 +1093,14 @@ def main(args) -> dict:
     mixture_source_ranges = None
     val_source_ranges = None
     semicolon_drops = None
-    if args.vectors_k is not None:
+    if args.mixture_sources is not None:
         if args.pool_positions or args.restrict_topics_to is not None:
             raise ValueError(
                 "--pool-positions and --restrict-topics-to are not supported "
                 "with a mixture"
             )
         train_mixture, val_mixture = load_grouped_train_and_val(
-            args.vectors_k,
+            args.mixture_sources,
             ratio=args.mixture_ratio,
             budget_examples=args.budget_examples,
             val_total_examples=args.val_total_examples,
