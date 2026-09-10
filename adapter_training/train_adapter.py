@@ -30,7 +30,8 @@ import argparse
 import math
 from pathlib import Path
 
-# Light imports: config.py pulls in no heavy dependencies, so --help stays fast.
+# Light imports: neither pulls in a heavy dependency, so --help stays fast.
+from adapter_training.source_policy import Exhaustive, Sampled, SourcePolicy
 from config import BASE_MODEL_8B
 
 
@@ -108,20 +109,44 @@ def parse_centring_groups(values: list[str], names: list[str]) -> dict[str, str]
     return groups
 
 
-def parse_mixture_ratio(text: str, names: list[str]) -> dict[str, int]:
-    """Parse `"1:2:3"` into `{source: weight}`, in `names`' order.
+def parse_source_policies(
+    text: str, exhaustive: list[str] | None, names: list[str]
+) -> dict[str, SourcePolicy]:
+    """Parse `--mixture-ratio` and `--exhaustive-source` into one policy per
+    source, in `names`' order.
 
-    :param text: colon-separated weights, in the order the sources were given
-    :param names: the source names, in the order they were given
-    :raises ValueError: if the weight count does not match `len(names)`
+    An exhaustive source takes no weight, so `--mixture-ratio` carries one
+    entry per *sampled* source and the two flags cannot disagree about which
+    role a source has.
+
+    :param text: colon-separated weights, in the order the sampled sources
+        were given
+    :param exhaustive: source names to use whole, or None for none
+    :param names: every source name, in the order they were given
+    :raises ValueError: on an unknown or repeated exhaustive source, or a
+        weight count that does not match the number of sampled sources
     """
+    whole: list[str] = []
+    for name in exhaustive or []:
+        if name not in names:
+            raise ValueError(f"--exhaustive-source names unknown source {name!r}")
+        if name in whole:
+            raise ValueError(f"--exhaustive-source given twice for {name!r}")
+        whole.append(name)
+
+    sampled = [name for name in names if name not in whole]
     parts = text.split(":")
-    if len(parts) != len(names):
+    if len(parts) != len(sampled):
         raise ValueError(
-            f"--mixture-ratio has {len(parts)} entries but {len(names)} sources "
-            f"were given ({names})"
+            f"--mixture-ratio has {len(parts)} entries but {len(sampled)} "
+            f"sampled sources were given ({sampled}); exhaustive sources "
+            f"({whole}) take no weight"
         )
-    return {name: int(weight) for name, weight in zip(names, parts)}
+    weights = dict(zip(sampled, (int(part) for part in parts)))
+    return {
+        name: Exhaustive() if name in whole else Sampled(weights[name])
+        for name in names
+    }
 
 
 def parse_args():
@@ -157,8 +182,22 @@ def parse_args():
     parser.add_argument(
         "--mixture-ratio",
         default="1:2:3",
-        help="colon-separated example-count ratio, in the order the sources "
-        "were given (--vectors-k orders its own smallest k first)",
+        help="colon-separated example-count ratio, in the order the sampled "
+        "sources were given (--vectors-k orders its own smallest k first). "
+        "An --exhaustive-source takes no entry here",
+    )
+    parser.add_argument(
+        "--exhaustive-source",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="use this source whole -- every distinct (vector, label) pair "
+        "once -- instead of sampling a share of --budget-examples from it. "
+        "For a source small enough that a ratio share would approach its "
+        "whole inventory anyway, where sampling only wastes effort rejecting "
+        "repeats to reach an answer the data already forces. Its examples "
+        "are added on top of --budget-examples, which then covers the "
+        "sampled sources only. Single-topic sources only. Repeatable",
     )
     parser.add_argument(
         "--centring-group",
@@ -292,6 +331,7 @@ def parse_args():
 
     # One attribute downstream, whichever spelling built it.
     parsed.mixture_sources = None
+    parsed.source_policies = None
     if parsed.vectors is None:
         try:
             parsed.mixture_sources = (
@@ -299,8 +339,10 @@ def parse_args():
                 if parsed.vectors_k is not None
                 else parse_vectors_source(parsed.vectors_source)
             )
-            parsed.mixture_ratio = parse_mixture_ratio(
-                parsed.mixture_ratio, list(parsed.mixture_sources)
+            parsed.source_policies = parse_source_policies(
+                parsed.mixture_ratio,
+                parsed.exhaustive_source,
+                list(parsed.mixture_sources),
             )
             if parsed.centring_group is not None:
                 parsed.centring_group = parse_centring_groups(
@@ -324,7 +366,7 @@ import itertools
 import json
 import random
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 import torch
@@ -1057,6 +1099,14 @@ def write_run_config(
         config["centring_groups"] = args.centring_group or {
             name: "all" for name in args.mixture_sources
         }
+        config["source_policies"] = {
+            name: (
+                "exhaustive"
+                if isinstance(policy, Exhaustive)
+                else f"sampled:{policy.weight}"
+            )
+            for name, policy in args.source_policies.items()
+        }
     else:
         config["position_means_path"] = str(args.vectors / "position_means.pt")
     config["git_commit"] = _git_commit()
@@ -1099,14 +1149,14 @@ def load_train_and_val(
 def load_grouped_train_and_val(
     directories: dict[str, Path],
     *,
-    ratio: dict[str, int],
+    policies: dict[str, SourcePolicy],
     centring_groups: dict[str, str] | None = None,
     budget_examples: int,
     val_total_examples: int,
     seed: int,
 ) -> tuple[Mixture, Mixture]:
     """The mixture counterpart to `load_train_and_val`: several named sources
-    in one ratio, sampled once per split (`build_mixture`).
+    under one policy each, built once per split (`build_mixture`).
 
     Train and val each get their own `VectorStore` -- the same directories
     loaded and centred twice, rather than one store shared across splits
@@ -1114,13 +1164,16 @@ def load_grouped_train_and_val(
     this scale.
 
     :param directories: source name -> extraction output directory
-    :param ratio: relative example count per source
+    :param policies: source name -> `Sampled(weight)` or `Exhaustive()`
     :param centring_groups: source name -> centring group, or None to centre
         every source together
-    :param budget_examples: total train examples across every source
-    :param val_total_examples: total val examples across every source -- the
-        "full" val pool `train()` scores at the end (`final_eval.json`);
-        periodic validation subsamples `--val-subsample` from it
+    :param budget_examples: train examples across the sampled sources; an
+        exhaustive source's whole inventory is added on top, so the realised
+        pool is larger (`build_mixture`)
+    :param val_total_examples: val examples across the sampled sources, on
+        the same footing -- the "full" val pool `train()` scores at the end
+        (`final_eval.json`); periodic validation subsamples `--val-subsample`
+        from it
     :param seed: seeds train and val sampling independently
     :return: the train and val `Mixture`s; the val one's `source_ranges` is
         what lets `train()` score each source's own val slice
@@ -1129,7 +1182,7 @@ def load_grouped_train_and_val(
         directories,
         "train",
         budget_examples,
-        ratio=ratio,
+        policies=policies,
         centring_groups=centring_groups,
         seed=seed,
     )
@@ -1137,7 +1190,7 @@ def load_grouped_train_and_val(
         directories,
         "val",
         val_total_examples,
-        ratio=ratio,
+        policies=policies,
         centring_groups=centring_groups,
         seed=f"{seed}-val",
     )
@@ -1165,7 +1218,7 @@ def main(args) -> dict:
             )
         train_mixture, val_mixture = load_grouped_train_and_val(
             args.mixture_sources,
-            ratio=args.mixture_ratio,
+            policies=args.source_policies,
             centring_groups=args.centring_group,
             budget_examples=args.budget_examples,
             val_total_examples=args.val_total_examples,
@@ -1188,6 +1241,12 @@ def main(args) -> dict:
     )
 
     config = TrainConfig.from_args(args)
+    if args.mixture_sources is not None:
+        # --budget-examples buys the sampled sources; an exhaustive source's
+        # inventory lands on top of it, so the cosine horizon has to follow
+        # the realised pool rather than the flag. Without an exhaustive
+        # source the two are equal and this is a no-op.
+        config = replace(config, budget_examples=len(train_examples))
     total_steps = compute_total_steps(config.budget_examples, config.batch_size)
     write_run_config(
         args.run_dir,

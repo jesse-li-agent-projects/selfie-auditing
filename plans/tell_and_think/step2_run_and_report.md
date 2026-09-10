@@ -33,7 +33,9 @@ words, here or in the report.
 Cheap, CPU-only, and it protects the most expensive hours in the plan. Assert
 from the built example lists, not from the flags:
 
-1. Each source's train and val example counts match D4's table exactly.
+1. Each source's train and val example counts match D4's table exactly --
+   including `tell`'s two exhaustive counts, which are set by its inventory
+   rather than by any budget.
 2. Every example's `vector_index` in a source's range falls inside that source's
    own global offset range (§2.4 of step 1 -- the separator check does not work
    here).
@@ -52,19 +54,25 @@ from the built example lists, not from the flags:
         --vectors-source bg1=bg_think_l19 \
         --vectors-source bg2=bg_think_many_l19_k2 \
         --vectors-source bg3=bg_think_many_l19_k3 \
-        --mixture-ratio 3:1:2:3 \
+        --exhaustive-source tell --mixture-ratio 1:2:3 \
         --centring-group tell=tell \
         --centring-group bg1=bg --centring-group bg2=bg --centring-group bg3=bg \
         --run-dir adapters/tell_and_think \
-        --budget-examples 2266173 --batch-size 256 --micro-batch-size 16 \
+        --budget-examples 1510782 --batch-size 256 --micro-batch-size 16 \
         --projection-type scalar_affine_plus_low_rank --projection-rank 64 \
         --low-rank-init-factor 0.01 \
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 \
         --weight-decay 0.01 --seed 42 \
         --validate-every 100 --log-every 50 --val-subsample 5000 \
-        --val-total-examples 450000
+        --val-total-examples 300000 --resume
 
-8,853 steps. Every hyperparameter except the sources, the ratio, the centring
+**8,852 steps**, over a realised pool of 2,266,042 train examples. Both budget
+flags cover the *sampled* sources only (D4): `tell` is exhaustive, takes no
+ratio entry, and adds its 755,260 train / 84,183 val on top. A stale
+`--mixture-ratio 3:1:2:3` is rejected rather than silently reinterpreted --
+the weight count is checked against the sampled sources.
+
+Every hyperparameter except the sources, the ratio, the policies, the centring
 groups and the two budgets is what `bg_think_many` used (parent plan D5).
 **Do not tune them.** Not because comparability is the deliverable -- parent
 plan §8 says it is not -- but because a tuned run answers a different question
@@ -245,12 +253,12 @@ Write `plans/tell_and_think/notes/step2_results.md`. It must contain:
   the `tell` centring rule differing from `bg_think_many`'s, and `bg1`'s 0.54
   draws/vector. This run was not designed to isolate a cause, so do not report
   it as though it were.
-- D2's vector re-use (`tell` draws 755,391 examples from 44,673 distinct train
-  vectors, ~17 each) and D8's population asymmetry (2,635 topics seen only
-  through `tell` once D9's filter has run; 2,636 before it), both stated up
-  front rather than discovered in the analysis.
-  Note that `tell` draws *every* vector it has, so this is re-use and not a
-  data-diversity deficit (parent plan §8).
+- D2's vector re-use (`tell` contributes 755,260 train examples over 44,665
+  distinct vectors, ~16.9 each) and D8's population asymmetry (2,635 topics
+  seen only through `tell` once D9's filter has run; 2,636 before it), both
+  stated up front rather than discovered in the analysis. `tell` is used
+  whole, so every vector and every label it has is seen exactly once: that is
+  re-use of the vector, not a data-diversity deficit (parent plan §8).
 
 Then archive the plan: move `plans/tell_and_think/` into `plans/archive/` and
 update `plans/CLAUDE.md`, whose "Background thinking (bg_think)" section is the

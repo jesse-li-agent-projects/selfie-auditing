@@ -36,6 +36,7 @@ from adapter_training.dataset import (
 )
 from adapter_training.extract_grouped_vectors import drop_semicolon_topics
 from adapter_training.label_complexity import label_buckets
+from adapter_training.source_policy import Exhaustive, Sampled, SourcePolicy
 
 
 def compose_label(labels: Sequence[str]) -> str:
@@ -180,6 +181,42 @@ def sample_examples(
         stats["duplicate_rejections"] = duplicate_rejections
         stats["empty_bucket_fallbacks"] = empty_bucket_fallbacks
         stats["attempts"] = attempts
+    return examples
+
+
+def enumerate_examples(records: Sequence[GroupRecord]) -> list[Example]:
+    """Every distinct `(vector_index, label)` pair in `records`, once.
+
+    The `Exhaustive` counterpart to `sample_examples`, and deliberately a
+    separate function rather than a branch inside it: this one draws nothing,
+    takes no seed, and its length is dictated by the data. Order is
+    `records`' own; the trainer reshuffles the pool every pass regardless.
+
+    :param records: one split's records, already offset into a shared
+        `VectorStore` if applicable
+    :return: one `Example` per (vector, distinct label) pair
+    :raises ValueError: if any record names more than one topic, or if
+        `records` offers no vectors
+    """
+    multi = next((r for r in records if len(r.labels_per_topic) > 1), None)
+    if multi is not None:
+        raise ValueError(
+            "enumerate_examples: only single-topic sources can be used whole "
+            f"(a record names {len(multi.labels_per_topic)} topics: "
+            f"{list(multi.titles)}); its composed-label space is a product "
+            "over topics and orderings, so enumerating it is not what "
+            "'use the whole source' means -- sample it instead"
+        )
+    # dict.fromkeys, not set(): a repeated label string is one pair, and the
+    # order stays the record's own.
+    examples = [
+        Example(vector_index=record.start + position, label=label)
+        for record in records
+        for position in range(record.count)
+        for label in dict.fromkeys(record.labels_per_topic[0])
+    ]
+    if not examples:
+        raise ValueError("enumerate_examples: no records have any vectors")
     return examples
 
 
@@ -472,9 +509,9 @@ def _load_mixture_store(
 def build_mixture(
     directories: Mapping[str, Path],
     split: str,
-    total_examples: int,
+    sampled_examples: int,
     *,
-    ratio: Mapping[str, int],
+    policies: Mapping[str, SourcePolicy],
     centring_groups: Mapping[str, str] | None = None,
     seed: int | str,
 ) -> Mixture:
@@ -483,46 +520,71 @@ def build_mixture(
     Each source has its own `vectors.pt` and index space; this offsets each
     source's records so `Example.vector_index` addresses the combined table
     directly. See `_load_mixture_store` for the loading/centring; this adds
-    the split filter and the per-source sampling.
+    the split filter and the per-source draw.
 
-    `directories` and `ratio` are read in their own iteration order, which
+    Each source's `SourcePolicy` decides how many examples it contributes and
+    how they are chosen. `Sampled` sources divide `sampled_examples` by their
+    weights; an `Exhaustive` source takes no share of that budget and instead
+    contributes its whole label inventory, so the realised total is
+    `sampled_examples` plus whatever the exhaustive sources hold. That keeps a
+    sampled source's count fixed by its weight alone, rather than moving
+    whenever another source's inventory does.
+
+    `directories` and `policies` are read in their own iteration order, which
     must agree -- source names have no meaningful sort order, so there is no
     canonical order to fall back on.
 
     :param directories: source name -> extraction output directory
-    :param split: which split's records to sample examples from
-    :param total_examples: exact total across all sources, split by `ratio`
-    :param ratio: relative example count per source
+    :param split: which split's records to draw examples from
+    :param sampled_examples: exact total across the `Sampled` sources, split
+        by their weights; `Exhaustive` sources are added on top of it
+    :param policies: source name -> `Sampled(weight)` or `Exhaustive()`
     :param centring_groups: source name -> centring group (see
         `_load_mixture_store`); the default centres every source together
-    :param seed: seeds each source's sampler independently
-        (`f"{seed}-{name}-{split}"`)
-    :return: the sampled `Mixture`
-    :raises ValueError: if `ratio` does not name exactly `directories`' sources
+    :param seed: seeds each sampled source independently
+        (`f"{seed}-{name}-{split}"`); exhaustive sources draw nothing
+    :return: the built `Mixture`
+    :raises ValueError: if `policies` does not name exactly `directories`'
+        sources, or names no `Sampled` source while `sampled_examples` is
+        non-zero
     """
-    if set(ratio) != set(directories):
+    if set(policies) != set(directories):
         raise ValueError(
-            f"build_mixture: ratio names {sorted(ratio)} but the sources are "
-            f"{sorted(directories)}"
+            f"build_mixture: policies name {sorted(policies)} but the sources "
+            f"are {sorted(directories)}"
+        )
+    weights = {
+        name: policy.weight
+        for name, policy in policies.items()
+        if isinstance(policy, Sampled)
+    }
+    if not weights and sampled_examples:
+        raise ValueError(
+            f"build_mixture: every source is Exhaustive, so there is nothing "
+            f"to spend a sampled budget of {sampled_examples} on"
         )
     store, offset_records, source_rows, semicolon_drops, group_means = (
         _load_mixture_store(directories, centring_groups)
     )
-    counts = _split_by_ratio(total_examples, ratio)
+    counts = _split_by_ratio(sampled_examples, weights) if weights else {}
 
     examples: list[Example] = []
     source_ranges: dict[str, tuple[int, int]] = {}
     for name in directories:
         split_records = [r for r in offset_records[name] if r.split == split]
         start_idx = len(examples)
-        examples.extend(
-            sample_examples(
-                split_records,
-                counts[name],
-                buckets_of=label_buckets,
-                seed=f"{seed}-{name}-{split}",
+        policy = policies[name]
+        if isinstance(policy, Exhaustive):
+            examples.extend(enumerate_examples(split_records))
+        else:
+            examples.extend(
+                sample_examples(
+                    split_records,
+                    counts[name],
+                    buckets_of=label_buckets,
+                    seed=f"{seed}-{name}-{split}",
+                )
             )
-        )
         source_ranges[name] = (start_idx, len(examples))
 
     return Mixture(

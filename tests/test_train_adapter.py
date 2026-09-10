@@ -39,13 +39,14 @@ from adapter_training.train_adapter import (
     checkpoint_config,
     micro_batches,
     optimizer_step,
-    parse_mixture_ratio,
+    parse_source_policies,
     parse_vectors_k,
     parse_centring_groups,
     parse_vectors_source,
     seed_everything,
     train,
 )
+from adapter_training.source_policy import Exhaustive, Sampled
 from conftest import FakeCharTokenizer
 from adapter_training.inference import load_adapter
 from adapter_training.projection import create_projection_module
@@ -54,6 +55,12 @@ HIDDEN = 6
 
 
 # --- test 1: step count -------------------------------------------------
+
+
+def sampled(weights):
+    """`{name: weight}` -> `{name: Sampled(weight)}`, for the many mixture
+    tests that predate `Exhaustive` and only ever sample."""
+    return {name: Sampled(weight) for name, weight in weights.items()}
 
 
 def test_step_count_pins_the_published_global_step():
@@ -1207,22 +1214,48 @@ def test_parse_vectors_k_rejects_a_malformed_entry():
         parse_vectors_k(["1"])
 
 
-def test_parse_mixture_ratio_matches_the_given_source_order():
-    assert parse_mixture_ratio("1:2:3", ["k1", "k2", "k3"]) == {
-        "k1": 1,
-        "k2": 2,
-        "k3": 3,
+def test_parse_source_policies_matches_the_given_source_order():
+    assert parse_source_policies("1:2:3", None, ["k1", "k2", "k3"]) == {
+        "k1": Sampled(1),
+        "k2": Sampled(2),
+        "k3": Sampled(3),
     }
 
 
-def test_parse_mixture_ratio_does_not_sort_the_source_names():
+def test_parse_source_policies_does_not_sort_the_source_names():
     # tell is given first and takes weight 3; sorting would give it 1.
-    assert parse_mixture_ratio("3:1", ["tell", "bg1"]) == {"tell": 3, "bg1": 1}
+    assert parse_source_policies("3:1", None, ["tell", "bg1"]) == {
+        "tell": Sampled(3),
+        "bg1": Sampled(1),
+    }
 
 
-def test_parse_mixture_ratio_rejects_a_count_mismatch():
+def test_parse_source_policies_rejects_a_count_mismatch():
     with pytest.raises(ValueError, match="entries"):
-        parse_mixture_ratio("1:2:3", ["k1", "k2"])
+        parse_source_policies("1:2:3", None, ["k1", "k2"])
+
+
+def test_exhaustive_source_takes_no_weight_and_keeps_source_order():
+    policies = parse_source_policies("1:2:3", ["tell"], ["tell", "bg1", "bg2", "bg3"])
+    assert policies == {
+        "tell": Exhaustive(),
+        "bg1": Sampled(1),
+        "bg2": Sampled(2),
+        "bg3": Sampled(3),
+    }
+    assert list(policies) == ["tell", "bg1", "bg2", "bg3"]
+
+
+def test_a_ratio_entry_for_an_exhaustive_source_is_a_count_mismatch():
+    # The weight count is checked against the sampled sources, so keeping a
+    # 4-entry ratio after marking one source exhaustive cannot pass silently.
+    with pytest.raises(ValueError, match="sampled sources"):
+        parse_source_policies("3:1:2:3", ["tell"], ["tell", "bg1", "bg2", "bg3"])
+
+
+def test_exhaustive_source_must_name_a_real_source():
+    with pytest.raises(ValueError, match="unknown source"):
+        parse_source_policies("1:2", ["nope"], ["k1", "k2"])
 
 
 def _write_topic_dir(directory, records, vectors, means):
@@ -1335,7 +1368,7 @@ def test_load_grouped_train_and_val_builds_the_1_2_3_mixture(tmp_path):
     }
     train, val = load_grouped_train_and_val(
         directories,
-        ratio={"k1": 1, "k2": 2, "k3": 3},
+        policies=sampled({"k1": 1, "k2": 2, "k3": 3}),
         budget_examples=60,
         val_total_examples=30,
         seed=0,

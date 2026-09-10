@@ -88,7 +88,7 @@ validation loss, and pooled centring. The mixture machinery is generic over
 
 | step | file | GPU? | what it delivers |
 |---|---|---|---|
-| 1 | `step1_source_keyed_mixture.md` | no | source-name keying, per-source centring groups, per-source val slices |
+| 1 | `step1_source_keyed_mixture.md` | no | source-name keying, per-source centring groups, per-source val slices, exhaustive/sampled source policies |
 | 2 | `step2_run_and_report.md` | yes, large | the training run, the evaluations, the report |
 
 Step 1 needs no GPU and no network. Step 2 depends on it.
@@ -106,23 +106,32 @@ settled when they were not; both now record what was actually decided.
 extraction prompts it merges: `Tell me about X.` and `Think about X while
 writing Y.`
 
-**D2 — Four sources, mixed 3:1:2:3.** Per the user: `tell` takes the same share
-as k=3, the largest single share, so the original paper's data is one third of
-the mixture.
+**D2 — Four sources. `tell` is used whole; the `bg*` sources are sampled
+1:2:3.** Shares per the user (2026-09-09); `tell`'s policy per the user
+(2026-09-10).
 
-| source | directory | k | share |
+| source | directory | k | policy |
 |---|---|---|---|
-| `tell` | `outputs/baseline_l19` | 1 | 3 |
-| `bg1` | `outputs/bg_think_l19` | 1 | 1 |
-| `bg2` | `outputs/bg_think_many_l19_k2` | 2 | 2 |
-| `bg3` | `outputs/bg_think_many_l19_k3` | 3 | 3 |
+| `tell` | `outputs/baseline_l19` | 1 | exhaustive |
+| `bg1` | `outputs/bg_think_l19` | 1 | sampled, weight 1 |
+| `bg2` | `outputs/bg_think_many_l19_k2` | 2 | sampled, weight 2 |
+| `bg3` | `outputs/bg_think_many_l19_k3` | 3 | sampled, weight 3 |
 
-Note what this costs: `tell` has **one vector per topic**, against ~10 positions
-per group for the pangram sources, so its 755,391 examples are drawn from only
-44,673 distinct train vectors -- ~17 draws each. Each draw gets a different
-label (there are 6-20 per topic), so this is not literal repetition, but it is
-far heavier vector re-use than any other source. Say so in the report; do not
-discover it there.
+The shares began as one 3:1:2:3 ratio, giving `tell` the same share as k=3.
+That share turned out to be slightly *more than `tell` has*: it holds 755,260
+distinct (vector, label) pairs in train, against the 755,391 the ratio asked
+for, because it has **one vector per topic** where the pangram sources have
+~10 positions per group. No sampler can return more pairs than exist, and
+approaching the limit turns the draw loop into coupon collection for an answer
+the data already forces. So `tell` is used whole -- which is what the ratio was
+reaching for -- and its count is a property of the data rather than a number
+anyone chose. The `bg*` weights keep their original meaning among themselves.
+
+This is a **qualitative** difference between the sources, not a tuning choice:
+`tell` is small enough to exhaust and the `bg*` sources are not (`bg3` alone
+holds ~2x10^10 pairs). The code says so in its types -- `Exhaustive` against
+`Sampled(weight)`, dispatched on the policy a caller passes, never on a size
+comparison made at run time.
 
 **D3 — Centring is per family: `tell` on its own mean, the `bg*` sources pooled
 together.** Per the user. `bg_think_many`'s D14 pools the per-position mean
@@ -152,17 +161,28 @@ run's goal anyway.
 
 | source | train examples | val examples |
 |---|---|---|
-| `tell` | 755,391 | 150,000 |
+| `tell` (exhaustive) | 755,260 | 84,183 |
 | `bg1` | 251,797 | 50,000 |
 | `bg2` | 503,594 | 100,000 |
 | `bg3` | 755,391 | 150,000 |
-| **total** | **2,266,173** | **450,000** |
+| **total** | **2,266,042** | **384,183** |
+| *of which sampled* | *1,510,782* | *300,000* |
 
-Both totals divide by the 3:1:2:3 ratio exactly, with no remainder, so
-`_split_by_ratio` has nothing to round. At batch 256 that is **8,853 optimizer
-steps**, against `bg_think_many`'s 5,902. The `bg*` val slices keep
+`--budget-examples` buys the sampled sources only, so it is the 1,510,782 --
+which divides 1:2:3 exactly, with no remainder for `_split_by_ratio` to round,
+and reproduces each `bg*` count to the example. `tell`'s inventory lands on top.
+Keeping the budget on that footing is what freezes the `bg*` counts: they
+depend on their own weights alone, and cannot drift if `tell`'s inventory ever
+changes.
+
+Realised total is **2,266,042** train, i.e. **8,852 optimizer steps** at batch
+256, against `bg_think_many`'s 5,902. The `bg*` val slices keep
 `bg_think_many`'s own 50k/100k/150k sizes, so each is directly comparable
-number-to-number.
+number-to-number. `tell`'s val slice is its whole val inventory, 84,183 -- an
+earlier draft asked for 150,000, which does not exist.
+
+Every figure in this table was built and counted on CPU before the run
+(2026-09-10), not derived on paper.
 
 **D5 — The architecture does not move.** `scalar_affine_plus_low_rank`, rank 64,
 `low_rank_init_factor` 0.01, and every hyperparameter `bg_think_many` used (lr
@@ -364,9 +384,10 @@ context for how much ground was lost).
   D9's filter -- not 47,001 x 10, which is the unfiltered population. The 0.54
   is unchanged either way.) This is the *data-diversity* inefficiency that
   `bg_think_many`'s `--rounds` choice was about, and it is
-  inherited unchanged, frozen by D4. `tell`, by contrast, draws every one of its
-  vectors -- its ~17 draws each (D2) is re-use, not a diversity deficit, and is
-  not the same concern.
+  inherited unchanged, frozen by D4. `tell`, by contrast, is used whole: every
+  one of its vectors, paired with every one of its labels, exactly once (D2).
+  That is ~16.9 labels per vector -- re-use of the *vector*, not a diversity
+  deficit, since no label it holds goes unseen and none is seen twice.
 
 **Still open, and the user's to call:** `bg_think_many`'s rank-64-capacity vs
 multi-topic-data question is untouched here. The control that answers it is a

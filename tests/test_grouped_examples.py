@@ -15,13 +15,21 @@ from adapter_training.grouped_examples import (
     _load_source_records,
     _split_by_ratio,
     build_mixture,
+    enumerate_examples,
     compose_label,
     group_record_from_topic,
     sample_examples,
 )
+from adapter_training.source_policy import Exhaustive, Sampled
 from adapter_training.label_complexity import label_buckets
 
 HIDDEN = 3
+
+
+def sampled(weights):
+    """`{name: weight}` -> `{name: Sampled(weight)}`, for the many mixture
+    tests that predate `Exhaustive` and only ever sample."""
+    return {name: Sampled(weight) for name, weight in weights.items()}
 
 
 # --- compose_label -----------------------------------------------------
@@ -327,7 +335,7 @@ EVEN = {"k1": 1, "k2": 1, "k3": 1}
 
 def test_build_mixture_splits_by_ratio(tmp_path):
     directories = build_fixture(tmp_path)
-    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    mixture = build_mixture(directories, "train", 12, policies=sampled(EVEN), seed=0)
     assert len(mixture.examples) == 12
     assert {
         name: end - start for name, (start, end) in mixture.source_ranges.items()
@@ -336,10 +344,16 @@ def test_build_mixture_splits_by_ratio(tmp_path):
         assert mixture.examples[start:end] != []
 
 
-def test_build_mixture_rejects_a_ratio_that_names_other_sources(tmp_path):
+def test_build_mixture_rejects_policies_that_name_other_sources(tmp_path):
     directories = build_fixture(tmp_path)
-    with pytest.raises(ValueError, match="ratio names"):
-        build_mixture(directories, "train", 12, ratio={"k1": 1, "nope": 1}, seed=0)
+    with pytest.raises(ValueError, match="policies name"):
+        build_mixture(
+            directories,
+            "train",
+            12,
+            policies=sampled({"k1": 1, "nope": 1}),
+            seed=0,
+        )
 
 
 # raw -> pooled-centred (raw - 21.5), per build_fixture's docstring.
@@ -349,7 +363,7 @@ VAL_CENTRED = {"k1": -9.5, "k2": 0.5, "k3": 10.5}
 
 def test_build_mixture_offsets_index_into_the_mixture_store(tmp_path):
     directories = build_fixture(tmp_path)
-    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    mixture = build_mixture(directories, "train", 12, policies=sampled(EVEN), seed=0)
     # Every example's vector_index must land on that source's own
     # (pooled-centred) rows, not another source's or the val split's.
     for name, (start, end) in mixture.source_ranges.items():
@@ -363,7 +377,7 @@ def test_build_mixture_examples_stay_inside_their_own_source_rows(tmp_path):
     # The check that replaces counting "; " separators: that one cannot tell
     # two single-topic sources apart, since both compose to zero separators.
     directories = build_fixture(tmp_path)
-    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    mixture = build_mixture(directories, "train", 12, policies=sampled(EVEN), seed=0)
     for name, (start, end) in mixture.source_ranges.items():
         row_start, row_end = mixture.source_rows[name]
         for example in mixture.examples[start:end]:
@@ -372,7 +386,7 @@ def test_build_mixture_examples_stay_inside_their_own_source_rows(tmp_path):
 
 def test_build_mixture_never_addresses_a_val_group_from_a_train_call(tmp_path):
     directories = build_fixture(tmp_path)
-    mixture = build_mixture(directories, "train", 12, ratio=EVEN, seed=0)
+    mixture = build_mixture(directories, "train", 12, policies=sampled(EVEN), seed=0)
     values = {
         round(mixture.store.vectors[e.vector_index, 0].item(), 6)
         for e in mixture.examples
@@ -382,7 +396,7 @@ def test_build_mixture_never_addresses_a_val_group_from_a_train_call(tmp_path):
 
 def test_build_mixture_val_call_only_addresses_val_groups(tmp_path):
     directories = build_fixture(tmp_path)
-    mixture = build_mixture(directories, "val", 12, ratio=EVEN, seed=0)
+    mixture = build_mixture(directories, "val", 12, policies=sampled(EVEN), seed=0)
     values = {
         round(mixture.store.vectors[e.vector_index, 0].item(), 6)
         for e in mixture.examples
@@ -417,7 +431,7 @@ def build_two_single_topic_sources(tmp_path):
 def test_two_sources_at_the_same_k_land_in_disjoint_offset_ranges(tmp_path):
     directories = build_two_single_topic_sources(tmp_path)
     mixture = build_mixture(
-        directories, "train", 8, ratio={"tell": 1, "bg1": 1}, seed=0
+        directories, "train", 8, policies=sampled({"tell": 1, "bg1": 1}), seed=0
     )
     assert mixture.source_rows == {"tell": (0, 8), "bg1": (8, 16)}
     for name, (start, end) in mixture.source_ranges.items():
@@ -429,7 +443,7 @@ def test_two_sources_at_the_same_k_land_in_disjoint_offset_ranges(tmp_path):
 def test_two_sources_at_the_same_k_are_centred_on_the_pooled_mean(tmp_path):
     directories = build_two_single_topic_sources(tmp_path)
     mixture = build_mixture(
-        directories, "train", 8, ratio={"tell": 1, "bg1": 1}, seed=0
+        directories, "train", 8, policies=sampled({"tell": 1, "bg1": 1}), seed=0
     )
     centred = {
         name: mixture.store.vectors[mixture.examples[start].vector_index, 0].item()
@@ -444,7 +458,7 @@ def test_mixture_ratio_follows_the_given_order_not_a_sorted_one(tmp_path):
     # (bg1 before tell) would hand it 1 instead.
     directories = build_two_single_topic_sources(tmp_path)
     mixture = build_mixture(
-        directories, "train", 8, ratio={"tell": 1, "bg1": 3}, seed=0
+        directories, "train", 8, policies=sampled({"tell": 1, "bg1": 3}), seed=0
     )
     assert {
         name: end - start for name, (start, end) in mixture.source_ranges.items()
@@ -463,7 +477,7 @@ def test_single_topic_source_reports_its_semicolon_drops(tmp_path):
     )
     directories = {"filtered": tmp_path / "filtered", "tell": directories["tell"]}
     mixture = build_mixture(
-        directories, "train", 4, ratio={"filtered": 1, "tell": 1}, seed=0
+        directories, "train", 4, policies=sampled({"filtered": 1, "tell": 1}), seed=0
     )
     assert mixture.semicolon_drops == {"filtered": 1, "tell": 0}
     # And the dropped topic's rows are never addressed.
@@ -546,7 +560,7 @@ def test_separate_groups_centre_each_source_on_its_own_mean(tmp_path):
         directories,
         "train",
         4,
-        ratio={"tell": 1, "bg": 1},
+        policies=sampled({"tell": 1, "bg": 1}),
         centring_groups={"tell": "tell", "bg": "bg"},
         seed=0,
     )
@@ -562,7 +576,7 @@ def test_a_ragged_group_is_neither_padded_nor_read_out_of_range(tmp_path):
         directories,
         "train",
         4,
-        ratio={"tell": 1, "bg": 1},
+        policies=sampled({"tell": 1, "bg": 1}),
         centring_groups={"tell": "tell", "bg": "bg"},
         seed=0,
     )
@@ -580,7 +594,9 @@ def test_pooling_a_ragged_group_would_leave_the_offset_in(tmp_path):
     # position 0 and keeps a large constant offset that per-group centring
     # removes.
     directories = build_ragged_sources(tmp_path)
-    pooled = build_mixture(directories, "train", 4, ratio={"tell": 1, "bg": 1}, seed=0)
+    pooled = build_mixture(
+        directories, "train", 4, policies=sampled({"tell": 1, "bg": 1}), seed=0
+    )
     start, _end = pooled.source_ranges["tell"]
     index = pooled.examples[start].vector_index
     assert pooled.store.vectors[index, 0].item() == pytest.approx(11.0 - 26.5)
@@ -634,3 +650,99 @@ def test_mixture_vectors_refuses_a_row_no_record_addresses():
     assert vectors[0, 0].item() == pytest.approx(0.0)
     with pytest.raises(IndexError, match="no record addresses"):
         vectors[1]
+
+
+# --- enumerate_examples / Exhaustive ---------------------------------------
+
+
+def test_enumerate_examples_emits_every_pair_exactly_once():
+    record = TopicRecord("Alpha", ("a", "b", "c"), "train", start=7, count=2)
+    examples = enumerate_examples([group_record_from_topic(record)])
+    pairs = [(e.vector_index, e.label) for e in examples]
+    assert sorted(pairs) == sorted(
+        [(7, "a"), (7, "b"), (7, "c"), (8, "a"), (8, "b"), (8, "c")]
+    )
+    assert len(pairs) == len(set(pairs))
+
+
+def test_enumerate_examples_counts_a_repeated_label_string_once():
+    # Capacity is distinct pairs, so a duplicated label is not a second pair.
+    record = TopicRecord("Alpha", ("a", "a", "b"), "train", start=0, count=1)
+    examples = enumerate_examples([group_record_from_topic(record)])
+    assert [e.label for e in examples] == ["a", "b"]
+
+
+def test_enumerate_examples_refuses_a_multi_topic_source():
+    record = GroupRecord(
+        ("A", "B"), (("a",), ("b",)), "train", start=0, count=1, variant=None
+    )
+    with pytest.raises(ValueError, match="single-topic"):
+        enumerate_examples([record])
+
+
+def test_enumerate_examples_refuses_an_empty_pool():
+    with pytest.raises(ValueError, match="no records"):
+        enumerate_examples([])
+
+
+def test_exhaustive_source_ignores_the_budget_and_takes_its_inventory(tmp_path):
+    # k1's train group is 4 positions x 6 labels = 24 pairs; the budget is
+    # spent entirely on the sampled sources, and k1 lands on top of it.
+    directories = build_fixture(tmp_path)
+    mixture = build_mixture(
+        directories,
+        "train",
+        12,
+        policies={"k1": Exhaustive(), "k2": Sampled(1), "k3": Sampled(1)},
+        seed=0,
+    )
+    start, end = mixture.source_ranges["k1"]
+    assert end - start == 24
+    assert len(mixture.examples) == 24 + 12
+    for name in ("k2", "k3"):
+        lo, hi = mixture.source_ranges[name]
+        assert hi - lo == 6
+
+
+def test_exhaustive_source_does_not_depend_on_the_seed(tmp_path):
+    # Nothing is drawn, so the multiset is forced by the data.
+    directories = build_fixture(tmp_path)
+
+    def k1_pairs(seed):
+        mixture = build_mixture(
+            directories,
+            "train",
+            12,
+            policies={"k1": Exhaustive(), "k2": Sampled(1), "k3": Sampled(1)},
+            seed=seed,
+        )
+        start, end = mixture.source_ranges["k1"]
+        return sorted((e.vector_index, e.label) for e in mixture.examples[start:end])
+
+    assert k1_pairs(0) == k1_pairs(999)
+
+
+def test_exhaustive_examples_stay_inside_their_own_source_rows(tmp_path):
+    directories = build_fixture(tmp_path)
+    mixture = build_mixture(
+        directories,
+        "train",
+        12,
+        policies={"k1": Exhaustive(), "k2": Sampled(1), "k3": Sampled(1)},
+        seed=0,
+    )
+    start, end = mixture.source_ranges["k1"]
+    low, high = mixture.source_rows["k1"]
+    assert all(low <= e.vector_index < high for e in mixture.examples[start:end])
+
+
+def test_build_mixture_refuses_a_budget_with_nothing_to_spend_it_on(tmp_path):
+    directories = build_fixture(tmp_path)
+    with pytest.raises(ValueError, match="nothing"):
+        build_mixture(
+            directories,
+            "train",
+            12,
+            policies={name: Exhaustive() for name in directories},
+            seed=0,
+        )
