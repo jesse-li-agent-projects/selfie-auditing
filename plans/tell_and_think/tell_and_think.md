@@ -230,8 +230,10 @@ figure is not a comparison. Preferably it does not quote them at all.
 `tell` slice is the upstream population, so it is the population the research
 question is asked about. Re-confirmed by the user on 2026-09-09 after D7's
 priors were dropped, i.e. it stands on its own and not on D7. Strictly the
-population is 49,637 minus D9's `;`-filter drops. The 5.3% asymmetry is the cost, and it means a few thousand topics are
-seen only through `tell`. Note it in the report.
+population is 49,637 minus D9's `;`-filter drops, i.e. 49,627 against `bg1`'s
+46,992, so the realised asymmetry is **2,635** topics seen only through `tell`
+-- one fewer than the 2,636 above, because `BoA` is among D9's drops. The 5.3%
+asymmetry is the cost. Note it in the report.
 
 **D9 — The `;`-label filter applies to `tell` too.** `drop_semicolon_topics`
 exists because a composed label joins topics with `"; "`, and a label containing
@@ -239,7 +241,22 @@ a semicolon would teach the wrong segmentation. `tell`'s labels are never
 composed, so the filter is not strictly required there -- but it costs **10
 topics out of 49,637**, and a `tell` label with a semicolon would still teach the
 adapter to emit a separator where no second topic exists. Apply it, for one
-consistent rule across sources. Record the exact dropped count.
+consistent rule across sources.
+
+Measured, so Gate 1 has something to check against rather than re-derive:
+
+| source | `;`-filter drops | topics kept |
+|---|---|---|
+| `tell` | 10 | 49,627 |
+| `bg1` | 9 | 46,992 |
+| `bg2` | 0 | unchanged |
+| `bg3` | 0 | unchanged |
+
+`bg2`/`bg3` drop nothing because the grouped extractor already filtered
+before writing `groups.json`. `tell` and `bg1` differ by one only because of
+population, not behaviour: `bg1`'s titles are a strict subset of `tell`'s, and
+`bg1`'s 9 are a subset of `tell`'s 10. The extra one is `BoA`, which only
+`tell` has (D8).
 
 ## 6. Gates
 
@@ -249,7 +266,9 @@ Ordered; a later gate is not worth running if an earlier one failed.
 assert from the built example lists, not from the flags: each source's example
 count matches D4's table exactly; each source's val range maps to vector rows
 inside that source's own global offset range; and the `bg*` pooled mean is
-bit-identical to the one `bg_think_many` used. The separator-count check
+bit-identical to the one `bg_think_many` used. Check the realised `;`-filter
+drops against D9's table (10 / 9 / 0 / 0) -- `bg1`'s 9 is expected, not a
+fault. The separator-count check
 `bg_think_many` used to verify its slices **cannot work here** -- `tell` and
 `bg1` both compose to zero separators -- so use the row-offset check instead.
 
@@ -335,9 +354,11 @@ context for how much ground was lost).
   on.
 - **The `tell` centring rule differs** from `bg_think_many`'s (D3), so the `tell`
   slice is not on the predecessor's footing. The `bg*` group's mean is unchanged.
-- **`bg1` draws 251,797 examples from 470,010 vectors** (0.54 each), so ~46% of
-  its distinct activations are never seen. This is the *data-diversity*
-  inefficiency that `bg_think_many`'s `--rounds` choice was about, and it is
+- **`bg1` draws 251,797 examples from 469,920 vectors** (0.54 each), so ~46% of
+  its distinct activations are never seen. (46,992 topics x 10 positions, after
+  D9's filter -- not 47,001 x 10, which is the unfiltered population. The 0.54
+  is unchanged either way.) This is the *data-diversity* inefficiency that
+  `bg_think_many`'s `--rounds` choice was about, and it is
   inherited unchanged, frozen by D4. `tell`, by contrast, draws every one of its
   vectors -- its ~17 draws each (D2) is re-use, not a diversity deficit, and is
   not the same concern.

@@ -40,8 +40,10 @@ from the built example lists, not from the flags:
 3. The `bg*` group's pooled mean is bit-identical to the one `bg_think_many`
    used. This is what keeps the `bg*` slices on `bg_think_many`'s footing, so
    check it rather than assume it.
-4. Record the exact `;`-filter drop counts per source (D9 expects 10 topics for
-   `tell`).
+4. Record the exact `;`-filter drop counts per source. D9's table gives all
+   four: `tell` 10, `bg1` 9, `bg2` 0, `bg3` 0. **`bg1`'s 9 is expected** --
+   the filter has always applied there -- so it is not an anomaly worth
+   re-auditing the other assertions over.
 
 ## 3. The training run
 
@@ -192,8 +194,9 @@ Write `plans/tell_and_think/notes/step2_results.md`. It must contain:
   draws/vector. This run was not designed to isolate a cause, so do not report
   it as though it were.
 - D2's vector re-use (`tell` draws 755,391 examples from 44,673 distinct train
-  vectors, ~17 each) and D8's population asymmetry (2,636 topics seen only
-  through `tell`), both stated up front rather than discovered in the analysis.
+  vectors, ~17 each) and D8's population asymmetry (2,635 topics seen only
+  through `tell` once D9's filter has run; 2,636 before it), both stated up
+  front rather than discovered in the analysis.
   Note that `tell` draws *every* vector it has, so this is re-use and not a
   data-diversity deficit (parent plan §8).
 
