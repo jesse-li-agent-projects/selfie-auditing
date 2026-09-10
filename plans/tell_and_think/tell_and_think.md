@@ -284,11 +284,16 @@ full 49,637-topic index, reporting per source. The untrained floor is **0.00068*
 aggregate recall@1 (not 0.0013 -- see `bg_think_many`'s notes, which correct that
 figure). Report the `segments` histogram beside every score.
 
-**Pass unless aggregate recall@1 is below 3x the floor (0.00204).** Per the user
+**Fail only if no source clears 3x the floor (0.00204).** Per the user
 (2026-09-09): OOD generalisation is unpredictable, so a merely unimpressive
 in-distribution retrieval score is not grounds to withhold the OOD arms. This
 gate exists to catch a broken adapter, nothing more. `tell` has no comparable
 prior at this decoding length and does not need one.
+
+The threshold is per source because 0.00068 is itself a single-source mean over
+positions; no pooled figure was ever implied. Running this gate takes **two
+invocations** of `evaluate_retrieval.py`, which cannot express D3's two centring
+groups in one -- step 2 §5 gives both commands and the reason.
 
 ## 7. The evaluations
 

@@ -119,11 +119,63 @@ The untrained floor is **0.00068** aggregate recall@1 -- not 0.0013, which
 `bg_think_many`'s notes correct as a position-0 figure measured on a different
 directory. Report the `segments` histogram beside every score.
 
-**Pass unless aggregate recall@1 is below 3x the floor (0.00204)** (parent plan
-§6). This catches a broken adapter and nothing more; an unimpressive score is
-not grounds to withhold the OOD arms, because OOD generalisation is
-unpredictable. Do not add a `tell` prior at this decoding length -- none is
-wanted.
+**Two invocations, not one** (user, 2026-09-10). `evaluate_retrieval.py` keys
+its multi-source path on `k` and builds exactly one pooled centring reference,
+so it cannot express D3's two groups in a single run: `tell` and `bg1` are both
+k=1 and collide on the key, and folding `tell` into the pooled mean would shift
+the `bg*` reference off `bg_think_many`'s footing. Splitting the run reproduces
+D3 exactly, with no code change.
+
+    # tell, centred on its own position_means.pt -- D3's tell group
+    python -m adapter_training.evaluate_retrieval \
+        --vectors baseline_l19 --split val --center \
+        --checkpoint <ABS>/outputs/adapters/tell_and_think/best.pt \
+        --positions all --max-new-tokens 110 \
+        --index-cache retrieval_reports/gte_index.pt \
+        --report outputs/retrieval_reports/tell_and_think_tell.json
+
+    # bg1/bg2/bg3, pooled over those three only -- D3's bg group
+    python -m adapter_training.evaluate_retrieval \
+        --vectors-k 1=bg_think_l19 \
+        --vectors-k 2=bg_think_many_l19_k2 \
+        --vectors-k 3=bg_think_many_l19_k3 \
+        --split val --center \
+        --checkpoint <ABS>/outputs/adapters/tell_and_think/best.pt \
+        --positions all --max-new-tokens 110 \
+        --index-cache retrieval_reports/gte_index.pt \
+        --report outputs/retrieval_reports/tell_and_think_bg.json
+
+Omitting `--pool-vectors-k` is deliberate: it defaults to `--vectors-k`'s own
+three directories, which is the D3 `bg` group. `--temperature`, `--seed` and
+`--gen-seed` already default to the wanted values; `--max-new-tokens` defaults
+to 30 and does not. `--index-cache` gets `outputs/` prepended by the script but
+**`--report` does not** -- write that path in full. Sharing one `--index-cache`
+stops the 49,637-topic GTE index being built twice.
+
+**Apply the threshold per source; there is no pooled figure to compute.** The
+0.00068 floor is itself a single-source mean over positions -- `recalls["1"]` of
+`outputs/retrieval_reports/untrained_floor_centred.json`, mode `per_position` --
+so each source's own headline recall@1 is the like-for-like number, and no
+cross-source aggregate was ever implied. **Fail only if no source clears 3x the
+floor (0.00204)**, which is what a broken adapter looks like. A single weak
+source is a finding, not a failure: an unimpressive score is not grounds to
+withhold the OOD arms, because OOD generalisation is unpredictable. Do not add a
+`tell` prior at this decoding length -- none is wanted.
+
+**`tell`'s report carries no `segments` block**, because the single-directory
+path scores with `score` and segmentation lives in `score_sets`. This costs
+little and is recoverable. The two functions agree *exactly* for a k=1 source
+whose generation holds no `;`
+(`tests/test_set_retrieval.py::test_k1_no_semicolon_reduces_exactly_to_score`),
+and where a `;` does appear `score` is the stricter of the two, so `tell`'s
+recall can only be understated, never flattered. Recover the histogram
+afterwards from the saved generations -- `per_label_results[i]["label"]` holds
+each description verbatim -- with a `.tmp.py` that reuses
+`retrieval_eval.split_segments` rather than re-implementing the split. Worth
+doing rather than skipping: `tell` is k=1 and D9 guarantees its labels hold no
+`;`, so segment counts above 1 mean the adapter picked up `bg2`/`bg3`'s
+separator habit and now applies it to single-topic vectors. That is a
+cross-contamination signal no predecessor run could show.
 
 `bg_think_many`'s figures (0.5646 / 0.2206 / 0.0911 recall@1 at k=1/2/3) are
 informative **only** for the `bg*` sources, and only because D3 leaves their
