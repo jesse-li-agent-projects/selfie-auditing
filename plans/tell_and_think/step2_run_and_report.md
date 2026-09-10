@@ -33,15 +33,19 @@ words, here or in the report.
 Cheap, CPU-only, and it protects the most expensive hours in the plan. Assert
 from the built example lists, not from the flags:
 
-1. Each source's train and val example counts match D4's table exactly.
+1. Each source's train and val example counts match D4's table exactly --
+   including `tell`'s two exhaustive counts, which are set by its inventory
+   rather than by any budget.
 2. Every example's `vector_index` in a source's range falls inside that source's
    own global offset range (§2.4 of step 1 -- the separator check does not work
    here).
 3. The `bg*` group's pooled mean is bit-identical to the one `bg_think_many`
-   used. This is what makes D5's comparison a single-variable one, so check it
-   rather than assume it.
-4. Record the exact `;`-filter drop counts per source (D9 expects 10 topics for
-   `tell`).
+   used. This is what keeps the `bg*` slices on `bg_think_many`'s footing, so
+   check it rather than assume it.
+4. Record the exact `;`-filter drop counts per source. D9's table gives all
+   four: `tell` 10, `bg1` 9, `bg2` 0, `bg3` 0. **`bg1`'s 9 is expected** --
+   the filter has always applied there -- so it is not an anomaly worth
+   re-auditing the other assertions over.
 
 ## 3. The training run
 
@@ -50,22 +54,29 @@ from the built example lists, not from the flags:
         --vectors-source bg1=bg_think_l19 \
         --vectors-source bg2=bg_think_many_l19_k2 \
         --vectors-source bg3=bg_think_many_l19_k3 \
-        --mixture-ratio 3:1:2:3 \
+        --exhaustive-source tell --mixture-ratio 1:2:3 \
         --centring-group tell=tell \
         --centring-group bg1=bg --centring-group bg2=bg --centring-group bg3=bg \
         --run-dir adapters/tell_and_think \
-        --budget-examples 2266173 --batch-size 256 --micro-batch-size 16 \
+        --budget-examples 1510782 --batch-size 256 --micro-batch-size 16 \
         --projection-type scalar_affine_plus_low_rank --projection-rank 64 \
         --low-rank-init-factor 0.01 \
         --lr 0.01 --init-scale 5.0 --warmup-steps 10 --grad-clip 0.5 \
         --weight-decay 0.01 --seed 42 \
         --validate-every 100 --log-every 50 --val-subsample 5000 \
-        --val-total-examples 450000
+        --val-total-examples 300000 --resume
 
-8,853 steps. Every hyperparameter except the sources, the ratio, the centring
+**8,852 steps**, over a realised pool of 2,266,042 train examples. Both budget
+flags cover the *sampled* sources only (D4): `tell` is exhaustive, takes no
+ratio entry, and adds its 755,260 train / 84,183 val on top. A stale
+`--mixture-ratio 3:1:2:3` is rejected rather than silently reinterpreted --
+the weight count is checked against the sampled sources.
+
+Every hyperparameter except the sources, the ratio, the policies, the centring
 groups and the two budgets is what `bg_think_many` used (parent plan D5).
-**Do not tune them** -- a tuned run would not be comparable to `bg_think_many`,
-and comparability is this plan's entire value over its predecessor.
+**Do not tune them.** Not because comparability is the deliverable -- parent
+plan §8 says it is not -- but because a tuned run answers a different question
+than the one asked, and there is no budget to do both.
 
 Four things `bg_think_many`'s step 6 got wrong on this exact command, all
 already corrected above. Do not reintroduce them:
@@ -90,40 +101,100 @@ after:
 - `outputs/` syncs remote -> local only, so any local input file is not on the
   remote. Materialise inputs through the worktree, which syncs local -> remote.
 
-## 4. Gate 2: validation loss, per source
+## 4. Gate 2: validation loss, per source, as a diagnostic
 
-Report the table, never a pooled figure (D7).
+Report all four per-source slices, never a pooled figure (parent plan D7).
 
-| slice | prior | what the prior is |
-|---|---|---|
-| `tell` | 1.3662 | published checkpoint's `best_val_loss` -- **a floor, not a target** (D7) |
-| `bg1` | 1.3294 | `bg_think_many`'s k=1 slice: like-for-like |
-| `bg2` | 1.6505 | `bg_think_many`'s k=2 slice |
-| `bg3` | 1.8797 | `bg_think_many`'s k=3 slice |
+**This gate is not a comparison.** It asks only whether the run trained: every
+slice finite, every curve converging, no slice stuck or diverging, nothing
+absurd relative to its own curve. `bg_think_many`'s slice losses and the
+published checkpoint's `best_val_loss` are **not** valid references -- D7 was
+corrected by the user on 2026-09-09 because validation loss is not comparable
+across these runs, and not only because the architectures differ: each run's
+loss is computed over a different training distribution, so it is a different
+task. Do not pass or fail the run on any of them, and do not quote a published
+figure without saying in the same sentence that it is not a comparison.
 
-The 1.3662 caveat is not a formality: it was a plain `scalar_affine` projection
-at 2,951 steps, so a rank-64 model should beat it and "beat it" is not a
-finding. Landing *worse* than it is a bug signal.
+A slice that looks anomalous is a reason to re-check Gate 1's assertions, not a
+verdict on the adapter. All evidence about whether `tell_and_think` is better
+than `bg_think_many` comes from §6.
 
-A slice far better than its prior is also a bug signal -- re-check Gate 1's
-assertions before believing it.
-
-## 5. Gate 3: set-level retrieval
+## 5. Gate 3: set-level retrieval is not catastrophic
 
 Score `best.pt` at `--max-new-tokens 110`, temperature 0.7, `n_samples` 1, seed
-42, against the full 49,637-topic index, centred per D3, reporting per source
-(D7). The untrained floor is **0.00068** aggregate recall@1 -- not 0.0013, which
+42, against the full 49,637-topic index, centred per D3, reporting per source.
+The untrained floor is **0.00068** aggregate recall@1 -- not 0.0013, which
 `bg_think_many`'s notes correct as a position-0 figure measured on a different
 directory. Report the `segments` histogram beside every score.
 
+**Two invocations, not one** (user, 2026-09-10). `evaluate_retrieval.py` keys
+its multi-source path on `k` and builds exactly one pooled centring reference,
+so it cannot express D3's two groups in a single run: `tell` and `bg1` are both
+k=1 and collide on the key, and folding `tell` into the pooled mean would shift
+the `bg*` reference off `bg_think_many`'s footing. Splitting the run reproduces
+D3 exactly, with no code change.
+
+    # tell, centred on its own position_means.pt -- D3's tell group
+    python -m adapter_training.evaluate_retrieval \
+        --vectors baseline_l19 --split val --center \
+        --checkpoint <ABS>/outputs/adapters/tell_and_think/best.pt \
+        --positions all --max-new-tokens 110 \
+        --index-cache retrieval_reports/gte_index.pt \
+        --report outputs/retrieval_reports/tell_and_think_tell.json
+
+    # bg1/bg2/bg3, pooled over those three only -- D3's bg group
+    python -m adapter_training.evaluate_retrieval \
+        --vectors-k 1=bg_think_l19 \
+        --vectors-k 2=bg_think_many_l19_k2 \
+        --vectors-k 3=bg_think_many_l19_k3 \
+        --split val --center \
+        --checkpoint <ABS>/outputs/adapters/tell_and_think/best.pt \
+        --positions all --max-new-tokens 110 \
+        --index-cache retrieval_reports/gte_index.pt \
+        --report outputs/retrieval_reports/tell_and_think_bg.json
+
+Omitting `--pool-vectors-k` is deliberate: it defaults to `--vectors-k`'s own
+three directories, which is the D3 `bg` group. `--temperature`, `--seed` and
+`--gen-seed` already default to the wanted values; `--max-new-tokens` defaults
+to 30 and does not. `--index-cache` gets `outputs/` prepended by the script but
+**`--report` does not** -- write that path in full. Sharing one `--index-cache`
+stops the 49,637-topic GTE index being built twice.
+
+**Apply the threshold per source; there is no pooled figure to compute.** The
+0.00068 floor is itself a single-source mean over positions -- `recalls["1"]` of
+`outputs/retrieval_reports/untrained_floor_centred.json`, mode `per_position` --
+so each source's own headline recall@1 is the like-for-like number, and no
+cross-source aggregate was ever implied. **Fail only if no source clears 3x the
+floor (0.00204)**, which is what a broken adapter looks like. A single weak
+source is a finding, not a failure: an unimpressive score is not grounds to
+withhold the OOD arms, because OOD generalisation is unpredictable. Do not add a
+`tell` prior at this decoding length -- none is wanted.
+
+**`tell`'s report carries no `segments` block**, because the single-directory
+path scores with `score` and segmentation lives in `score_sets`. This costs
+little and is recoverable. The two functions agree *exactly* for a k=1 source
+whose generation holds no `;`
+(`tests/test_set_retrieval.py::test_k1_no_semicolon_reduces_exactly_to_score`),
+and where a `;` does appear `score` is the stricter of the two, so `tell`'s
+recall can only be understated, never flattered. Recover the histogram
+afterwards from the saved generations -- `per_label_results[i]["label"]` holds
+each description verbatim -- with a `.tmp.py` that reuses
+`retrieval_eval.split_segments` rather than re-implementing the split. Worth
+doing rather than skipping: `tell` is k=1 and D9 guarantees its labels hold no
+`;`, so segment counts above 1 mean the adapter picked up `bg2`/`bg3`'s
+separator habit and now applies it to single-topic vectors. That is a
+cross-contamination signal no predecessor run could show.
+
 `bg_think_many`'s figures (0.5646 / 0.2206 / 0.0911 recall@1 at k=1/2/3) are
-comparable **only** for the `bg*` sources, and only because D3 leaves their
-centring unchanged. `tell` has no comparable prior at this decoding length.
+informative **only** for the `bg*` sources, and only because D3 leaves their
+centring unchanged.
 
 ## 6. The evaluations (parent plan §7)
 
 Three arms, matched to `bg_think_many`'s settings so the numbers compose. None
-is a gate; a negative result is the finding.
+is a gate; a negative result is the finding. **Read parent plan §7 first**: the
+taboo task and the bridge-entity task carry the result equally, and arms 1 and 2
+are two harnesses over *one* task, split for historical reasons.
 
 1. **Taboo, user-prompt tokens** -- `run_pipeline.py`, matched to
    `outputs/taboo_bg_think_many`'s sidecar. Compare **matched** on (organism,
@@ -133,19 +204,26 @@ is a gate; a negative result is the finding.
    question. This harness only ever covered book and chair, and the predecessor
    found book to be the one word where it underperformed -- so treat a null
    result here as possibly a word-selection artefact, and say so.
-2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, four words (book,
-   chair, blue, salt), matched to `outputs/taboo_assistant_bg_think_many`. The
-   two harnesses do not cover the same word lists; match each one to its own
-   predecessor rather than intersecting them.
+2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, matched to
+   `outputs/taboo_assistant_bg_think_many`. **Run book and chair only**, per the
+   user (2026-09-09), to hold evaluation cost down -- not the predecessor's four.
+   Extending to blue and salt is a follow-up if this run's result is good enough
+   to warrant it, and the report should say whether it is.
 3. **Bridge entity (TwoHopFact)** -- raw uninjected activations, no mean
    subtraction. Priors: `baseline` 89/100, `bg_think` 88/100, `bg_think_many`
    70/100. Detection rate is near ceiling for the first two and so has little
    power; **`generation_hit_rate`, over 67,488 cells, is the metric with
    resolution** (2.15% / 1.74% / 0.62%). Report both.
 
-Arm 3 is the one the parent plan §7 flags as the sharpest question this run
-answers. Read that section's note about whose inference that framing is before
-carrying it into the report.
+**Arms 1 and 2 need a combined reading, not just two tables.** With arm 2 cut to
+book and chair, both harnesses now cover the **same two words**, so a direct
+cross-harness reading is available throughout. Match each arm to its own
+predecessor for the numbers, then state what the taboo task as a whole shows.
+Where a conclusion holds in one harness and not the other, name which and treat
+the disagreement as the finding.
+
+**Comparison arms: `baseline` (primary) and `bg_think_many` (secondary)**, per
+the user and parent plan §8. `bg_think`'s figures are context only, not an arm.
 
 ### Realised cost, from the predecessor
 
@@ -164,16 +242,23 @@ Write `plans/tell_and_think/notes/step2_results.md`. It must contain:
 - The realised cost table, against this file's estimate.
 - **"What contradicted the plan"** -- the most valuable section, per the
   predecessor's note. Anything this file assumes and the code does not have.
-- Gate 1, 2, 3 results, with the D7 caveat stated wherever 1.3662 appears.
-- The three OOD arms, matched-cell comparisons, against **both**
-  `bg_think_many` and `baseline`.
-- **What this does not isolate** (parent plan §8): the `tell` centring rule
-  differs from `bg_think_many`'s, so the `tell` slice carries a confound the
-  `bg*` slices do not; and `bg_think_many`'s own rank-vs-data confound is
-  untouched by this run.
-- D2's vector re-use (`tell` draws 755,391 examples from 44,673 distinct train
-  vectors) and D8's population asymmetry (2,636 topics seen only through
-  `tell`), both stated up front rather than discovered in the analysis.
+- Gate 1, 2, 3 results. Gate 2 is reported as a diagnostic only; if any
+  published validation loss appears at all, the same sentence must say it is not
+  a comparison (D7).
+- The three OOD arms, matched-cell comparisons, against `baseline` first and
+  `bg_think_many` second (parent plan §8). Beating `baseline` is the goal the
+  run was set for; say plainly whether it did.
+- **What is acknowledged and accepted** (parent plan §8), stated without
+  hedging the result: the stretched cosine schedule (8,853 steps against 5,902),
+  the `tell` centring rule differing from `bg_think_many`'s, and `bg1`'s 0.54
+  draws/vector. This run was not designed to isolate a cause, so do not report
+  it as though it were.
+- D2's vector re-use (`tell` contributes 755,260 train examples over 44,665
+  distinct vectors, ~16.9 each) and D8's population asymmetry (2,635 topics
+  seen only through `tell` once D9's filter has run; 2,636 before it), both
+  stated up front rather than discovered in the analysis. `tell` is used
+  whole, so every vector and every label it has is seen exactly once: that is
+  re-use of the vector, not a data-diversity deficit (parent plan §8).
 
 Then archive the plan: move `plans/tell_and_think/` into `plans/archive/` and
 update `plans/CLAUDE.md`, whose "Background thinking (bg_think)" section is the

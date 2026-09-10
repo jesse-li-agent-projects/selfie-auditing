@@ -15,6 +15,7 @@ against Llama-3.2-1B (`config.DUMMY_BASE_MODEL`), run under `gpu-exec`.
 import itertools
 import json
 import math
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,11 +39,14 @@ from adapter_training.train_adapter import (
     checkpoint_config,
     micro_batches,
     optimizer_step,
-    parse_mixture_ratio,
+    parse_source_policies,
     parse_vectors_k,
+    parse_centring_groups,
+    parse_vectors_source,
     seed_everything,
     train,
 )
+from adapter_training.source_policy import Exhaustive, Sampled
 from conftest import FakeCharTokenizer
 from adapter_training.inference import load_adapter
 from adapter_training.projection import create_projection_module
@@ -51,6 +55,12 @@ HIDDEN = 6
 
 
 # --- test 1: step count -------------------------------------------------
+
+
+def sampled(weights):
+    """`{name: weight}` -> `{name: Sampled(weight)}`, for the many mixture
+    tests that predate `Exhaustive` and only ever sample."""
+    return {name: Sampled(weight) for name, weight in weights.items()}
 
 
 def test_step_count_pins_the_published_global_step():
@@ -484,10 +494,10 @@ def run_tiny_training(
     return checkpoint["projection_state"], result
 
 
-# --- test 4c: per-k validation loss (bg_think_many step 6a, Gate 2) --------
+# --- test 4c: per-source validation loss -----------------------------------
 
 
-def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
+def test_val_source_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
     tmp_path_factory,
 ):
     scorer_seed = 123
@@ -503,7 +513,7 @@ def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
 
     store, train_examples, val_examples = build_tiny_dataset()
     assert len(val_examples) == 6  # 3 val topics x 2 labels
-    val_k_ranges = {1: (0, 3), 2: (3, 6)}
+    val_source_ranges = {"tell": (0, 3), "bg1": (3, 6)}
     config = TrainConfig(
         budget_examples=8,
         batch_size=4,
@@ -520,7 +530,7 @@ def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
         log_every=2,
         buffer_batches=2,
     )
-    run_dir = tmp_path_factory.mktemp("val-k-ranges")
+    run_dir = tmp_path_factory.mktemp("val-source-ranges")
     result = train(
         model=model,
         tokenizer=tokenizer,
@@ -531,27 +541,29 @@ def test_val_k_ranges_scores_each_slice_and_keeps_the_whole_mixture_key(
         config=config,
         run_dir=run_dir,
         device="cpu",
-        val_k_ranges=val_k_ranges,
+        val_source_ranges=val_source_ranges,
     )
 
     assert "measured_loss" in result  # the whole-mixture key is unchanged
-    assert set(result["val_loss_by_k"]) == {"1", "2"}
+    # Two single-topic sources: the slices are told apart by name, which the
+    # k-keyed version could not do.
+    assert set(result["val_loss_by_source"]) == {"tell", "bg1"}
     projection, _metadata = load_projection(
         run_dir / "last.pt", device="cpu", dim=HIDDEN
     )
     rescorer = SoftPromptLoss(model, tokenizer, projection, LossConfig())
-    for key, (start, end) in (("1", (0, 3)), ("2", (3, 6))):
+    for key, (start, end) in val_source_ranges.items():
         expected = evaluate(
             store, val_examples[start:end], rescorer, config.micro_batch_size
         )
-        assert result["val_loss_by_k"][key]["measured_loss"] == pytest.approx(
+        assert result["val_loss_by_source"][key]["measured_loss"] == pytest.approx(
             expected["measured_loss"]
         )
-        assert result["val_loss_by_k"][key]["n_examples"] == end - start
+        assert result["val_loss_by_source"][key]["n_examples"] == end - start
 
     with open(run_dir / "final_eval.json") as handle:
         on_disk = json.load(handle)
-    assert on_disk["val_loss_by_k"]["1"]["n_examples"] == 3
+    assert on_disk["val_loss_by_source"]["tell"]["n_examples"] == 3
 
 
 def run_configurable_training(
@@ -1016,15 +1028,180 @@ def test_twenty_step_smoke_run_against_the_1b_model(tmp_path):
     assert result["n_examples"] == len(val_examples)
 
 
-# --- --vectors-k / --mixture-ratio wiring (bg_think_many step 3) -----------
+# --- --vectors-k / --mixture-ratio wiring ----------------------------------
 
 
-def test_parse_vectors_k_maps_k_to_outputs_prefixed_paths():
+def test_parse_vectors_k_names_each_k_and_prefixes_outputs():
     directories = parse_vectors_k(["1=bg_think_l19", "2=bg_think_many_l19_k2"])
     assert directories == {
-        1: Path("outputs/bg_think_l19"),
-        2: Path("outputs/bg_think_many_l19_k2"),
+        "k1": Path("outputs/bg_think_l19"),
+        "k2": Path("outputs/bg_think_many_l19_k2"),
     }
+
+
+def test_parse_vectors_k_orders_sources_by_k_whatever_order_they_were_given():
+    # --mixture-ratio has always been read smallest-k-first, so an archived
+    # command keeps its meaning now that order (not sort) fixes the weights.
+    directories = parse_vectors_k(["3=c", "1=a", "2=b"])
+    assert list(directories) == ["k1", "k2", "k3"]
+
+
+def test_parse_vectors_source_keeps_the_given_order_and_prefixes_outputs():
+    directories = parse_vectors_source(["tell=baseline_l19", "bg1=bg_think_l19"])
+    assert directories == {
+        "tell": Path("outputs/baseline_l19"),
+        "bg1": Path("outputs/bg_think_l19"),
+    }
+    assert list(directories) == ["tell", "bg1"]
+
+
+def test_parse_vectors_source_rejects_a_repeated_name():
+    with pytest.raises(ValueError, match="twice"):
+        parse_vectors_source(["tell=a", "tell=b"])
+
+
+def test_parse_vectors_source_rejects_a_malformed_entry():
+    with pytest.raises(ValueError, match="NAME=DIR"):
+        parse_vectors_source(["tell"])
+
+
+def test_parse_vectors_source_rejects_an_empty_name():
+    with pytest.raises(ValueError, match="needs a name"):
+        parse_vectors_source(["=a"])
+
+
+def _train_argv(*flags):
+    return [
+        "train_adapter.py",
+        "--run-dir",
+        "r",
+        "--budget-examples",
+        "8",
+        *flags,
+    ]
+
+
+def test_exactly_one_vectors_flag_is_required(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(sys, "argv", _train_argv())
+    with pytest.raises(SystemExit):
+        parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv("--vectors", "a", "--vectors-source", "tell=b"),
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv("--vectors-k", "1=a", "--vectors-source", "tell=b"),
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_val_total_examples_is_required_with_a_mixture(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys, "argv", _train_argv("--vectors-source", "tell=a", "--mixture-ratio", "1")
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_vectors_source_and_vectors_k_agree_on_sources_and_ratio(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-k",
+            "1=a",
+            "--vectors-k",
+            "2=b",
+            "--mixture-ratio",
+            "1:2",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    via_k = parse_args()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-source",
+            "k1=a",
+            "--vectors-source",
+            "k2=b",
+            "--mixture-ratio",
+            "1:2",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    via_source = parse_args()
+
+    assert via_k.mixture_sources == via_source.mixture_sources
+    assert list(via_k.mixture_sources) == list(via_source.mixture_sources)
+    assert via_k.mixture_ratio == via_source.mixture_ratio
+
+
+def test_parse_centring_groups_maps_every_source():
+    assert parse_centring_groups(
+        ["tell=tell", "bg1=bg", "bg2=bg"], ["tell", "bg1", "bg2"]
+    ) == {"tell": "tell", "bg1": "bg", "bg2": "bg"}
+
+
+def test_parse_centring_groups_rejects_an_unnamed_source():
+    # Silence here would put a source in the wrong reference, so it is an
+    # error rather than a default.
+    with pytest.raises(ValueError, match="must name every source"):
+        parse_centring_groups(["tell=tell"], ["tell", "bg1"])
+
+
+def test_parse_centring_groups_rejects_an_unknown_source():
+    with pytest.raises(ValueError, match="unknown source"):
+        parse_centring_groups(["nope=x", "tell=tell"], ["tell"])
+
+
+def test_parse_centring_groups_rejects_a_repeat_and_a_malformed_entry():
+    with pytest.raises(ValueError, match="twice"):
+        parse_centring_groups(["tell=a", "tell=b"], ["tell"])
+    with pytest.raises(ValueError, match="NAME=GROUP"):
+        parse_centring_groups(["tell"], ["tell"])
+
+
+def test_centring_group_defaults_to_one_group_and_needs_a_mixture(monkeypatch):
+    from adapter_training.train_adapter import parse_args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _train_argv(
+            "--vectors-source",
+            "tell=a",
+            "--mixture-ratio",
+            "1",
+            "--val-total-examples",
+            "4",
+        ),
+    )
+    assert parse_args().centring_group is None
+
+    monkeypatch.setattr(
+        sys, "argv", _train_argv("--vectors", "a", "--centring-group", "tell=tell")
+    )
+    with pytest.raises(SystemExit):
+        parse_args()
 
 
 def test_parse_vectors_k_rejects_a_repeated_k():
@@ -1037,13 +1214,48 @@ def test_parse_vectors_k_rejects_a_malformed_entry():
         parse_vectors_k(["1"])
 
 
-def test_parse_mixture_ratio_matches_ks_order():
-    assert parse_mixture_ratio("1:2:3", [1, 2, 3]) == {1: 1, 2: 2, 3: 3}
+def test_parse_source_policies_matches_the_given_source_order():
+    assert parse_source_policies("1:2:3", None, ["k1", "k2", "k3"]) == {
+        "k1": Sampled(1),
+        "k2": Sampled(2),
+        "k3": Sampled(3),
+    }
 
 
-def test_parse_mixture_ratio_rejects_a_count_mismatch():
+def test_parse_source_policies_does_not_sort_the_source_names():
+    # tell is given first and takes weight 3; sorting would give it 1.
+    assert parse_source_policies("3:1", None, ["tell", "bg1"]) == {
+        "tell": Sampled(3),
+        "bg1": Sampled(1),
+    }
+
+
+def test_parse_source_policies_rejects_a_count_mismatch():
     with pytest.raises(ValueError, match="entries"):
-        parse_mixture_ratio("1:2:3", [1, 2])
+        parse_source_policies("1:2:3", None, ["k1", "k2"])
+
+
+def test_exhaustive_source_takes_no_weight_and_keeps_source_order():
+    policies = parse_source_policies("1:2:3", ["tell"], ["tell", "bg1", "bg2", "bg3"])
+    assert policies == {
+        "tell": Exhaustive(),
+        "bg1": Sampled(1),
+        "bg2": Sampled(2),
+        "bg3": Sampled(3),
+    }
+    assert list(policies) == ["tell", "bg1", "bg2", "bg3"]
+
+
+def test_a_ratio_entry_for_an_exhaustive_source_is_a_count_mismatch():
+    # The weight count is checked against the sampled sources, so keeping a
+    # 4-entry ratio after marking one source exhaustive cannot pass silently.
+    with pytest.raises(ValueError, match="sampled sources"):
+        parse_source_policies("3:1:2:3", ["tell"], ["tell", "bg1", "bg2", "bg3"])
+
+
+def test_exhaustive_source_must_name_a_real_source():
+    with pytest.raises(ValueError, match="unknown source"):
+        parse_source_policies("1:2", ["nope"], ["k1", "k2"])
 
 
 def _write_topic_dir(directory, records, vectors, means):
@@ -1149,38 +1361,35 @@ def test_load_grouped_train_and_val_builds_the_1_2_3_mixture(tmp_path):
     v3[0:4], v3[4:8] = 31.0, 32.0
     _write_group_dir(tmp_path / "k3", k3, v3, torch.zeros(4, HIDDEN))
 
-    directories = {1: tmp_path / "k1", 2: tmp_path / "k2", 3: tmp_path / "k3"}
-    (
-        train_store,
-        train_examples,
-        val_store,
-        val_examples,
-        train_k_ranges,
-        val_k_ranges,
-    ) = load_grouped_train_and_val(
+    directories = {
+        "k1": tmp_path / "k1",
+        "k2": tmp_path / "k2",
+        "k3": tmp_path / "k3",
+    }
+    train, val = load_grouped_train_and_val(
         directories,
-        ratio={1: 1, 2: 2, 3: 3},
+        policies=sampled({"k1": 1, "k2": 2, "k3": 3}),
         budget_examples=60,
         val_total_examples=30,
         seed=0,
     )
+    train_store, train_examples = train.store, train.examples
+    val_store, val_examples = val.store, val.examples
 
     assert len(train_examples) == 60
     assert len(val_examples) == 30
-    assert {k: end - start for k, (start, end) in train_k_ranges.items()} == {
-        1: 10,
-        2: 20,
-        3: 30,
-    }
-    assert {k: end - start for k, (start, end) in val_k_ranges.items()} == {
-        1: 5,
-        2: 10,
-        3: 15,
+    assert {
+        name: end - start for name, (start, end) in train.source_ranges.items()
+    } == {"k1": 10, "k2": 20, "k3": 30}
+    assert {name: end - start for name, (start, end) in val.source_ranges.items()} == {
+        "k1": 5,
+        "k2": 10,
+        "k3": 15,
     }
     # Every train example must address a train row, never a val one -- split
-    # purity across the mixture store. Values are pooled-centred (D13,
-    # amended 2026-09-07): each k's own mean is the average of its train/val
-    # constants (11.5/21.5/31.5), pooled equally to 21.5, so raw - 21.5.
+    # purity across the mixture store. Values are pooled-centred: each
+    # source's own mean is the average of its train/val constants
+    # (11.5/21.5/31.5), pooled equally to 21.5, so raw - 21.5.
     train_values = {
         round(train_store.vectors[e.vector_index, 0].item(), 6) for e in train_examples
     }

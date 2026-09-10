@@ -88,7 +88,7 @@ validation loss, and pooled centring. The mixture machinery is generic over
 
 | step | file | GPU? | what it delivers |
 |---|---|---|---|
-| 1 | `step1_source_keyed_mixture.md` | no | source-name keying, per-source centring groups, per-source val slices |
+| 1 | `step1_source_keyed_mixture.md` | no | source-name keying, per-source centring groups, per-source val slices, exhaustive/sampled source policies |
 | 2 | `step2_run_and_report.md` | yes, large | the training run, the evaluations, the report |
 
 Step 1 needs no GPU and no network. Step 2 depends on it.
@@ -97,30 +97,41 @@ Step 1 needs no GPU and no network. Step 2 depends on it.
 
 ## 5. Design decisions
 
-Every decision below is settled, four of them by the user on 2026-09-09. Do not
+Every decision below is settled by the user, on 2026-09-09 or 2026-09-10. Do not
 relitigate one without saying which decision number you are reopening and why.
+D7 and §7 were corrected by the user after an earlier draft claimed they were
+settled when they were not; both now record what was actually decided.
 
 **D1 — The adapter is named `tell_and_think`**, per the user, after the two
 extraction prompts it merges: `Tell me about X.` and `Think about X while
 writing Y.`
 
-**D2 — Four sources, mixed 3:1:2:3.** Per the user: `tell` takes the same share
-as k=3, the largest single share, so the original paper's data is one third of
-the mixture.
+**D2 — Four sources. `tell` is used whole; the `bg*` sources are sampled
+1:2:3.** Shares per the user (2026-09-09); `tell`'s policy per the user
+(2026-09-10).
 
-| source | directory | k | share |
+| source | directory | k | policy |
 |---|---|---|---|
-| `tell` | `outputs/baseline_l19` | 1 | 3 |
-| `bg1` | `outputs/bg_think_l19` | 1 | 1 |
-| `bg2` | `outputs/bg_think_many_l19_k2` | 2 | 2 |
-| `bg3` | `outputs/bg_think_many_l19_k3` | 3 | 3 |
+| `tell` | `outputs/baseline_l19` | 1 | exhaustive |
+| `bg1` | `outputs/bg_think_l19` | 1 | sampled, weight 1 |
+| `bg2` | `outputs/bg_think_many_l19_k2` | 2 | sampled, weight 2 |
+| `bg3` | `outputs/bg_think_many_l19_k3` | 3 | sampled, weight 3 |
 
-Note what this costs: `tell` has **one vector per topic**, against ~10 positions
-per group for the pangram sources, so its 755,391 examples are drawn from only
-44,673 distinct train vectors -- ~17 draws each. Each draw gets a different
-label (there are 6-20 per topic), so this is not literal repetition, but it is
-far heavier vector re-use than any other source. Say so in the report; do not
-discover it there.
+The shares began as one 3:1:2:3 ratio, giving `tell` the same share as k=3.
+That share turned out to be slightly *more than `tell` has*: it holds 755,260
+distinct (vector, label) pairs in train, against the 755,391 the ratio asked
+for, because it has **one vector per topic** where the pangram sources have
+~10 positions per group. No sampler can return more pairs than exist, and
+approaching the limit turns the draw loop into coupon collection for an answer
+the data already forces. So `tell` is used whole -- which is what the ratio was
+reaching for -- and its count is a property of the data rather than a number
+anyone chose. The `bg*` weights keep their original meaning among themselves.
+
+This is a **qualitative** difference between the sources, not a tuning choice:
+`tell` is small enough to exhaust and the `bg*` sources are not (`bg3` alone
+holds ~2x10^10 pairs). The code says so in its types -- `Exhaustive` against
+`Sampled(weight)`, dispatched on the policy a caller passes, never on a size
+comparison made at run time.
 
 **D3 — Centring is per family: `tell` on its own mean, the `bg*` sources pooled
 together.** Per the user. `bg_think_many`'s D14 pools the per-position mean
@@ -132,7 +143,7 @@ of subtracting a mean at all. Pooling it in would leave a large constant offset
 in every vector. Two independent reasons back this up: `tell` has
 `n_positions = 1` against the pangram sources' 10, so only position 0 would have
 anything to pool with anyway; and centring `tell` on its own mean is what makes
-its validation slice comparable to the published checkpoint (D7).
+its validation slice interpretable on its own terms (D7).
 
 So: `tell` is its own centring group; `bg1`, `bg2`, `bg3` share one, computed
 exactly as `bg_think_many` computed it. **The `bg*` group's pooled mean is
@@ -141,32 +152,47 @@ comparison clean. Verify that rather than assume it.
 
 **D4 — The budget grows; the `bg*` counts are frozen at `bg_think_many`'s.**
 Per the user. Each `bg*` source keeps the exact example count it had, and `tell`
-is added on top. This makes `tell_and_think` a clean single-variable ablation
-against `bg_think_many`: same architecture, same hyperparameters, same
-background data, one source added.
+is added on top, so `tell_and_think` differs from `bg_think_many` in the data and
+little else: same architecture, same hyperparameters, same background data, one
+source added. Not a clean single-variable ablation, though -- the added examples
+raise the step count and so stretch the cosine schedule (§8), which the user has
+acknowledged and accepted. §8 also explains why isolating a cause is not this
+run's goal anyway.
 
 | source | train examples | val examples |
 |---|---|---|
-| `tell` | 755,391 | 150,000 |
+| `tell` (exhaustive) | 755,260 | 84,183 |
 | `bg1` | 251,797 | 50,000 |
 | `bg2` | 503,594 | 100,000 |
 | `bg3` | 755,391 | 150,000 |
-| **total** | **2,266,173** | **450,000** |
+| **total** | **2,266,042** | **384,183** |
+| *of which sampled* | *1,510,782* | *300,000* |
 
-Both totals divide by the 3:1:2:3 ratio exactly, with no remainder, so
-`_split_by_ratio` has nothing to round. At batch 256 that is **8,853 optimizer
-steps**, against `bg_think_many`'s 5,902. The `bg*` val slices keep
+`--budget-examples` buys the sampled sources only, so it is the 1,510,782 --
+which divides 1:2:3 exactly, with no remainder for `_split_by_ratio` to round,
+and reproduces each `bg*` count to the example. `tell`'s inventory lands on top.
+Keeping the budget on that footing is what freezes the `bg*` counts: they
+depend on their own weights alone, and cannot drift if `tell`'s inventory ever
+changes.
+
+Realised total is **2,266,042** train, i.e. **8,852 optimizer steps** at batch
+256, against `bg_think_many`'s 5,902. The `bg*` val slices keep
 `bg_think_many`'s own 50k/100k/150k sizes, so each is directly comparable
-number-to-number.
+number-to-number. `tell`'s val slice is its whole val inventory, 84,183 -- an
+earlier draft asked for 150,000, which does not exist.
+
+Every figure in this table was built and counted on CPU before the run
+(2026-09-10), not derived on paper.
 
 **D5 — The architecture does not move.** `scalar_affine_plus_low_rank`, rank 64,
 `low_rank_init_factor` 0.01, and every hyperparameter `bg_think_many` used (lr
 0.01, `init_scale` 5.0, clip 0.5, weight decay 0.01, warmup 10, cosine). This is
-not a default -- it is the point. `bg_think_many` changed **both** the data and
+not a default -- it is deliberate. `bg_think_many` changed **both** the data and
 the architecture relative to `bg_think`, which is why its notes say no OOD result
-there can be attributed to the data alone. This run changes the data only, so
-`tell_and_think` vs `bg_think_many` is interpretable in a way that comparison was
-not. Do not tune anything.
+there can be attributed to the data alone. Holding the architecture still keeps
+this run from compounding that. Do not tune anything: not because attribution is
+the deliverable (§8 says it is not) but because a tuned run answers a different
+question, and there is budget for one run.
 
 **D6 — The sources are interleaved, and already are.** The user asked whether the
 adapter sees one source's data in a block. It does not, and no code change is
@@ -196,29 +222,38 @@ by the longest target in a batch, so unbucketed batches would force every batch
 to the worst case and cut the micro-batch size for all of them. This property was
 already true of `bg_think_many`; it is recorded here because the user asked.
 
-**D7 — Validation loss is reported per source, never pooled.** Extends
-`bg_think_many`'s D12 from k to source. Pooling would weight `tell` and `bg3`
-most, by D2. Two slices have priors:
+**D7 — Validation loss is reported per source, never pooled, and no published
+figure is treated as a comparison.** Extends `bg_think_many`'s D12 from k to
+source. Pooling would weight `tell` and `bg3` most, by D2.
 
-| slice | prior | where from |
-|---|---|---|
-| `bg1` | 1.3294 | `bg_think_many`'s own k=1 slice, same centring, same size |
-| `tell` | **1.3662** | the published checkpoint's recorded `best_val_loss` |
+*Corrected 2026-09-09, by the user, who did not settle the original form of this
+decision and rejects its premise.* An earlier draft offered two priors -- 1.3294
+for `bg1` and 1.3662 for `tell` -- and called the first "like-for-like". **It is
+not, and neither is.** Validation loss is not comparable across runs here, and
+architecture is only half the reason: the *task* differs too, because each run's
+loss is computed over a different training distribution. A number that is not
+measuring the same thing is not a gate, however close it lands.
 
-The `bg1` prior is a like-for-like comparison and the gate should treat it as
-one. **The `tell` prior is not like-for-like and must not be reported as
-though it were**: 1.3662 was a plain `scalar_affine` projection (0 low-rank
-parameters) trained for 2,951 steps, read from the safetensors metadata of
-`outputs/adapters/wikipedia-scalar-affine.safetensors`. A rank-64 projection
-should beat it. Use it as a floor -- if the `tell` slice lands *worse* than
-1.3662, something is wrong -- not as a target.
+So: report the four per-source validation losses as **diagnostics**, not as a
+pass/fail against anything. What they can tell you is whether the run trained at
+all -- finite, converging, no slice stuck or diverging, no slice absurd relative
+to its own curve. What they cannot tell you is whether `tell_and_think` is better
+than `bg_think_many` or than the published checkpoint. **All evidence for that
+question comes from the OOD arms (§7).**
+
+If a report quotes 1.3294 or 1.3662, it must say in the same sentence that the
+figure is not a comparison. Preferably it does not quote them at all.
 
 **D8 — `tell` keeps its full 49,637-topic population.** `bg_think_l19` has
 47,001 topics, every one of which is also in `baseline_l19`; `baseline_l19` has
 2,636 more, dropped by the pangram fidelity filter. Keeping all of them means the
-`tell` slice is the upstream population, which is what D7's 1.3662 comparison
-needs. The 5.3% asymmetry is the cost, and it means a few thousand topics are
-seen only through `tell`. Note it in the report.
+`tell` slice is the upstream population, so it is the population the research
+question is asked about. Re-confirmed by the user on 2026-09-09 after D7's
+priors were dropped, i.e. it stands on its own and not on D7. Strictly the
+population is 49,637 minus D9's `;`-filter drops, i.e. 49,627 against `bg1`'s
+46,992, so the realised asymmetry is **2,635** topics seen only through `tell`
+-- one fewer than the 2,636 above, because `BoA` is among D9's drops. The 5.3%
+asymmetry is the cost. Note it in the report.
 
 **D9 — The `;`-label filter applies to `tell` too.** `drop_semicolon_topics`
 exists because a composed label joins topics with `"; "`, and a label containing
@@ -226,7 +261,22 @@ a semicolon would teach the wrong segmentation. `tell`'s labels are never
 composed, so the filter is not strictly required there -- but it costs **10
 topics out of 49,637**, and a `tell` label with a semicolon would still teach the
 adapter to emit a separator where no second topic exists. Apply it, for one
-consistent rule across sources. Record the exact dropped count.
+consistent rule across sources.
+
+Measured, so Gate 1 has something to check against rather than re-derive:
+
+| source | `;`-filter drops | topics kept |
+|---|---|---|
+| `tell` | 10 | 49,627 |
+| `bg1` | 9 | 46,992 |
+| `bg2` | 0 | unchanged |
+| `bg3` | 0 | unchanged |
+
+`bg2`/`bg3` drop nothing because the grouped extractor already filtered
+before writing `groups.json`. `tell` and `bg1` differ by one only because of
+population, not behaviour: `bg1`'s titles are a strict subset of `tell`'s, and
+`bg1`'s 9 are a subset of `tell`'s 10. The extra one is `BoA`, which only
+`tell` has (D8).
 
 ## 6. Gates
 
@@ -236,20 +286,34 @@ Ordered; a later gate is not worth running if an earlier one failed.
 assert from the built example lists, not from the flags: each source's example
 count matches D4's table exactly; each source's val range maps to vector rows
 inside that source's own global offset range; and the `bg*` pooled mean is
-bit-identical to the one `bg_think_many` used. The separator-count check
+bit-identical to the one `bg_think_many` used. Check the realised `;`-filter
+drops against D9's table (10 / 9 / 0 / 0) -- `bg1`'s 9 is expected, not a
+fault. The separator-count check
 `bg_think_many` used to verify its slices **cannot work here** -- `tell` and
 `bg1` both compose to zero separators -- so use the row-offset check instead.
 
-**Gate 2 — validation loss, per source (D7).** `bg1` should land near 1.3294;
-`tell` should land at or below 1.3662 with the caveat in D7. `bg2`/`bg3` should
-land near 1.6505/1.8797. A slice far *better* than its prior is a bug signal, not
-a win -- check Gate 1's assertions again before believing it.
+**Gate 2 — validation loss, per source, as a diagnostic (D7).** Report all four
+slices. This gate asks only whether the run trained: every slice finite, every
+curve converging, no slice stuck or diverging. It is **not** a comparison
+against `bg_think_many` or against the published checkpoint -- see D7 for why
+those numbers do not measure the same task. Do not pass or fail the run on them.
 
-**Gate 3 — set-level retrieval clears the floor.** As `bg_think_many` §4: score
-`best.pt` at `--max-new-tokens 110`, temperature 0.7, seed 42, against the full
-49,637-topic index, reporting per source. The untrained floor is **0.00068**
-aggregate recall@1 (not 0.0013 -- see `bg_think_many`'s notes, which correct
-that figure). Report the `segments` histogram beside every score.
+**Gate 3 — set-level retrieval is not catastrophic.** As `bg_think_many` §4:
+score `best.pt` at `--max-new-tokens 110`, temperature 0.7, seed 42, against the
+full 49,637-topic index, reporting per source. The untrained floor is **0.00068**
+aggregate recall@1 (not 0.0013 -- see `bg_think_many`'s notes, which correct that
+figure). Report the `segments` histogram beside every score.
+
+**Fail only if no source clears 3x the floor (0.00204).** Per the user
+(2026-09-09): OOD generalisation is unpredictable, so a merely unimpressive
+in-distribution retrieval score is not grounds to withhold the OOD arms. This
+gate exists to catch a broken adapter, nothing more. `tell` has no comparable
+prior at this decoding length and does not need one.
+
+The threshold is per source because 0.00068 is itself a single-source mean over
+positions; no pooled figure was ever implied. Running this gate takes **two
+invocations** of `evaluate_retrieval.py`, which cannot express D3's two centring
+groups in one -- step 2 §5 gives both commands and the reason.
 
 ## 7. The evaluations
 
@@ -258,36 +322,74 @@ Not gates. A negative result is the finding. Run the same three OOD arms
 
 1. **Taboo, user-prompt tokens** -- `run_pipeline.py`, matched to
    `outputs/taboo_bg_think_many`'s sidecar.
-2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, four words (book,
-   chair, blue, salt), matched to `outputs/taboo_assistant_bg_think_many`.
+2. **Taboo, assistant tokens** -- `selfie_on_assistant.py`, book and chair only
+   (the user cut the predecessor's four words to two, to hold cost down),
+   matched to `outputs/taboo_assistant_bg_think_many`.
 3. **Bridge entity (TwoHopFact)** -- raw uninjected activations, no mean
    subtraction.
 
-**Arm 3 is the one this plan is really about**, and the report should say so
-plainly. It is the paper's headline OOD result and the most distant from training
-conditions, and it is where `bg_think_many` regressed hardest: 70/100 against
-`baseline`'s 89/100 and `bg_think`'s 88/100, with a 3.5x lower generation hit
-rate and non-overlapping intervals. `baseline` scores 89/100 having been trained
-on exactly the `tell` data this plan adds back. Whether adding it recovers that
-ground is the sharpest question the run answers.
+**Both OOD tasks carry the result; neither is subordinate.** Per the user
+(2026-09-09), correcting an earlier draft of this section that called the bridge
+entity "the one this plan is really about". The two tasks answer different
+halves of the standing question (§1) -- taboo asks whether the adapter recovers
+a concept the model is *actively hiding*, the bridge entity asks whether it
+recovers one the model merely holds latently -- and a result on one does not
+substitute for the other. Weight them equally in the report.
 
-*That last sentence is the plan author's framing of why the arm matters, not a
-mechanism claimed by the user (§1). Mark it as such if you carry it into a
-report.*
+**Arms 1 and 2 are one task, split for historical reasons.** The user-prompt and
+assistant-token harnesses exist as separate scripts because they were built at
+different times, not because they measure different things. Report each against
+its own predecessor (their word lists differ -- see step 2 §6 -- so they cannot
+simply be concatenated), but the analysis must also read them **together** as
+the taboo result, rather than presenting two unrelated arms. Where a conclusion
+holds in one and not the other, say which and treat that as the finding.
 
-## 8. What this plan does and does not isolate
+Context for the bridge-entity arm, not a claim about its priority: it is the
+paper's headline OOD result and the most distant from training conditions, and
+it is where `bg_think_many` regressed hardest -- 70/100 against `baseline`'s
+89/100 and `bg_think`'s 88/100, with a 3.5x lower generation hit rate and
+non-overlapping intervals. `baseline` scores 89/100 having been trained on
+exactly the `tell` data this plan adds back.
 
-**Isolates:** the effect of adding the original paper's extraction data, holding
-architecture, hyperparameters, background data and background example counts
-fixed (D4, D5). This is a cleaner comparison than `bg_think_many` vs `bg_think`
-was.
+*That last sentence is the plan author's framing, not a mechanism claimed by the
+user (§1). Mark it as such if you carry it into a report.*
 
-**Does not isolate:** whether any change comes from the *data* or from the
-*centring rule*, since D3 gives `tell` its own mean while `bg_think_many` pooled
-everything. The `bg*` group's mean is unchanged (D3), so the `bg*` slices are
-still comparable; the caveat applies to `tell` only.
+## 8. What this run is for
 
-**Still open from `bg_think_many`:** its own confound -- rank-64 capacity vs
-multi-topic data -- is *not* resolved by this plan. The control that resolves it
-is a rank-64 projection trained on the single-topic vectors at the same budget.
-That run is still recommended and still the user's to call.
+**This is not an isolation experiment.** Per the user (2026-09-09), correcting an
+earlier draft of this section that framed it as one. The goal is to **get an
+adapter that performs better than `baseline`** on the OOD tasks (§7). It is
+plausible `tell_and_think` beats both `baseline` and `bg_think_many`, and that
+is the outcome the run is chasing.
+
+So the comparisons D4 and D5 buy -- same background data, same architecture, one
+source added -- are a convenience, not the deliverable. Do not report a
+attribution claim as though the run were designed to support one, and do not
+weaken a positive OOD result by hedging it against a confound the run was never
+trying to control. **`baseline` is the primary comparison arm; `bg_think_many` is
+the secondary one.** `bg_think` is not an arm (its figures appear in §7 only as
+context for how much ground was lost).
+
+**Acknowledged and accepted, not defects:**
+
+- **The step count rises** with the budget, 5,902 -> 8,853, and
+  `_lr_at_step` sets the cosine horizon from it (`t_max = total_steps -
+  warmup_steps`). So `tell_and_think` also sees a stretched LR schedule, not
+  only more data. Confirmed correct by the user; state it in the report and move
+  on.
+- **The `tell` centring rule differs** from `bg_think_many`'s (D3), so the `tell`
+  slice is not on the predecessor's footing. The `bg*` group's mean is unchanged.
+- **`bg1` draws 251,797 examples from 469,920 vectors** (0.54 each), so ~46% of
+  its distinct activations are never seen. (46,992 topics x 10 positions, after
+  D9's filter -- not 47,001 x 10, which is the unfiltered population. The 0.54
+  is unchanged either way.) This is the *data-diversity* inefficiency that
+  `bg_think_many`'s `--rounds` choice was about, and it is
+  inherited unchanged, frozen by D4. `tell`, by contrast, is used whole: every
+  one of its vectors, paired with every one of its labels, exactly once (D2).
+  That is ~16.9 labels per vector -- re-use of the *vector*, not a diversity
+  deficit, since no label it holds goes unseen and none is seen twice.
+
+**Still open, and the user's to call:** `bg_think_many`'s rank-64-capacity vs
+multi-topic-data question is untouched here. The control that answers it is a
+rank-64 projection trained on the single-topic vectors at the same budget. That
+run is a separate question from this one's goal.
