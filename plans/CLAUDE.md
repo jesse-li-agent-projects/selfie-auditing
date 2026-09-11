@@ -28,17 +28,23 @@ multi-topic approach; that run changed both the data and the architecture, so
 it does not isolate what caused the regression, and the note names the control
 run that would.
 
+Its successor `tell_and_think` merged the original paper's `Tell me about X.`
+data into that mixture as a fourth, exhaustive source, centred on its own mean,
+to test whether the added single-topic data improves detection of unverbalized
+concepts. Done and archived, at `plans/archive/tell_and_think/`. All gates
+passed and it beat `bg_think_many` on most OOD measures -- bridge entity 77/100
+against 70/100, and `book` improves in both taboo harnesses -- but it **did not
+beat the baseline adapter**, which was the goal: bridge entity 77/100 and 0.79%
+generation hit rate against the baseline's 89/100 and 2.15%. So adding the
+paper's own data recovers part of what `bg_think_many` lost without closing the
+gap. Read `plans/archive/tell_and_think/notes/step2_results.md` before extending
+the mixture approach; it also records that the `chair` taboo word regressed
+where `book` improved, so the taboo gain may be word-specific.
+
 The general technique (extract activations from a prompt that has the model
 write something while thinking about a topic in the background) is still live;
 future plans on it should not assume the pangram-specific fidelity filter or
 single-topic framing those archived plans used.
-
-- tell_and_think/tell_and_think.md
-    - The live successor: merges the original SelfIE paper's own extraction
-      data ("Tell me about X.", already extracted at outputs/baseline_l19)
-      into bg_think_many's multi-topic mixture, holding the architecture and
-      the background example counts fixed so the data change is isolated.
-      Two steps: source-keyed mixture code, then the run.
 
 - research_notes_selfie_mechanism.md
     - Not a plan: the source evidence (SelfIE adapter mechanism, taboo LoRA
